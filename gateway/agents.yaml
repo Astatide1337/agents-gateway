@@ -1,0 +1,5 @@
+agents:
+  research-agent:
+    name: "Deep Research Agent"
+    internal_url: http://research-agent:8093
+    enabled: true
