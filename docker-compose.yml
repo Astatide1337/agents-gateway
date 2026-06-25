@@ -1,0 +1,18 @@
+services:
+  agents-gateway:
+    build: .
+    ports:
+      - "127.0.0.1:8092:8092"
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env
+    environment:
+      - AGW_AUTH__MODE=${AGW_AUTH__MODE:-dev-none}
+      - AGW_OBSERVABILITY__LOG_LEVEL=${AGW_OBSERVABILITY__LOG_LEVEL:-INFO}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8092/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
