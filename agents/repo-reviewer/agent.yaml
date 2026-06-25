@@ -1,0 +1,14 @@
+id: repo-reviewer
+name: Repo Reviewer
+description: Reviews repository code for quality and best practices
+version: 0.1.0
+runtime:
+  type: local-stub
+skills:
+  - code-review
+  - best-practices
+risk_level: medium
+tags:
+  - review
+  - code
+author: agents-gateway

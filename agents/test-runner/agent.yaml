@@ -1,0 +1,14 @@
+id: test-runner
+name: Test Runner
+description: Runs automated tests and reports results
+version: 0.1.0
+runtime:
+  type: local-stub
+skills:
+  - testing
+  - ci
+risk_level: low
+tags:
+  - test
+  - automation
+author: agents-gateway

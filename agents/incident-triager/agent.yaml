@@ -1,0 +1,14 @@
+id: incident-triager
+name: Incident Triager
+description: Triage and classify operational incidents
+version: 0.1.0
+runtime:
+  type: local-stub
+skills:
+  - incident-management
+  - triage
+risk_level: high
+tags:
+  - ops
+  - incidents
+author: agents-gateway

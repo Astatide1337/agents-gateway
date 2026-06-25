@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master", "epic/*"]
+  pull_request:
+    branches: ["main", "master"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Compile check
+        run: uv run python -m compileall agents_gateway/ tests/
+
+      - name: Run tests
+        run: uv run pytest tests/ -v
+
+      - name: Docker Compose config check
+        run: docker compose config
+
+      - name: Smoke test
+        run: bash scripts/smoke-test.sh
