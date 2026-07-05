@@ -33,7 +33,8 @@ def app_client(tmp_path):
     )
     fresh_registry = MetricsRegistry()
     app = create_app(config, reg=fresh_registry)
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 class TestManagementEndpoints:
