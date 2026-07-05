@@ -123,3 +123,41 @@ class TestLoadConfig:
             cfg = load_config(yaml_path=f.name)
         assert cfg.profiles["dev"].agents == ["agent-a"]
         os.unlink(f.name)
+
+    def test_skills_gateway_integration_defaults(self):
+        cfg = load_config(yaml_path="/nonexistent.yaml")
+        skills_gateway = cfg.integrations.skills_gateway
+        assert skills_gateway.enabled is False
+        assert skills_gateway.base_url == "http://localhost:8091"
+        assert skills_gateway.mcp_path == "/mcp"
+        assert skills_gateway.strict is False
+
+    def test_skills_gateway_integration_from_yaml(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump({
+                "integrations": {
+                    "skills_gateway": {
+                        "enabled": True,
+                        "base_url": "http://skills-gateway:8091",
+                        "mcp_path": "/mcp",
+                        "strict": True,
+                    }
+                }
+            }, f)
+            f.flush()
+            cfg = load_config(yaml_path=f.name)
+        assert cfg.integrations.skills_gateway.enabled is True
+        assert cfg.integrations.skills_gateway.base_url == "http://skills-gateway:8091"
+        assert cfg.integrations.skills_gateway.strict is True
+        os.unlink(f.name)
+
+    def test_skills_gateway_integration_from_env(self):
+        os.environ["AGW_INTEGRATIONS__SKILLS_GATEWAY__ENABLED"] = "true"
+        os.environ["AGW_INTEGRATIONS__SKILLS_GATEWAY__BASE_URL"] = "http://skills-gateway:8091"
+        try:
+            cfg = load_config(yaml_path="/nonexistent.yaml")
+            assert cfg.integrations.skills_gateway.enabled is True
+            assert cfg.integrations.skills_gateway.base_url == "http://skills-gateway:8091"
+        finally:
+            del os.environ["AGW_INTEGRATIONS__SKILLS_GATEWAY__ENABLED"]
+            del os.environ["AGW_INTEGRATIONS__SKILLS_GATEWAY__BASE_URL"]

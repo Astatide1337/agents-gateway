@@ -39,12 +39,25 @@ class ProfileConfig(BaseModel):
     agents: list[str] = Field(default_factory=list)
 
 
+class SkillsGatewayIntegrationConfig(BaseModel):
+    enabled: bool = False
+    base_url: str = "http://localhost:8091"
+    mcp_path: str = "/mcp"
+    strict: bool = False
+    timeout_seconds: float = 5.0
+
+
+class IntegrationsConfig(BaseModel):
+    skills_gateway: SkillsGatewayIntegrationConfig = Field(default_factory=SkillsGatewayIntegrationConfig)
+
+
 class GatewayConfig(BaseModel):
     service: ServiceConfig = ServiceConfig()
     auth: AuthConfig = AuthConfig()
     agents: AgentsConfig = AgentsConfig()
     storage: StorageConfig = StorageConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     profile: str | None = None
 
