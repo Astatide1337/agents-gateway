@@ -54,6 +54,14 @@ observability:
   log_level: "INFO"
   log_format: "json"
   metrics_enabled: true
+
+integrations:
+  skills_gateway:
+    enabled: false
+    base_url: "http://localhost:8091"
+    mcp_path: "/mcp"
+    strict: false
+    timeout_seconds: 5.0
 ```
 
 ### Environment Variables
@@ -125,6 +133,40 @@ Validation rules:
 - `runtime.type` is required.
 - Unknown runtime types should be reported clearly.
 - Invalid agents are excluded from the active catalog but listed in validation results.
+
+---
+
+## Skills Gateway Integration
+
+Agents Gateway may reference skills by ID in agent manifests. Skills remain owned by Skills Gateway; Agents Gateway should not duplicate the skill catalog.
+
+### Config
+
+```yaml
+integrations:
+  skills_gateway:
+    enabled: true
+    base_url: "http://skills-gateway:8091"
+    mcp_path: "/mcp"
+    strict: false
+    timeout_seconds: 5.0
+```
+
+### Behavior
+
+- If `enabled` is false, skill references remain local metadata on the agent manifest.
+- If `enabled` is true and `strict` is false, missing or unreachable Skills Gateway references should produce warnings, not block catalog loading.
+- If `enabled` is true and `strict` is true, missing skill references should be validation errors.
+- Agents Gateway should consume Skills Gateway through stable MCP tools/resources, not by importing Skills Gateway implementation code.
+- Task events for future skill-backed execution should record the referenced skill ID and version.
+
+### Expected Skills Gateway contract
+
+Minimum required capabilities:
+
+- `skills_list` returns available skill summaries.
+- `skills_inspect` returns complete metadata for a skill ID.
+- `skill_read` reads a skill file by path.
 
 ---
 
