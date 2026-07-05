@@ -33,7 +33,8 @@ def app_client(tmp_path):
     )
     fresh_registry = MetricsRegistry()
     app = create_app(config, reg=fresh_registry)
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 class TestManagementEndpoints:
@@ -69,6 +70,10 @@ class TestManagementEndpoints:
     def test_docs(self, app_client):
         resp = app_client.get("/docs")
         assert resp.status_code == 200
+
+    def test_mcp_endpoint_is_mounted(self, app_client):
+        resp = app_client.get("/mcp")
+        assert resp.status_code != 404
 
 
 class TestAgentEndpoints:
