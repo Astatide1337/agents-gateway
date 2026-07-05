@@ -115,3 +115,11 @@ class TestLoadConfig:
             finally:
                 del os.environ["AGW_SERVICE__PORT"]
         os.unlink(f.name)
+
+    def test_profiles_from_yaml(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump({"profiles": {"dev": {"agents": ["agent-a"]}}}, f)
+            f.flush()
+            cfg = load_config(yaml_path=f.name)
+        assert cfg.profiles["dev"].agents == ["agent-a"]
+        os.unlink(f.name)

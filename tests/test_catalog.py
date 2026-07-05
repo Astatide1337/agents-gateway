@@ -1,10 +1,6 @@
 """Tests for agent catalog and profiles."""
 
-import os
-from pathlib import Path
-
 import pytest
-import yaml
 
 from agents_gateway.catalog import AgentCatalog
 from agents_gateway.config import GatewayConfig
@@ -87,17 +83,10 @@ class TestAgentCatalog:
 
 
 class TestProfiles:
-    def test_profile_filters_agents(self, agents_dir, tmp_path, monkeypatch):
-        config_yaml = tmp_path / "agents-gateway.yaml"
-        config_yaml.write_text(yaml.dump({
-            "agents": {"dir": str(agents_dir)},
-            "profiles": {
-                "dev": {"agents": ["agent-a"]},
-            },
-        }))
-        monkeypatch.chdir(tmp_path)
+    def test_profile_filters_agents(self, agents_dir):
         cfg = GatewayConfig(
             agents={"dir": str(agents_dir)},
+            profiles={"dev": {"agents": ["agent-a"]}},
             profile="dev",
         )
         catalog = AgentCatalog(cfg)
