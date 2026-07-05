@@ -17,6 +17,7 @@ from agents_gateway.catalog import AgentCatalog
 from agents_gateway.config import GatewayConfig
 from agents_gateway.logging import log_event, setup_logging
 from agents_gateway.metrics import MetricsRegistry, registry, init_gateway_metrics
+from agents_gateway.mcp_tools import create_mcp_server
 from agents_gateway.runtime import StubRuntime
 from agents_gateway.storage import TaskStorage, TransitionError
 
@@ -44,7 +45,10 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
     log_event("agent_scan_completed", f"Found {catalog.total_count} agents, {catalog.invalid_count} invalid")
     log_event("service_ready", "Agents Gateway ready")
 
-    app = FastAPI(title="Agents Gateway", version=__version__)
+    mcp_server = create_mcp_server(config)
+    mcp_app = mcp_server.http_app(path="/")
+    app = FastAPI(title="Agents Gateway", version=__version__, lifespan=mcp_app.lifespan)
+    app.mount(config.service.mcp_path, mcp_app)
 
     @app.middleware("http")
     async def request_middleware(request: Request, call_next):

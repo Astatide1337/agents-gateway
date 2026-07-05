@@ -70,6 +70,10 @@ class TestManagementEndpoints:
         resp = app_client.get("/docs")
         assert resp.status_code == 200
 
+    def test_mcp_endpoint_is_mounted(self, app_client):
+        resp = app_client.get("/mcp")
+        assert resp.status_code != 404
+
 
 class TestAgentEndpoints:
     def test_list_agents(self, app_client):
