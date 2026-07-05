@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ServiceConfig(BaseModel):
@@ -35,12 +35,17 @@ class ObservabilityConfig(BaseModel):
     metrics_enabled: bool = True
 
 
+class ProfileConfig(BaseModel):
+    agents: list[str] = Field(default_factory=list)
+
+
 class GatewayConfig(BaseModel):
     service: ServiceConfig = ServiceConfig()
     auth: AuthConfig = AuthConfig()
     agents: AgentsConfig = AgentsConfig()
     storage: StorageConfig = StorageConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
+    profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     profile: str | None = None
 
 

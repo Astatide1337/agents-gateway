@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-import yaml
 from pydantic import BaseModel
 
 from agents_gateway.config import GatewayConfig
@@ -27,24 +25,11 @@ class AgentCatalog:
         self.config = config
         self._agents: dict[str, AgentManifest] = {}
         self._errors: list[ValidationResult] = []
-        self._profiles: dict[str, list[str]] = {}
-        self._load_profiles()
+        self._profiles: dict[str, list[str]] = {
+            name: list(profile.agents)
+            for name, profile in config.profiles.items()
+        }
         self._scan()
-
-    def _load_profiles(self) -> None:
-        yaml_path = Path("agents-gateway.yaml")
-        if not yaml_path.exists():
-            return
-        with open(yaml_path) as f:
-            data = yaml.safe_load(f)
-        if not isinstance(data, dict):
-            return
-        profiles_data = data.get("profiles", {})
-        if not isinstance(profiles_data, dict):
-            return
-        for name, pdata in profiles_data.items():
-            if isinstance(pdata, dict):
-                self._profiles[name] = pdata.get("agents", [])
 
     def _scan(self) -> None:
         agents_dir = Path(self.config.agents.dir)
