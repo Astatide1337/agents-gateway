@@ -69,6 +69,28 @@ class TestTaskStorage:
         tasks = storage.list_tasks()
         assert len(tasks) == 2
 
+    def test_list_tasks_filters_by_status(self, storage):
+        created = storage.create_task("agent-1")
+        queued = storage.create_task("agent-2")
+        storage.update_task_status(queued.id, "queued")
+
+        tasks = storage.list_tasks(status="queued")
+
+        assert [t.id for t in tasks] == [queued.id]
+        assert created.id not in [t.id for t in tasks]
+
+    def test_list_tasks_filters_by_agent_id(self, storage):
+        agent_1_task = storage.create_task("agent-1")
+        storage.create_task("agent-2")
+
+        tasks = storage.list_tasks(agent_id="agent-1")
+
+        assert [t.id for t in tasks] == [agent_1_task.id]
+
+    def test_list_tasks_rejects_invalid_status(self, storage):
+        with pytest.raises(ValueError, match="Invalid task status"):
+            storage.list_tasks(status="not-a-status")
+
     def test_update_task_status(self, storage):
         task = storage.create_task("test-agent")
         updated = storage.update_task_status(task.id, "queued")

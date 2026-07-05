@@ -115,6 +115,16 @@ class TestTaskEndpoints:
         assert resp.status_code == 200
         assert "tasks" in resp.json()
 
+    def test_list_tasks_filters_by_status(self, app_client):
+        app_client.post("/tasks", json={"agent_id": "test-agent", "input": ""})
+        resp = app_client.get("/tasks?status=created")
+        assert resp.status_code == 200
+        assert all(t["status"] == "created" for t in resp.json()["tasks"])
+
+    def test_list_tasks_rejects_invalid_status(self, app_client):
+        resp = app_client.get("/tasks?status=not-a-status")
+        assert resp.status_code == 400
+
     def test_get_task(self, app_client):
         create_resp = app_client.post("/tasks", json={"agent_id": "test-agent", "input": ""})
         task_id = create_resp.json()["id"]

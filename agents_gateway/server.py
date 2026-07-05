@@ -139,8 +139,21 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         return task.model_dump()
 
     @app.get("/tasks")
-    async def list_tasks():
-        tasks = storage.list_tasks()
+    async def list_tasks(
+        status: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ):
+        try:
+            tasks = storage.list_tasks(
+                status=status,
+                agent_id=agent_id,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
         return {"tasks": [t.model_dump() for t in tasks]}
 
     @app.get("/tasks/{task_id}")

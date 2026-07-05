@@ -151,9 +151,37 @@ class TaskStorage:
             return None
         return TaskRecord(**dict(row))
 
-    def list_tasks(self, limit: int = 50, offset: int = 0) -> list[TaskRecord]:
+    def list_tasks(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[TaskRecord]:
+        if status is not None and status not in ALL_STATES:
+            raise ValueError(f"Invalid task status: {status}")
+        if limit < 1:
+            raise ValueError("limit must be greater than zero")
+        if offset < 0:
+            raise ValueError("offset must be greater than or equal to zero")
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status=?")
+            params.append(status)
+        if agent_id is not None:
+            clauses.append("agent_id=?")
+            params.append(agent_id)
+
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.extend([limit, offset])
+
         conn = self._connect()
-        rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        rows = conn.execute(
+            f"SELECT * FROM tasks{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            params,
+        ).fetchall()
         conn.close()
         return [TaskRecord(**dict(r)) for r in rows]
 
