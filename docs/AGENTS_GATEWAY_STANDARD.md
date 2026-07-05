@@ -1,31 +1,34 @@
 # Agents Gateway Standard
 
-This document defines the architecture, interfaces, and conventions for Agents Gateway.
-**This is not Gateway Console.** Agents Gateway is a standalone, production-grade agent gateway that is useful without any future console.
+This document defines the production standard for `agents-gateway`.
+
+It is intentionally standalone and does **not** assume Gateway Console.
 
 ---
 
-## CLI Commands
+## Goals
 
-```bash
-agents-gateway run              # Start the gateway server
-agents-gateway validate         # Validate all agent manifests and config
-agents-gateway list             # List available agents
-agents-gateway inspect <id>     # Show details for a specific agent
-agents-gateway doctor           # Diagnose gateway health and configuration
-agents-gateway version          # Print version
-```
+Agents Gateway provides:
 
-All CLI commands accept `--config <path>` to override the default config file location.
+- Agent discovery
+- Agent manifest validation
+- MCP tools for agent listing, inspection, and task lifecycle
+- HTTP management endpoints
+- Task creation, execution tracking, event logs, and artifacts
+- Configurable auth modes
+- Structured logs and metrics
+- Docker-ready deployment
 
 ---
 
-## Config Format
+## Configuration
 
-Config is loaded from `agents-gateway.yaml` with the following precedence (highest to lowest):
+### Precedence
+
+Configuration is loaded in this order:
 
 1. CLI flags
-2. Environment variables (prefixed `AGW_`, double-underscore for nesting: `AGW_SERVICE__PORT=8092`)
+2. Environment variables prefixed with `AGW_`
 3. `agents-gateway.yaml`
 4. Built-in defaults
 
@@ -38,7 +41,7 @@ service:
   mcp_path: "/mcp"
 
 auth:
-  mode: "dev-none"
+  mode: "dev-none" # dev-none | cloudflare-access | internal-only
 
 agents:
   dir: "./agents"
@@ -53,120 +56,170 @@ observability:
   metrics_enabled: true
 ```
 
+### Environment Variables
+
+Nested config uses double underscores:
+
+```bash
+AGW_SERVICE__PORT=8092
+AGW_SERVICE__MCP_PATH=/mcp
+AGW_AUTH__MODE=dev-none
+AGW_AGENTS__DIR=./agents
+AGW_STORAGE__SQLITE_PATH=./data/agents-gateway.db
+AGW_STORAGE__ARTIFACTS_DIR=./data/artifacts
+AGW_OBSERVABILITY__LOG_LEVEL=INFO
+```
+
 ---
 
-## Agent Manifest Format
+## Agent Manifest
 
-Each agent directory under `agents.dir` must contain `agent.yaml`.
+Each agent lives in its own directory:
 
-### Required Fields
+```text
+agents/
+  repo-reviewer/
+    agent.yaml
+    README.md
+```
+
+Required `agent.yaml` fields:
 
 ```yaml
-id: string            # Unique identifier, must match directory name
-name: string          # Human-readable name
-description: string   # What this agent does
-version: string       # Semver
+id: repo-reviewer
+name: Repo Reviewer
+description: Reviews repository changes and produces structured feedback.
+version: 0.1.0
 runtime:
-  type: string        # e.g. "local-stub", "docker", "process"
+  type: local-stub
 ```
 
-### Recommended Fields
+Recommended optional fields:
 
 ```yaml
-skills: []            # List of skill IDs the agent provides
-tools: []             # List of tool IDs the agent exposes
-permissions: {}       # Permission mapping
-risk_level: low | medium | high
-tags: []              # Freeform tags
-author: string        # Author or team
+skills:
+  - code-review
+
+tools:
+  - github.fetch_pr
+  - github.fetch_pr_diff
+
+permissions:
+  github:
+    read: true
+    write: false
+
+risk_level: low # low | medium | high
+
+tags:
+  - github
+  - code-review
+
+author: Astatide
 ```
+
+Validation rules:
+
+- `id` should match the directory name.
+- `name`, `description`, and `version` are required.
+- `runtime.type` is required.
+- Unknown runtime types should be reported clearly.
+- Invalid agents are excluded from the active catalog but listed in validation results.
 
 ---
 
 ## Profiles
 
-Profiles define named subsets of agents for different environments or use cases.
+Profiles define named subsets of agents:
 
 ```yaml
 profiles:
-  development:
+  dev:
     agents:
       - repo-reviewer
       - test-runner
-
-  operations:
-    agents:
-      - incident-triager
-      - log-analyst
 ```
 
-The active profile is set via `AGW_PROFILE` env var or `--profile` CLI flag. Only agents in the active profile are visible and runnable. If no profile is set, all valid agents are available.
+Active profile can be selected with:
+
+```bash
+AGW_PROFILE=dev
+```
+
+or CLI:
+
+```bash
+agents-gateway run --profile dev
+```
+
+If no profile is selected, all valid agents are available.
 
 ---
 
-## Catalogs
+## Catalog Behavior
 
-The catalog is built at startup by scanning the agents directory, validating each manifest, and producing a list of agent entries.
+On startup:
 
-### Catalog Entry Shape
+1. Scan `agents.dir`
+2. Load each `agent.yaml`
+3. Validate schema
+4. Exclude invalid agents from active catalog
+5. Record validation errors
+6. Apply active profile filter
 
-```json
-{
-  "id": "repo-reviewer",
-  "name": "Repo Reviewer",
-  "description": "...",
-  "version": "0.1.0",
-  "path": "repo-reviewer",
-  "runtime": {"type": "local-stub"},
-  "risk_level": "medium"
-}
-```
+Catalog operations:
 
-Invalid agents are excluded from the catalog but tracked in metrics and reported via `agents-gateway validate` and the `/inventory` endpoint.
+- list agents
+- search agents
+- inspect agent
+- validate all manifests
 
 ---
 
-## Task State Machine
+## Task Lifecycle
 
-### States
+Task states:
 
-```
-created → queued → running → waiting → running → completed
-                                           ↘ failed
-```
-
-Any pre-terminal state can transition to `cancelled`.
-
-### Allowed Transitions
-
-```
-created   -> queued
-created   -> cancelled
-queued    -> running
-queued    -> cancelled
-running   -> waiting
-running   -> completed
-running   -> failed
-running   -> cancelled
-waiting   -> running
-waiting   -> cancelled
+```text
+created -> queued -> running -> waiting -> running -> completed
+                         |          |             |
+                         |          |             -> failed
+                         |          -> cancelled
+                         -> cancelled
 ```
 
-### Operations
+Terminal states:
 
-- Create task
-- Get task
-- List tasks
-- Update task status (with transition validation)
-- Cancel task
-- Append event (append-only log per task)
-- Create run (a run is one execution attempt of a task)
-- List task events
-- List task artifacts
+- `completed`
+- `failed`
+- `cancelled`
+
+Allowed transitions:
+
+| From      | To                                      |
+|-----------|------------------------------------------|
+| created   | queued, cancelled                       |
+| queued    | running, cancelled                      |
+| running   | waiting, completed, failed, cancelled   |
+| waiting   | running, cancelled                      |
+| completed | none                                    |
+| failed    | none                                    |
+| cancelled | none                                    |
+
+Every task has:
+
+- `id`
+- `agent_id`
+- `status`
+- `input`
+- `output`
+- `error`
+- `created_at`
+- `updated_at`
 
 ---
 
-## Storage Model
+## Storage
 
 For AGW-001, SQLite is used. Tables:
 
@@ -205,7 +258,15 @@ GET  /tasks/{id}            # Get task
 GET  /tasks/{id}/events     # Get task events
 GET  /tasks/{id}/artifacts  # Get task artifacts
 POST /tasks/{id}/cancel     # Cancel a task
+POST /tasks/{id}/run        # Run a created/queued task with the configured runtime
 ```
+
+`GET /tasks` supports optional query parameters:
+
+- `status` — filter by task state.
+- `agent_id` — filter by agent ID.
+- `limit` — maximum number of tasks to return.
+- `offset` — pagination offset.
 
 All endpoints return JSON except `/metrics` (Prometheus text format).
 
@@ -228,131 +289,194 @@ The gateway exposes MCP tools via the MCP protocol at `service.mcp_path` (defaul
 | `agent_task_artifacts` | Get artifacts for a task                 |
 | `agent_task_cancel`    | Cancel a task                            |
 
-All tools return JSON strings. Tools respect the active profile. Tools do not expose invalid agents as runnable.
+Tool behavior:
+
+- Tools respect active profile.
+- Tools return JSON-serializable results.
+- Missing agents/tasks return structured errors.
+- Task-creating tools append task events.
+
+---
+
+## Runtime Contract
+
+Initial runtime types:
+
+- `local-stub`
+
+Future runtime types:
+
+- `process`
+- `http`
+- `docker`
+- `skills-gateway`
+
+Runtime responsibilities:
+
+1. Accept task id and manifest runtime config
+2. Move task through state transitions
+3. Emit events
+4. Write output and artifacts
+5. Mark task as completed or failed
 
 ---
 
 ## Logs
 
-### Structured Log Events
+Logs are structured JSON by default.
 
-```
-service_start
-service_ready
-agent_scan_started
-agent_scan_completed
-agent_invalid
-agent_list
-agent_search
-agent_inspect
-task_created
-task_queued
-task_started
-task_completed
-task_failed
-task_cancelled
-artifact_created
-auth_success
-auth_failure
-request_completed
-```
+Required fields:
 
-### Required Log Fields
+- timestamp
+- level
+- service
+- environment
+- event
+- message
 
-```
-timestamp       # ISO 8601 UTC
-level           # DEBUG, INFO, WARNING, ERROR, CRITICAL
-service         # "agents-gateway"
-environment     # dev, staging, production
-event           # One of the structured event names above
-request_id      # UUID for request correlation
-message         # Human-readable summary
-duration_ms     # Where applicable
-task_id         # Where applicable
-agent_id        # Where applicable
-error           # Error detail where applicable
-```
+Recommended contextual fields:
 
-Production mode uses JSON format. Development mode may use human-readable format. No secrets are ever logged.
+- request_id
+- agent_id
+- task_id
+- runtime_type
+- duration_ms
+- error
+
+Example:
+
+```json
+{
+  "timestamp": "2026-01-01T00:00:00Z",
+  "level": "INFO",
+  "service": "agents-gateway",
+  "environment": "prod",
+  "event": "task_created",
+  "agent_id": "repo-reviewer",
+  "task_id": "task_123",
+  "message": "Task created"
+}
+```
 
 ---
 
 ## Metrics
 
-Prometheus-compatible metrics exposed at `/metrics`:
+Prometheus metrics:
 
-```
+```text
 agents_gateway_up
 agents_gateway_ready
-agents_total
-agents_invalid_total
-tasks_total
-tasks_created_total
-tasks_completed_total
-tasks_failed_total
-tasks_cancelled_total
-active_runs
-artifacts_total
-requests_total
-request_errors_total
-request_duration_seconds
+agents_gateway_agents_total
+agents_gateway_agents_invalid_total
+agents_gateway_tasks_total
+agents_gateway_tasks_created_total
+agents_gateway_tasks_completed_total
+agents_gateway_tasks_failed_total
+agents_gateway_tasks_cancelled_total
+agents_gateway_mcp_tool_calls_total
+agents_gateway_mcp_tool_errors_total
 ```
 
 ---
 
-## Auth Modes
+## Auth
 
-| Mode                | Description                                              |
-|---------------------|----------------------------------------------------------|
-| `dev-none`          | No authentication. Explicit and unsafe. Not for production. |
-| `cloudflare-access` | Validate Cloudflare Access JWTs. May adapt Skills Gateway auth code. |
-| `internal-only`     | Only Docker-internal or localhost access allowed.         |
+Auth modes:
 
-- Auth mode appears in `/inventory` and `/ready`.
-- Missing production auth config (`dev-none` in production) must fail clearly.
-- No secrets are logged.
+### dev-none
 
----
+No auth. Development only.
 
-## Docker Deployment
+### internal-only
 
-- `Dockerfile` at repo root, building the `agents_gateway` package.
-- `docker-compose.yml` at repo root for single-command local deployment.
-- `.env.example` for required environment variables.
-- Gateway must start with `docker compose up` after `cp .env.example .env`.
+Accept requests only from localhost or trusted internal proxy.
 
----
+### cloudflare-access
 
-## Test Requirements
+Validate Cloudflare Access JWTs.
 
-- Unit tests for config loading, manifest validation, state machine, storage, runtime
-- CLI tests for all commands
-- HTTP endpoint tests for all endpoints
-- MCP tool tests where practical
-- All tests runnable via `uv run pytest tests/ -v`
+Required config:
+
+```yaml
+auth:
+  mode: cloudflare-access
+  cloudflare:
+    team_domain: example.cloudflareaccess.com
+    audience: your-aud-tag
+```
 
 ---
 
-## Smoke Test Requirements
+## CLI
 
-- `scripts/smoke-test.sh` must:
-  - Start the gateway in background
-  - Hit all management endpoints
-  - Create and retrieve a task
-  - Cancel a task
-  - Verify metrics changed
-  - Clean up with `trap`
+Required commands:
+
+```bash
+agents-gateway run
+agents-gateway validate
+agents-gateway list
+agents-gateway inspect <id>
+agents-gateway doctor
+agents-gateway version
+```
 
 ---
 
-## Live E2E Requirements
+## Docker
 
-Before opening a PR:
+Required:
 
-1. Docker Compose deployment must start cleanly
-2. All management endpoints must respond
-3. Task create/lifecycle/cancel must work end-to-end
-4. Metrics must reflect task activity
-5. Logs must contain lifecycle events
+- `Dockerfile`
+- `docker-compose.yml`
+- `.env.example`
+- healthcheck
+- persistent volume for SQLite and artifacts
 
-If live E2E cannot be performed due to missing environment, document the blocker in `docs/E2E_REPORT.md` and do not open a PR.
+---
+
+## Tests
+
+Required test groups:
+
+- config loading
+- manifest validation
+- catalog scanning
+- profile filtering
+- storage state machine
+- MCP tools
+- HTTP endpoints
+- auth modes
+- metrics
+- logging
+- Docker smoke test
+
+---
+
+## Smoke Test
+
+A smoke test should verify:
+
+1. Server starts
+2. `/health` returns ok
+3. `/ready` returns ready
+4. `/version` returns version
+5. `/inventory` returns agent/tool counts
+6. `/metrics` returns Prometheus text
+7. MCP tools are listed
+8. A task can be created, read, cancelled, and inspected
+
+---
+
+## Live E2E Target
+
+A complete live test should prove:
+
+1. Gateway starts from Docker
+2. Agent manifests are discovered
+3. MCP client lists agents
+4. MCP client creates task
+5. Runtime executes stub task
+6. Events are recorded
+7. Artifact is produced
+8. Metrics update
