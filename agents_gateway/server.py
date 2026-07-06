@@ -1,43 +1,35 @@
-"""FastAPI HTTP server for Agents Gateway."""
+"""HTTP server for Agents Gateway using FastMCP custom routes."""
 
 from __future__ import annotations
 
-import collections
-import json
 import os
 import secrets
 import time
 import uuid
 from typing import Any
 
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from agents_gateway import __version__
 from agents_gateway.auth import (
     CF_JWT_HEADER,
     INTERNAL_AUTH_HEADER,
-    RISK_CONFIRM_HEADER,
     AuthHandler,
 )
 from agents_gateway.catalog import AgentCatalog
-from agents_gateway.config import GatewayConfig
+from agents_gateway.config import GatewayConfig, load_config
 from agents_gateway.logging import log_event, setup_logging
-from agents_gateway.metrics import MetricsRegistry, registry, init_gateway_metrics
+from agents_gateway.metrics import MetricsRegistry, init_gateway_metrics, registry
 from agents_gateway.mcp_tools import create_mcp_server
 from agents_gateway.runtime import create_default_registry
 from agents_gateway.storage import TaskStorage, TransitionError
 
-SENSITIVE_HEADERS = frozenset({
-    "authorization", "cookie", "x-auth-internal-token",
-    "cf-access-jwt-assertion", "x-confirm-high-risk",
-})
 
-
-def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> FastAPI:
+def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> FastMCP:
     _registry = reg or registry
-    logger = setup_logging(
+    setup_logging(
         log_level=config.observability.log_level,
         log_format=config.observability.log_format,
     )
@@ -58,71 +50,19 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
     log_event("agent_scan_completed", f"Found {catalog.total_count} agents, {catalog.invalid_count} invalid")
     log_event("service_ready", "Agents Gateway ready")
 
-    mcp_server = create_mcp_server(config)
-    mcp_app = mcp_server.http_app(path="/")
-    app = FastAPI(title="Agents Gateway", version=__version__, lifespan=mcp_app.lifespan)
-    app.mount(config.service.mcp_path, mcp_app)
+    mcp = create_mcp_server(config)
 
-    _rate_limit_buckets: dict[str, list[float]] = collections.defaultdict(list)
-    _rate_limit_enabled = config.service.rate_limiting.enabled
-    _rate_limit_rpm = config.service.rate_limiting.requests_per_minute
+    base_url = (config.auth.public_base_url or f"http://{config.service.host}:{config.service.port}").rstrip("/")
+    mcp_path = config.service.mcp_path
 
-    @app.middleware("http")
-    async def rate_limit_middleware(request: Request, call_next):
-        if _rate_limit_enabled and request.client:
-            client_ip = request.client.host
-            now = time.time()
-            window = 60.0
-            bucket = _rate_limit_buckets[client_ip]
-            bucket[:] = [t for t in bucket if now - t < window]
-            if len(bucket) >= _rate_limit_rpm:
-                return JSONResponse(
-                    status_code=429,
-                    content={"error": "Rate limit exceeded", "retry_after_seconds": int(window)},
-                )
-            bucket.append(now)
-        return await call_next(request)
-
-    @app.middleware("http")
-    async def request_middleware(request: Request, call_next):
-        req_id = str(uuid.uuid4())
-        os.environ["AGW_REQUEST_ID"] = req_id
-
-        headers = dict(request.headers)
-        auth_result = auth_handler.check(
-            client_host=request.client.host if request.client else "",
-            bearer_token=headers.get("authorization", ""),
-            cf_jwt=headers.get(CF_JWT_HEADER, ""),
-            internal_token=headers.get(INTERNAL_AUTH_HEADER, ""),
-        )
-        if not auth_result.allowed:
-            return JSONResponse(
-                status_code=401,
-                content={"error": auth_result.error, "auth_mode": auth_handler.mode},
-            )
-
-        response = await call_next(request)
-        _registry.inc_counter("requests_total")
-        safe_headers = {k: v for k, v in headers.items() if k.lower() not in SENSITIVE_HEADERS}
-        log_event(
-            "request_completed",
-            f"{request.method} {request.url.path}",
-            request_id=req_id,
-            user=auth_result.user,
-        )
-        return response
-
-    _oauth_clients: dict[str, Any] = {}
-    _oauth_codes: dict[str, Any] = {}
-
-    @app.get("/.well-known/oauth-authorization-server")
-    async def oauth_authorization_server():
-        base = config.auth.public_base_url or f"http://{config.service.host}:{config.service.port}"
+    # OAuth well-known metadata
+    @mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+    async def oauth_authorization_server(request):
         return JSONResponse({
-            "issuer": base,
-            "authorization_endpoint": f"{base}/authorize",
-            "token_endpoint": f"{base}/token",
-            "registration_endpoint": f"{base}/register",
+            "issuer": base_url,
+            "authorization_endpoint": f"{base_url}/authorize",
+            "token_endpoint": f"{base_url}/token",
+            "registration_endpoint": f"{base_url}/register",
             "scopes_supported": ["mcp"],
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
@@ -130,22 +70,24 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
             "code_challenge_methods_supported": ["S256"],
         }, headers={"Cache-Control": "public, max-age=3600"})
 
-    @app.get("/.well-known/oauth-protected-resource/mcp")
-    async def oauth_protected_resource():
-        base = config.auth.public_base_url or f"http://{config.service.host}:{config.service.port}"
+    @mcp.custom_route("/.well-known/oauth-protected-resource/mcp", methods=["GET"])
+    async def oauth_protected_resource(request):
         return JSONResponse({
-            "resource": f"{base}{config.service.mcp_path}",
-            "authorization_servers": [base],
+            "resource": f"{base_url}{mcp_path}",
+            "authorization_servers": [base_url],
             "scopes_supported": ["mcp"],
             "bearer_methods_supported": ["header"],
         }, headers={"Cache-Control": "public, max-age=3600"})
 
-    @app.get("/.well-known/oauth-protected-resource/{rest:path}")
-    async def oauth_protected_resource_catch(rest: str):
-        return await oauth_protected_resource()
+    @mcp.custom_route("/.well-known/oauth-protected-resource/{rest:path}", methods=["GET"])
+    async def oauth_protected_resource_catch(request):
+        return await oauth_protected_resource(request)
 
-    @app.post("/register")
-    async def register_client(request: Request):
+    _oauth_clients: dict[str, Any] = {}
+    _oauth_codes: dict[str, Any] = {}
+
+    @mcp.custom_route("/register", methods=["POST"])
+    async def register_client(request):
         ct = (request.headers.get("content-type") or "").lower()
         if "application/json" in ct:
             body = await request.json()
@@ -170,10 +112,13 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
             "scope": "mcp",
             "client_name": body.get("client_name", ""),
         }
-        return _oauth_clients[client_id]
+        return JSONResponse(_oauth_clients[client_id])
 
-    @app.get("/authorize")
-    async def authorize(client_id: str = "", redirect_uri: str = "", state: str = "", response_type: str = "code"):
+    @mcp.custom_route("/authorize", methods=["GET"])
+    async def authorize(request):
+        client_id = request.query_params.get("client_id", "")
+        redirect_uri = request.query_params.get("redirect_uri", "")
+        state = request.query_params.get("state", "")
         code = secrets.token_urlsafe(32)
         _oauth_codes[code] = {
             "code": code,
@@ -188,8 +133,8 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
             location += f"&state={state}"
         return RedirectResponse(url=location, status_code=302)
 
-    @app.post("/token")
-    async def exchange_token(request: Request):
+    @mcp.custom_route("/token", methods=["POST"])
+    async def exchange_token(request):
         form = await request.form()
         grant_type = form.get("grant_type", "authorization_code")
         if grant_type == "authorization_code":
@@ -199,50 +144,46 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                 return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "authorization code does not exist or has expired"})
             token = secrets.token_urlsafe(48)
             refresh = secrets.token_urlsafe(48)
-            return {
+            return JSONResponse({
                 "access_token": token,
                 "token_type": "Bearer",
                 "expires_in": 3600,
                 "refresh_token": refresh,
                 "scope": "mcp",
-            }
+            })
         elif grant_type == "refresh_token":
             token = secrets.token_urlsafe(48)
-            return {
+            return JSONResponse({
                 "access_token": token,
                 "token_type": "Bearer",
                 "expires_in": 3600,
                 "scope": "mcp",
-            }
+            })
         return JSONResponse(status_code=400, content={"error": "unsupported_grant_type"})
 
-    @app.get("/.well-known/oauth-protected-resource/{rest:path}")
-    async def oauth_protected_resource_catch(rest: str):
-        return await oauth_protected_resource()
+    # Health / readiness / version
+    @mcp.custom_route("/health", methods=["GET"])
+    async def health(request):
+        return JSONResponse({"status": "ok"})
 
-    @app.get("/health")
-    async def health():
-        return {"status": "ok"}
+    @mcp.custom_route("/ready", methods=["GET"])
+    async def ready(request):
+        checks = {
+            "storage": True,
+            "agents_dir": os.path.isdir(config.agents.dir),
+            "agent_scan": catalog.total_count >= 0,
+            "auth_mode": config.auth.mode,
+        }
+        checks["ready"] = all([checks["storage"], checks["agents_dir"], checks["agent_scan"]])
+        return JSONResponse(checks)
 
-    @app.get("/ready")
-    async def ready():
-        checks: dict[str, Any] = {}
-        checks["storage"] = True
-        checks["agents_dir"] = os.path.isdir(config.agents.dir)
-        checks["agent_scan"] = catalog.total_count >= 0
-        checks["auth_mode"] = config.auth.mode
-        checks["ready"] = all([
-            checks["storage"], checks["agents_dir"], checks["agent_scan"],
-        ])
-        return checks
+    @mcp.custom_route("/version", methods=["GET"])
+    async def version(request):
+        return JSONResponse({"name": "agents-gateway", "version": __version__})
 
-    @app.get("/version")
-    async def version():
-        return {"name": "agents-gateway", "version": __version__}
-
-    @app.get("/inventory")
-    async def inventory():
-        return {
+    @mcp.custom_route("/inventory", methods=["GET"])
+    async def inventory(request):
+        return JSONResponse({
             "agent_count": catalog.total_count,
             "invalid_count": catalog.invalid_count,
             "profiles": catalog.profiles,
@@ -254,37 +195,40 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                 "agent_task_artifacts", "agent_task_cancel",
             ],
             "active_profile": config.profile,
-        }
+        })
 
-    @app.get("/metrics")
-    async def metrics():
+    @mcp.custom_route("/metrics", methods=["GET"])
+    async def metrics(request):
         return Response(content=_registry.format_prometheus(), media_type="text/plain")
 
-    @app.get("/docs")
-    async def docs_redirect():
+    @mcp.custom_route("/docs", methods=["GET"])
+    async def docs(request):
         return JSONResponse({"message": "See /docs for OpenAPI spec", "openapi": "/openapi.json"})
 
-    @app.get("/agents")
-    async def list_agents():
+    # Agent catalog HTTP API
+    @mcp.custom_route("/agents", methods=["GET"])
+    async def list_agents(request):
         agents = catalog.list_agents()
         log_event("agent_list", f"Listed {len(agents)} agents")
-        return {"agents": [a.model_dump() for a in agents]}
+        return JSONResponse({"agents": [a.model_dump() for a in agents]})
 
-    @app.post("/agents/validate")
-    async def validate_agents():
+    @mcp.custom_route("/agents/validate", methods=["POST"])
+    async def validate_agents(request):
         results = catalog.validate_all()
-        return {"results": [r.model_dump() for r in results]}
+        return JSONResponse({"results": [r.model_dump() for r in results]})
 
-    @app.get("/agents/{agent_id}")
-    async def get_agent(agent_id: str):
+    @mcp.custom_route("/agents/{agent_id}", methods=["GET"])
+    async def get_agent(request):
+        agent_id = request.path_params["agent_id"]
         agent = catalog.get_agent(agent_id)
         if agent is None:
             return JSONResponse(status_code=404, content={"error": f"Agent '{agent_id}' not found"})
         log_event("agent_inspect", f"Inspected agent {agent_id}", agent_id=agent_id)
-        return agent.model_dump()
+        return JSONResponse(agent.model_dump())
 
-    @app.post("/tasks")
-    async def create_task(request: Request):
+    # Tasks HTTP API
+    @mcp.custom_route("/tasks", methods=["POST"])
+    async def create_task(request):
         try:
             body = await request.json()
         except Exception:
@@ -298,52 +242,54 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         _registry.inc_counter("tasks_total")
         _registry.inc_counter("tasks_created_total")
         log_event("task_created", f"Task {task.id} created for agent {agent_id}", task_id=task.id, agent_id=agent_id)
-        return task.model_dump()
+        return JSONResponse(task.model_dump())
 
-    @app.get("/tasks")
-    async def list_tasks(
-        status: str | None = None,
-        agent_id: str | None = None,
-        limit: int = 50,
-        offset: int = 0,
-    ):
+    @mcp.custom_route("/tasks", methods=["GET"])
+    async def list_tasks(request):
+        status = request.query_params.get("status")
+        agent_id = request.query_params.get("agent_id")
+        limit = int(request.query_params.get("limit", "50"))
+        offset = int(request.query_params.get("offset", "0"))
         try:
-            tasks = storage.list_tasks(
-                status=status, agent_id=agent_id, limit=limit, offset=offset,
-            )
+            tasks = storage.list_tasks(status=status, agent_id=agent_id, limit=limit, offset=offset)
         except ValueError as e:
             return JSONResponse(status_code=400, content={"error": str(e)})
-        return {"tasks": [t.model_dump() for t in tasks]}
+        return JSONResponse({"tasks": [t.model_dump() for t in tasks]})
 
-    @app.get("/tasks/{task_id}")
-    async def get_task(task_id: str):
+    @mcp.custom_route("/tasks/{task_id}", methods=["GET"])
+    async def get_task(request):
+        task_id = request.path_params["task_id"]
         task = storage.get_task(task_id)
         if task is None:
             return JSONResponse(status_code=404, content={"error": f"Task '{task_id}' not found"})
-        return task.model_dump()
+        return JSONResponse(task.model_dump())
 
-    @app.get("/tasks/{task_id}/events")
-    async def get_task_events(task_id: str):
+    @mcp.custom_route("/tasks/{task_id}/events", methods=["GET"])
+    async def get_task_events(request):
+        task_id = request.path_params["task_id"]
         events = storage.list_events(task_id)
-        return {"events": [e.model_dump() for e in events]}
+        return JSONResponse({"events": [e.model_dump() for e in events]})
 
-    @app.get("/tasks/{task_id}/artifacts")
-    async def get_task_artifacts(task_id: str):
+    @mcp.custom_route("/tasks/{task_id}/artifacts", methods=["GET"])
+    async def get_task_artifacts(request):
+        task_id = request.path_params["task_id"]
         artifacts = storage.list_artifacts(task_id)
-        return {"artifacts": [a.model_dump() for a in artifacts]}
+        return JSONResponse({"artifacts": [a.model_dump() for a in artifacts]})
 
-    @app.post("/tasks/{task_id}/cancel")
-    async def cancel_task(task_id: str):
+    @mcp.custom_route("/tasks/{task_id}/cancel", methods=["POST"])
+    async def cancel_task(request):
+        task_id = request.path_params["task_id"]
         try:
             task = storage.cancel_task(task_id)
             _registry.inc_counter("tasks_cancelled_total")
             log_event("task_cancelled", f"Task {task_id} cancelled", task_id=task_id)
-            return task.model_dump()
+            return JSONResponse(task.model_dump())
         except TransitionError as e:
             return JSONResponse(status_code=409, content={"error": str(e)})
 
-    @app.post("/tasks/{task_id}/run")
-    async def run_task(request: Request, task_id: str):
+    @mcp.custom_route("/tasks/{task_id}/run", methods=["POST"])
+    async def run_task(request):
+        task_id = request.path_params["task_id"]
         task = storage.get_task(task_id)
         if task is None:
             return JSONResponse(status_code=404, content={"error": f"Task '{task_id}' not found"})
@@ -378,7 +324,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
             result = adapter.execute(task_id)
             _registry.inc_counter("tasks_completed_total")
             log_event("task_completed", f"Task {task_id} completed", task_id=task_id)
-            return result
+            return JSONResponse(result)
         except TransitionError as e:
             return JSONResponse(status_code=409, content={"error": str(e)})
         except Exception as e:
@@ -386,9 +332,36 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
             log_event("task_failed", f"Task {task_id} failed", task_id=task_id)
             return JSONResponse(status_code=500, content={"error": str(e)})
 
-    return app
+    return mcp
+
+
+def run_with_config(config: GatewayConfig):
+    setup_logging(
+        log_level=config.observability.log_level,
+        log_format=config.observability.log_format,
+    )
+
+    log_event("service_start", "Agents Gateway starting", host=config.service.host, port=config.service.port, auth_mode=config.auth.mode)
+    log_event("service_ready", "Agents Gateway ready to serve requests")
+
+    mcp = create_app(config)
+
+    mcp.run(
+        transport="streamable-http",
+        host=config.service.host,
+        port=config.service.port,
+        path=config.service.mcp_path,
+    )
 
 
 def start_server(config: GatewayConfig) -> None:
-    app = create_app(config)
-    uvicorn.run(app, host=config.service.host, port=config.service.port)
+    run_with_config(config)
+
+
+def main():
+    cfg = load_config()
+    run_with_config(cfg)
+
+
+if __name__ == "__main__":
+    main()
