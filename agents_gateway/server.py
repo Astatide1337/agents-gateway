@@ -59,7 +59,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
     log_event("service_ready", "Agents Gateway ready")
 
     mcp_server = create_mcp_server(config)
-    mcp_app = mcp_server.http_app(path="/", transport="sse")
+    mcp_app = mcp_server.http_app(path="/")
     app = FastAPI(title="Agents Gateway", version=__version__, lifespan=mcp_app.lifespan)
     app.mount(config.service.mcp_path, mcp_app)
 
