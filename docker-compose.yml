@@ -10,9 +10,13 @@ services:
     environment:
       - AGW_AUTH__MODE=${AGW_AUTH__MODE:-dev-none}
       - AGW_OBSERVABILITY__LOG_LEVEL=${AGW_OBSERVABILITY__LOG_LEVEL:-INFO}
+      - AGW_SERVICE__RATE_LIMITING__ENABLED=true
+      - AGW_SERVICE__RATE_LIMITING__REQUESTS_PER_MINUTE=120
+    command: ["agents-gateway", "run"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8092/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 5s

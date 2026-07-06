@@ -1,0 +1,20 @@
+id: code-validator
+name: Code Validator
+description: Validates code changes for correctness using static analysis, type safety checks, invariant verification, and property-based testing principles. Inspired by Ken Cheng's Make No Mistake thesis — make illegal states unrepresentable.
+version: 1.0.0
+runtime:
+  type: process
+  command: python3 agents/code-validator/run.py
+skills:
+  - verification-before-completion
+  - security-best-practices
+  - systematic-debugging
+tools: []
+permissions: {}
+risk_level: medium
+tags:
+  - validation
+  - static-analysis
+  - correctness
+  - invariants
+author: agents-gateway

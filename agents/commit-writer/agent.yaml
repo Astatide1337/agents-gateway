@@ -1,0 +1,17 @@
+id: commit-writer
+name: Commit Writer
+description: Generates conventional commit messages from git diffs. Analyzes staged changes and produces structured, actionable commit messages following the Conventional Commits specification.
+version: 1.0.0
+runtime:
+  type: process
+  command: python3 agents/commit-writer/run.py
+skills:
+  - writing-guidelines
+tools: []
+permissions: {}
+risk_level: low
+tags:
+  - git
+  - commits
+  - conventional-commits
+author: agents-gateway

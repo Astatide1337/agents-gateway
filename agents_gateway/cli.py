@@ -15,9 +15,11 @@ def run(
     profile: str | None = typer.Option(None, "--profile", "-p", help="Active profile"),
     host: str | None = typer.Option(None, "--host", help="Bind host"),
     port: int | None = typer.Option(None, "--port", help="Bind port"),
+    production: bool = typer.Option(False, "--production", help="Enforce production-safe auth mode"),
 ) -> None:
     """Start the gateway server."""
-    from agents_gateway.config import load_config
+    from agents_gateway.auth import AuthHandler
+    from agents_gateway.config import AuthConfig, load_config
     from agents_gateway.server import start_server
 
     cfg = load_config(config)
@@ -27,6 +29,9 @@ def run(
         cfg.service.host = host
     if port:
         cfg.service.port = port
+    if production:
+        handler = AuthHandler(cfg.auth)
+        handler.require_production_safe()
     start_server(cfg)
 
 

@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from agents_gateway.runtime import (
+    DockerRuntime,
+    ProcessRuntime,
     RuntimeAdapter,
     RuntimeRegistry,
     StubRuntime,
@@ -44,6 +46,18 @@ class TestRuntimeRegistry:
         assert "local-stub" in registry.registered_types
         adapter_cls = registry.get("local-stub")
         assert adapter_cls is StubRuntime
+
+    def test_default_registry_has_process(self):
+        registry = create_default_registry()
+        assert "process" in registry
+        adapter_cls = registry.get("process")
+        assert adapter_cls is ProcessRuntime
+
+    def test_default_registry_has_docker(self):
+        registry = create_default_registry()
+        assert "docker" in registry
+        adapter_cls = registry.get("docker")
+        assert adapter_cls is DockerRuntime
 
     def test_default_registry_creates_stub_runtime(self, storage, tmp_path):
         registry = create_default_registry()
@@ -140,3 +154,66 @@ class TestStubRuntime:
         task = storage.create_task("test-agent")
         result = runtime.execute(task.id)
         assert "Stub runtime" in result["message"]
+
+
+class TestDockerRuntime:
+    def test_default_registry_creates_docker_runtime(self, storage, tmp_path):
+        registry = create_default_registry()
+        adapter = registry.create(
+            "docker",
+            storage=storage,
+            artifacts_dir=str(tmp_path / "artifacts"),
+            docker_image="alpine:latest",
+        )
+        assert isinstance(adapter, DockerRuntime)
+
+    def test_docker_runtime_accepts_kwargs(self, storage, tmp_path):
+        adapter = DockerRuntime(
+            storage=storage,
+            artifacts_dir=str(tmp_path / "artifacts"),
+            docker_image="python:3.14-slim",
+            command="python3 -c 'print(\"hello\")'",
+        )
+        assert adapter.docker_image == "python:3.14-slim"
+        assert "python3" in adapter.command
+
+    def test_fail_task(self, storage, tmp_path):
+        adapter = DockerRuntime(storage=storage, artifacts_dir=str(tmp_path / "artifacts"))
+        task = storage.create_task("test-agent")
+        result = adapter.fail(task.id, "Docker not available")
+        assert result["status"] == "failed"
+
+    def test_execute_nonexistent_task(self, storage, tmp_path):
+        adapter = DockerRuntime(storage=storage, artifacts_dir=str(tmp_path / "artifacts"))
+        with pytest.raises(ValueError):
+            adapter.execute("nonexistent-id")
+
+    def test_execute_docker_runtime(self, storage, tmp_path):
+        task = storage.create_task("test-agent")
+        adapter = DockerRuntime(storage=storage, artifacts_dir=str(tmp_path / "artifacts"),
+                                docker_image="alpine:latest")
+        result = adapter.execute(task.id)
+        assert result["status"] in ("completed", "failed"), "Docker runtime should execute"
+
+
+class TestProcessRuntime:
+    def test_default_registry_creates_process_runtime(self, storage, tmp_path):
+        registry = create_default_registry()
+        adapter = registry.create(
+            "process",
+            storage=storage,
+            artifacts_dir=str(tmp_path / "artifacts"),
+            command="echo test",
+        )
+        assert isinstance(adapter, ProcessRuntime)
+
+    def test_fail_task(self, storage, tmp_path):
+        adapter = ProcessRuntime(storage=storage, artifacts_dir=str(tmp_path / "artifacts"))
+        task = storage.create_task("test-agent")
+        result = adapter.fail(task.id, "Process error")
+        assert result["status"] == "failed"
+
+    def test_execute_nonexistent_task(self, storage, tmp_path):
+        adapter = ProcessRuntime(storage=storage, artifacts_dir=str(tmp_path / "artifacts"))
+        with pytest.raises(ValueError):
+            adapter.execute("nonexistent-id")

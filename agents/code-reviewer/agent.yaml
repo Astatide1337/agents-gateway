@@ -1,0 +1,22 @@
+id: code-reviewer
+name: Code Reviewer
+description: Reviews PR diffs and code changes for bugs, security issues, style violations, and best practices. Outputs structured review comments with severity levels.
+version: 1.0.0
+runtime:
+  type: process
+  command: python3 agents/code-reviewer/run.py
+skills:
+  - requesting-code-review
+  - security-best-practices
+  - react-best-practices
+  - web-design-guidelines
+  - writing-guidelines
+tools: []
+permissions: {}
+risk_level: medium
+tags:
+  - review
+  - pr
+  - security
+  - code-quality
+author: agents-gateway

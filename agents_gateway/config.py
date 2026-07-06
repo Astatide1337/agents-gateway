@@ -10,14 +10,21 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class RateLimitConfig(BaseModel):
+    enabled: bool = False
+    requests_per_minute: int = 60
+
+
 class ServiceConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8092
     mcp_path: str = "/mcp"
+    rate_limiting: RateLimitConfig = Field(default_factory=RateLimitConfig)
 
 
 class AuthConfig(BaseModel):
     mode: str = "dev-none"
+    public_base_url: str = ""
 
 
 class AgentsConfig(BaseModel):

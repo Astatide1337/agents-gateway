@@ -18,6 +18,8 @@ class RiskLevel(str, Enum):
 
 class RuntimeConfig(BaseModel):
     type: str
+    command: str = ""
+    docker_image: str = ""
 
 
 class AgentManifest(BaseModel):

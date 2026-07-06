@@ -204,3 +204,38 @@ class TestTaskEndpoints:
         art_resp = app_client.get(f"/tasks/{task_id}/artifacts")
         arts = art_resp.json()["artifacts"]
         assert len(arts) >= 1
+
+
+class TestRateLimiting:
+    @pytest.fixture
+    def rate_limited_client(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "test-agent").mkdir()
+        (agents_dir / "test-agent" / "agent.yaml").write_text(
+            "id: test-agent\nname: Test Agent\ndescription: A test agent\nversion: 0.1.0\nruntime:\n  type: local-stub\n"
+        )
+        config = GatewayConfig(
+            agents={"dir": str(agents_dir)},
+            storage={
+                "sqlite_path": str(tmp_path / "test-rate.db"),
+                "artifacts_dir": str(tmp_path / "artifacts-rate"),
+            },
+            service={"rate_limiting": {"enabled": True, "requests_per_minute": 2}},
+            observability={"log_level": "WARNING", "log_format": "json", "metrics_enabled": False},
+        )
+        fresh_registry = MetricsRegistry()
+        app = create_app(config, reg=fresh_registry)
+        with TestClient(app) as client:
+            yield client
+
+    def test_rate_limit_allows_first_requests(self, rate_limited_client):
+        for _ in range(2):
+            resp = rate_limited_client.get("/health")
+            assert resp.status_code == 200
+
+    def test_rate_limit_exceeded(self, rate_limited_client):
+        for _ in range(2):
+            rate_limited_client.get("/health")
+        resp = rate_limited_client.get("/health")
+        assert resp.status_code == 429

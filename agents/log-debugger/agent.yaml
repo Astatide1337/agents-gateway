@@ -1,0 +1,19 @@
+id: log-debugger
+name: Log Debugger
+description: Analyzes error logs, stack traces, and distributed traces to identify root cause of failures and suggest fixes. Supports multiple log formats and trace contexts.
+version: 1.0.0
+runtime:
+  type: process
+  command: python3 agents/log-debugger/run.py
+skills:
+  - systematic-debugging
+  - distributed-tracing
+tools: []
+permissions: {}
+risk_level: low
+tags:
+  - debugging
+  - logs
+  - tracing
+  - observability
+author: agents-gateway

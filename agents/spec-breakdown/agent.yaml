@@ -1,0 +1,18 @@
+id: spec-breakdown
+name: Spec Breakdown
+description: Takes a feature specification or requirements document and produces an ordered, dependency-aware task list. Each task includes effort estimate, skill requirements, and acceptance criteria.
+version: 1.0.0
+runtime:
+  type: process
+  command: python3 agents/spec-breakdown/run.py
+skills:
+  - writing-plans
+tools: []
+permissions: {}
+risk_level: low
+tags:
+  - planning
+  - specs
+  - breakdown
+  - tasks
+author: agents-gateway
