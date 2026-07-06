@@ -18,7 +18,7 @@ from agents_gateway.config import GatewayConfig
 from agents_gateway.logging import log_event, setup_logging
 from agents_gateway.metrics import MetricsRegistry, registry, init_gateway_metrics
 from agents_gateway.mcp_tools import create_mcp_server
-from agents_gateway.runtime import StubRuntime
+from agents_gateway.runtime import create_default_registry
 from agents_gateway.storage import TaskStorage, TransitionError
 
 
@@ -31,7 +31,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
 
     auth_handler = AuthHandler(config.auth)
     storage = TaskStorage(config.storage.sqlite_path)
-    runtime = StubRuntime(storage, config.storage.artifacts_dir)
+    runtime_registry = create_default_registry()
 
     if config.observability.metrics_enabled:
         init_gateway_metrics(_registry)
@@ -189,6 +189,19 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         if task is None:
             return JSONResponse(status_code=404, content={"error": f"Task '{task_id}' not found"})
 
+        agent = catalog.get_agent(task.agent_id)
+        if agent is None:
+            return JSONResponse(status_code=400, content={"error": f"Agent '{task.agent_id}' not found"})
+
+        try:
+            adapter = runtime_registry.create(
+                agent.runtime.type,
+                storage=storage,
+                artifacts_dir=config.storage.artifacts_dir,
+            )
+        except KeyError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
+
         if task.status in ("created",):
             try:
                 storage.update_task_status(task_id, "queued")
@@ -196,7 +209,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                 return JSONResponse(status_code=409, content={"error": str(e)})
 
         try:
-            result = runtime.execute(task_id)
+            result = adapter.execute(task_id)
             _registry.inc_counter("tasks_completed_total")
             log_event("task_completed", f"Task {task_id} completed", task_id=task_id)
             return result

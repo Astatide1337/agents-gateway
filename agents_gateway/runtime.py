@@ -1,15 +1,73 @@
-"""Local stub runtime adapter."""
+"""Runtime adapter interface, registry, and local-stub adapter."""
 
 from __future__ import annotations
 
 import json
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
 from agents_gateway.storage import TaskStorage
 
 
-class StubRuntime:
+class RuntimeAdapter(ABC):
+    """Abstract interface for runtime adapters."""
+
+    @abstractmethod
+    def execute(self, task_id: str) -> dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def fail(self, task_id: str, error: str = "Simulated failure") -> dict[str, Any]:
+        ...
+
+
+class RuntimeRegistry:
+    """Registry for runtime adapters keyed by runtime type.
+
+    Maps runtime type strings (e.g. "local-stub") to adapter classes
+    and provides factory-style creation.
+    """
+
+    def __init__(self) -> None:
+        self._adapters: dict[str, type[RuntimeAdapter]] = {}
+
+    def register(self, runtime_type: str, adapter_cls: type[RuntimeAdapter]) -> None:
+        if not issubclass(adapter_cls, RuntimeAdapter):
+            raise TypeError(
+                f"{adapter_cls.__name__} must implement RuntimeAdapter"
+            )
+        self._adapters[runtime_type] = adapter_cls
+
+    def get(self, runtime_type: str) -> type[RuntimeAdapter]:
+        adapter = self._adapters.get(runtime_type)
+        if adapter is None:
+            raise KeyError(
+                f"Unsupported runtime type: '{runtime_type}'. "
+                f"Supported types: {', '.join(sorted(self._adapters))}"
+            )
+        return adapter
+
+    def create(self, runtime_type: str, **kwargs: Any) -> RuntimeAdapter:
+        adapter_cls = self.get(runtime_type)
+        return adapter_cls(**kwargs)
+
+    @property
+    def registered_types(self) -> list[str]:
+        return list(self._adapters)
+
+    def __contains__(self, runtime_type: str) -> bool:
+        return runtime_type in self._adapters
+
+
+def create_default_registry() -> RuntimeRegistry:
+    """Create a RuntimeRegistry pre-populated with the built-in adapters."""
+    registry = RuntimeRegistry()
+    registry.register("local-stub", StubRuntime)
+    return registry
+
+
+class StubRuntime(RuntimeAdapter):
     """Safe local stub runtime that completes tasks without external calls."""
 
     def __init__(self, storage: TaskStorage, artifacts_dir: str) -> None:

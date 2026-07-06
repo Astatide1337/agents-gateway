@@ -171,6 +171,32 @@ class TestTaskEndpoints:
         assert resp.status_code == 200
         assert resp.json()["status"] == "completed"
 
+    def test_run_task_unsupported_runtime(self, app_client, tmp_path):
+        agents_dir = tmp_path / "agents"
+        (agents_dir / "bad-runtime-agent").mkdir(parents=True, exist_ok=True)
+        (agents_dir / "bad-runtime-agent" / "agent.yaml").write_text(
+            "id: bad-runtime-agent\nname: Bad Runtime\ndescription: Bad\nversion: 0.1.0\nruntime:\n  type: some-unknown-runtime\n"
+        )
+        from agents_gateway.config import GatewayConfig
+        from agents_gateway.metrics import MetricsRegistry
+        fresh_config = GatewayConfig(
+            agents={"dir": str(agents_dir)},
+            storage={
+                "sqlite_path": str(tmp_path / "test2.db"),
+                "artifacts_dir": str(tmp_path / "artifacts2"),
+            },
+            observability={"log_level": "WARNING", "log_format": "json", "metrics_enabled": False},
+        )
+        fresh_registry = MetricsRegistry()
+        new_app = create_app(fresh_config, reg=fresh_registry)
+        with TestClient(new_app) as client:
+            create_resp = client.post("/tasks", json={"agent_id": "bad-runtime-agent", "input": ""})
+            assert create_resp.status_code == 200
+            task_id = create_resp.json()["id"]
+            run_resp = client.post(f"/tasks/{task_id}/run")
+            assert run_resp.status_code == 400
+            assert "Unsupported runtime type" in run_resp.json()["error"]
+
     def test_run_task_produces_artifacts(self, app_client):
         create_resp = app_client.post("/tasks", json={"agent_id": "test-agent", "input": ""})
         task_id = create_resp.json()["id"]
