@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from agents_gateway.config import GatewayConfig
 from agents_gateway.manifest import AgentManifest, ValidationResult, load_manifest
+from agents_gateway.skills_validation import validate_agent_skills
 
 
 class CatalogEntry(BaseModel):
@@ -100,6 +101,16 @@ class AgentCatalog:
                 agent_id="_global", severity="error",
                 message=f"Agents directory does not exist: {self.config.agents.dir}",
             ))
+
+        skills_config = self.config.integrations.skills_gateway
+        for agent_id, manifest in self._agents.items():
+            if manifest.skills:
+                errors.extend(validate_agent_skills(
+                    agent_id=agent_id,
+                    referenced_skills=manifest.skills,
+                    skills_config=skills_config,
+                ))
+
         return errors
 
     @property
