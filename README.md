@@ -63,13 +63,37 @@ agents-gateway version    # Print version
 
 ## Security Model
 
+Agents Gateway supports two deployment postures:
+
+### 1. Edge-Auth-Only Personal Mode
+
+```
+Internet → Cloudflare Access (identity/login gate) → Private Origin (127.0.0.1)
+```
+
+- Cloudflare Access protects the hostname at the edge. Users must authenticate with your identity provider before reaching the origin.
+- The origin is bound to `127.0.0.1` — not directly reachable from the public internet.
+- App auth can be `dev-none` or `internal-only` because the edge already enforces identity.
+- Suitable for personal MCP tool usage where only the owner calls the gateway.
+
+### 2. Defense-in-Depth Production Mode
+
+```
+Internet → Cloudflare Access → Origin validates CF JWT (RS256/JWKS)
+```
+
+- Cloudflare Access protects the hostname at the edge.
+- The app also validates the Cloudflare Access JWT (`cloudflare-access` mode) for defense in depth.
+- If the edge bypassed or misconfigured, the origin still rejects unauthenticated requests.
+- Suitable for multi-user or zero-trust production deployments where you want defense in depth.
+
 ### Authentication Modes
 
-| Mode | Protection | Use |
-|------|-----------|-----|
-| `dev-none` | No auth (open) | Local dev only. Refused in production (`AGW_ENV=production`). |
-| `cloudflare-access` | Real CF Access JWT verification (RS256, JWKS, aud, iss, exp) | Production default. Requires Cloudflare Access at the edge. |
-| `internal-only` | Shared-secret header (`X-Auth-Internal-Token`) | Internal/service-service calls. No broad private-IP trust unless explicitly opted in. |
+| Mode | App-Level Protection | Recommended For |
+|------|---------------------|-----------------|
+| `dev-none` | No app auth (open) | Edge-auth-only personal mode (CF Access at edge). Refused in production (`AGW_ENV=production`) unless you understand this constraint. |
+| `cloudflare-access` | Real CF Access JWT verification (RS256, JWKS, aud, iss, exp) | Defense-in-depth production mode. Requires CF Access at edge + app verification. |
+| `internal-only` | Shared-secret header (`X-Auth-Internal-Token`) | Edge-auth-only mode with a lightweight app-level backup. Also used for service-to-service calls.
 
 ### Protected Paths
 
