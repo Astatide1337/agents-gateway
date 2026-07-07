@@ -25,6 +25,21 @@ class ServiceConfig(BaseModel):
 class AuthConfig(BaseModel):
     mode: str = "dev-none"
     public_base_url: str = ""
+    cloudflare_team_domain: str = ""
+    cloudflare_aud: str = ""
+    internal_secret: str = ""
+    allow_unsafe_private_ip_bypass: bool = False
+    jwt_leeway_seconds: int = 30
+
+
+class RuntimeConfig(BaseModel):
+    allow_process: bool = False
+    docker_network: bool = False
+    docker_memory: str = "512m"
+    docker_cpus: float = 1.0
+    docker_pids_limit: int = 128
+    docker_tmpfs_size: str = "64m"
+    task_timeout_seconds: int = 300
 
 
 class AgentsConfig(BaseModel):
@@ -61,12 +76,14 @@ class IntegrationsConfig(BaseModel):
 class GatewayConfig(BaseModel):
     service: ServiceConfig = ServiceConfig()
     auth: AuthConfig = AuthConfig()
+    runtime: RuntimeConfig = RuntimeConfig()
     agents: AgentsConfig = AgentsConfig()
     storage: StorageConfig = StorageConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     profile: str | None = None
+    environment: str = "dev"
 
 
 DEFAULT_CONFIG = GatewayConfig()

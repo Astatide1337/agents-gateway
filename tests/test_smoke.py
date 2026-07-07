@@ -18,7 +18,7 @@ from fastmcp.client import Client
 from agents_gateway.config import GatewayConfig
 from agents_gateway.mcp_tools import create_mcp_server
 from agents_gateway.metrics import MetricsRegistry
-from agents_gateway.server import create_app
+from agents_gateway.server import create_asgi_app
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -74,7 +74,7 @@ def config(agents_dir: Path, tmp_path: Path) -> GatewayConfig:
 @pytest.fixture
 def app_client(config: GatewayConfig) -> TestClient:
     fresh_registry = MetricsRegistry()
-    app = create_app(config, reg=fresh_registry)
+    app = create_asgi_app(config, reg=fresh_registry)
     with TestClient(app) as client:
         yield client
 
@@ -135,7 +135,7 @@ class TestSmokeTaskLifecycle:
             "/tasks",
             json={"agent_id": "smoke-test-agent", "input": "hello from smoke test"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         task = resp.json()
         assert task["status"] == "created"
         assert task["agent_id"] == "smoke-test-agent"
@@ -151,21 +151,24 @@ class TestSmokeTaskLifecycle:
             "/tasks",
             json={"agent_id": "smoke-test-agent", "input": "full lifecycle"},
         )
-        assert create_resp.status_code == 200
+        assert create_resp.status_code == 201
         task_id: str = create_resp.json()["id"]
 
-        # 2. Run
+        # 2. Run returns 202 (queued); worker completes asynchronously.
         run_resp = app_client.post(f"/tasks/{task_id}/run")
-        assert run_resp.status_code == 200
-        assert run_resp.json()["status"] == "completed"
+        assert run_resp.status_code == 202
+        assert run_resp.json()["status"] == "queued"
 
-        # 3. Get
+        # 3. Poll for completion (worker runs StubRuntime).
+        self._wait_for_terminal(app_client, task_id)
+
+        # 4. Get
         get_resp = app_client.get(f"/tasks/{task_id}")
         assert get_resp.status_code == 200
         assert get_resp.json()["status"] == "completed"
         assert get_resp.json()["id"] == task_id
 
-        # 4. Events
+        # 5. Events
         events_resp = app_client.get(f"/tasks/{task_id}/events")
         assert events_resp.status_code == 200
         events = events_resp.json()["events"]
@@ -175,12 +178,23 @@ class TestSmokeTaskLifecycle:
         assert "runtime_started" in event_names
         assert "artifact_created" in event_names
 
-        # 5. Artifacts
+        # 6. Artifacts
         arts_resp = app_client.get(f"/tasks/{task_id}/artifacts")
         assert arts_resp.status_code == 200
         artifacts = arts_resp.json()["artifacts"]
         assert len(artifacts) >= 1
         assert artifacts[0]["name"] == "result.json"
+
+    @staticmethod
+    def _wait_for_terminal(client: TestClient, task_id: str, timeout: float = 5.0) -> None:
+        import time as _time
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            status = client.get(f"/tasks/{task_id}").json()["status"]
+            if status in ("completed", "failed"):
+                return
+            _time.sleep(0.05)
+        raise AssertionError(f"task {task_id} did not complete in {timeout}s")
 
     def test_cancel_task(self, app_client: TestClient) -> None:
         create_resp = app_client.post(
