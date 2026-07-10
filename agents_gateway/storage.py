@@ -34,6 +34,16 @@ class TaskRecord(BaseModel):
     error: str = ""
     created_at: str
     updated_at: str
+    metadata: dict[str, Any] = {}
+    # metadata_json is a field-mount for the SQLite column; we round-trip
+    # via load/dump so callers see only `metadata`.
+    metadata_json: str = "{}"
+
+    def model_dict_for_storage(self) -> dict[str, Any]:
+        # Convenience: produce the dict hydration for INSERT/UPDATE.
+        d = self.model_dump(exclude={"metadata"})
+        d["metadata_json"] = json.dumps(self.metadata, default=str)
+        return d
 
 
 class TaskEvent(BaseModel):
@@ -94,7 +104,8 @@ class TaskStorage:
                 output TEXT DEFAULT '',
                 error TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                metadata_json TEXT DEFAULT '{}'
             );
             CREATE TABLE IF NOT EXISTS task_events (
                 id TEXT PRIMARY KEY,
@@ -122,18 +133,26 @@ class TaskStorage:
                 FOREIGN KEY (task_id) REFERENCES tasks(id)
             );
         """)
+        # Additive migration: back-fill metadata_json column on old DBs
+        # that predate the harness runtime. CREATE TABLE IF NOT EXISTS
+        # does not add missing columns, so we ALTER explicitly.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "metadata_json" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN metadata_json TEXT DEFAULT '{}'")
         conn.commit()
         conn.close()
 
-    def create_task(self, agent_id: str, input_data: Any = "") -> TaskRecord:
+    def create_task(self, agent_id: str, input_data: Any = "",
+                    metadata: dict[str, Any] | None = None) -> TaskRecord:
         if not isinstance(input_data, str):
             input_data = json.dumps(input_data)
         now = datetime.now(timezone.utc).isoformat()
         task_id = str(uuid.uuid4())
+        meta = metadata or {}
         conn = self._connect()
         conn.execute(
-            "INSERT INTO tasks (id, agent_id, status, input, output, error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-            (task_id, agent_id, "created", input_data, "", "", now, now),
+            "INSERT INTO tasks (id, agent_id, status, input, output, error, created_at, updated_at, metadata_json) VALUES (?,?,?,?,?,?,?,?,?)",
+            (task_id, agent_id, "created", input_data, "", "", now, now, json.dumps(meta)),
         )
         conn.execute(
             "INSERT INTO task_events (id, task_id, event, data_json, created_at) VALUES (?,?,?,?,?)",
@@ -141,7 +160,33 @@ class TaskStorage:
         )
         conn.commit()
         conn.close()
-        return TaskRecord(id=task_id, agent_id=agent_id, status="created", input=input_data, created_at=now, updated_at=now)
+        return TaskRecord(id=task_id, agent_id=agent_id, status="created",
+                          input=input_data, created_at=now, updated_at=now,
+                          metadata=meta)
+
+    def create_harness_task(self, agent_id: str = "harness_session",
+                            task_spec: dict[str, Any] | None = None,
+                            metadata: dict[str, Any] | None = None
+                            ) -> TaskRecord:
+        """Create a task aware of the harness worktree runtime plane.
+
+        We store the rich harness task spec as JSON in the `input`
+        column (so legacy `task.input` text reading still works for
+        the dump on /tasks/{id}) and also stash a copy inside the
+        `metadata` block for direct access by the harness runtime.
+
+        The composer-controlled `runtime_type` field lives in
+        ``metadata['runtime_type']`` so the worker can route to the
+        HarnessRuntime without scanning the body.
+        """
+        spec = task_spec or {}
+        meta = dict(metadata or {})
+        meta["runtime_type"] = "harness_session"
+        if "composer_task_id" in spec:
+            meta["composer_task_id"] = spec["composer_task_id"]
+        input_data = json.dumps(spec)
+        return self.create_task(agent_id=agent_id, input_data=input_data,
+                                metadata=meta)
 
     def get_task(self, task_id: str) -> TaskRecord | None:
         conn = self._connect()
@@ -149,7 +194,13 @@ class TaskStorage:
         conn.close()
         if row is None:
             return None
-        return TaskRecord(**dict(row))
+        d = dict(row)
+        meta_json = d.pop("metadata_json", "{}")
+        try:
+            d["metadata"] = json.loads(meta_json or "{}")
+        except json.JSONDecodeError:
+            d["metadata"] = {}
+        return TaskRecord(**d)
 
     def list_tasks(
         self,
@@ -183,7 +234,16 @@ class TaskStorage:
             params,
         ).fetchall()
         conn.close()
-        return [TaskRecord(**dict(r)) for r in rows]
+        out: list[TaskRecord] = []
+        for r in rows:
+            d = dict(r)
+            meta_json = d.pop("metadata_json", "{}")
+            try:
+                d["metadata"] = json.loads(meta_json or "{}")
+            except json.JSONDecodeError:
+                d["metadata"] = {}
+            out.append(TaskRecord(**d))
+        return out
 
     def update_task_status(self, task_id: str, new_status: str) -> TaskRecord:
         task = self.get_task(task_id)

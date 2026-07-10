@@ -204,6 +204,16 @@ Terminal states (`completed`, `failed`, `cancelled`) have no valid outgoing tran
 | `DockerRuntime` (`docker`) | Hardened Docker container | Production agent execution |
 | `ProcessRuntime` (`process`) | NO sandbox (trusted-only) | Local trusted scripts, dev workflows |
 
+In addition to the legacy adapter family, the gateway supports a
+**harness worktree runtime** for Composer-driven long-horizon agent
+work. See [docs/harness-runtime.md](docs/harness-runtime.md) for the
+full contract. In short: each task gets an isolated git worktree, a
+tmux-backed harness session (Claude Code / opencode / Codex / fake
+harness), Composer-controlled interactions, mandatory verification,
+and an HTML review report generated when verification passes. The
+harness runtime is purely additive — legacy dispatch paths continue
+to work unchanged.
+
 ## DockerRuntime Sandboxing
 
 Every `docker run` issued by DockerRuntime includes these mandatory flags:
@@ -268,10 +278,32 @@ uv run agents-gateway run
 ## Testing
 
 ```bash
-uv run pytest -q                        # 258 tests
+uv run pytest -q                        # 495 tests
 uv run pytest tests/test_auth.py -v     # JWT verification proofs
 uv run pytest tests/test_endpoints.py -v # HTTP auth + task lifecycle
 uv run pytest tests/test_runtime.py -v  # Docker sandbox + ProcessRuntime gating
+uv run pytest tests/test_harness_runtime_e2e.py -v  # fake-harness 3-flow E2E
+uv run pytest tests/test_harness_http_api.py -v     # harness HTTP endpoints
+uv run pytest tests/test_session_supervisor.py -v   # supervisor + classifier
+```
+
+### Local harness E2E
+
+Drives the full harness flow end-to-end using the bundled `fake-test` harness profile. No real Claude/opencode/Codex required.
+
+```bash
+bash scripts/e2e-harness-runtime-local.sh
+# Expected: "Passed: 3 / Failed: 0" + "[OK] Harness runtime local E2E passed"
+```
+
+### Real harness E2E (optional)
+
+Requires `opencode` / `claude` / `codex` on PATH and configured with LLM credentials. Refuses with exit code 2 if the binary is missing — never fakes success.
+
+```bash
+bash scripts/e2e-harness-runtime-real.sh                 # opencode-deepseek profile
+AGW_E2E_REAL_PROFILE=claude-code bash scripts/e2e-harness-runtime-real.sh
+# Missing binary → "REAL HARNESS E2E BLOCKED: missing <command>" + exit 2
 ```
 
 ## Docker
@@ -295,6 +327,22 @@ docker compose down
 - No task cancellation for in-flight Docker containers (docker rm is async best-effort)
 - `stub-runtime` only; real Docker/Process execution needs Docker daemon
 - No multi-replica coordination (SQLite single-writer; WAL mode helps but does not solve multi-process contention)
+- Harness sessions today run on host via tmux (long-term containerization is roadmap)
+- HTML review report redaction is regex-based and may miss novel token formats — report leaks at https://github.com/Astatide1337/agents-gateway/issues
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [README.md](README.md) | This file — overview, quick start, security model, runtime model |
+| [SECURITY.md](SECURITY.md) | Threat model, the `_safe_env` boundary, redaction patterns, production checklist |
+| [docs/architecture.md](docs/architecture.md) | Component map, module layout, data store, concurrency |
+| [docs/api.md](docs/api.md) | Full HTTP + MCP API reference (legacy + harness-runtime planes) |
+| [docs/runtime.md](docs/runtime.md) | Legacy adapters + harness worktree runtime configuration |
+| [docs/harness-runtime.md](docs/harness-runtime.md) | Runtime contract — goal injection, supervision, verification, completion flow |
+| [docs/verification.md](docs/verification.md) | Verification runner, env-required gate, failure feedback loop |
+| [docs/composer-integration.md](docs/composer-integration.md) | Composer contract — endpoint map, task spec, reply protocol, terminal outcomes |
+| [docs/runbooks.md](docs/runbooks.md) | Operational runbooks (boot, E2E, diagnose stall/blocked/missing artifacts) |
 
 ## License
 

@@ -30,6 +30,7 @@ class TaskWorker:
         runtime_config: Any,
         artifacts_dir: str,
         poll_interval_seconds: float = 0.5,
+        harness_config: Any = None,
     ) -> None:
         self._storage = storage
         self._catalog = catalog
@@ -37,6 +38,7 @@ class TaskWorker:
         self._runtime_config = runtime_config
         self._artifacts_dir = artifacts_dir
         self._poll_interval = poll_interval_seconds
+        self._harness_config = harness_config
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -130,6 +132,21 @@ class TaskWorker:
         task = self._storage.get_task(task_id)
         if task is None:
             return
+
+        # ═══════════════════════════════════════════════════════════
+        # Harness-worktree-runtime routing.
+        # When `task.metadata.runtime_type == 'harness_session'` the task
+        # is composer-controlled: it bypasses the agent catalog and
+        # dispatches to the HarnessRuntime which executes the full
+        # lifecycle (workspace -> worktree -> tmux session ->
+        # verification -> report -> result).
+        # ═══════════════════════════════════════════════════════════
+        meta = getattr(task, "metadata", {}) or {}
+        runtime_type = meta.get("runtime_type")
+        if runtime_type == "harness_session":
+            self._execute_harness_task(task_id, task)
+            return
+
         agent = self._catalog.get_agent(task.agent_id)
         if agent is None:
             self._storage.append_event(task_id, "runtime_error",
@@ -175,6 +192,98 @@ class TaskWorker:
         except Exception as e:
             self._storage.append_event(task_id, "runtime_error",
                                       {"error": str(e)})
+            current = self._storage.get_task(task_id)
+            if current and current.status == "running":
+                try:
+                    self._storage.update_task_status(task_id, "failed")
+                except TransitionError:
+                    pass
+
+    # -------------------------------------------------------------------
+    # Harness-runtime execution path
+    # -------------------------------------------------------------------
+
+    def _execute_harness_task(self, task_id: str, task) -> None:
+        """Drive a harness_session task through the full lifecycle."""
+        # Lazily import so unit tests that don't exercise harness runtime
+        # don't pay the import cost.
+        from agents_gateway.harness.runtime import (
+            HarnessRuntime,
+            HarnessRuntimeConfig,
+        )
+        from agents_gateway.harness.storage import HarnessStorage
+
+        log_event("worker_harness_task_start",
+                  f"Executing harness_session task {task_id}",
+                  task_id=task_id, agent_id=task.agent_id,
+                  runtime_type="harness_session")
+        self._storage.append_event(task_id, "runtime_started",
+                                  {"runtime": "harness_session",
+                                   "task_id": task_id})
+
+        # Build the runtime config from the gateway config if provided;
+        # fall back to defaults if caller is invoking the worker directly.
+        hcfg = getattr(self, "_harness_config", None)
+        if hcfg is None:
+            hcfg = HarnessRuntimeConfig(
+                use_fake_tmux=True,  # safe default for tests/CLI dev
+                auto_commit=False,  # don't auto-commit scratch work
+                workspace_root="/tmp/agents-gateway/repos",
+                worktree_root="/tmp/agents-gateway/worktrees",
+                artifacts_root="/tmp/agents-gateway/artifacts",
+            )
+
+        # Build a new HarnessStorage for the same DB path.
+        hstorage = HarnessStorage(self._storage.db_path)
+
+        # Pull the rich task spec out of the task input JSON.
+        import json as _json
+        try:
+            spec = _json.loads(task.input) if task.input else {}
+        except (ValueError, TypeError):
+            spec = {}
+
+        runtime = HarnessRuntime(
+            task_storage=self._storage,
+            harness_storage=hstorage,
+            config=hcfg,
+        )
+        try:
+            result = runtime.execute_task(
+                agent_run_id=task_id,  # we reuse task_id as run id for now
+                task_id=task_id,
+                task_spec=spec,
+            )
+            # Translate the harness status into the legacy task state
+            # machine: completed / failed / waiting.
+            final_status = result.status
+            if final_status in ("completed", "passed"):
+                final_status = "completed"
+            elif final_status in ("blocked_external", "stalled",
+                                  "waiting_for_reply"):
+                # Map non-terminal-but-not-running harness states to
+                # the legacy "waiting" task state so users see the task
+                # awaiting Composer input. Composer interactions are
+                # already created by the runtime/supervisor.
+                final_status = "waiting"
+            elif final_status == "failed":
+                final_status = "failed"
+            else:
+                final_status = "failed"  # conservative default
+            try:
+                self._storage.update_task_status(task_id, final_status)
+            except TransitionError:
+                # If a transition fails (e.g. someone cancelled in the
+                # meantime), record and move on.
+                self._storage.append_event(task_id, "transition_skipped",
+                                          {"target": final_status,
+                                           "current": task.status})
+        except Exception as e:
+            log_event("worker_harness_task_crash",
+                      f"Harness task {task_id} crashed: {e}",
+                      task_id=task_id, level="ERROR")
+            self._storage.append_event(task_id, "runtime_error",
+                                      {"error": str(e), "kind": "harness"})
             current = self._storage.get_task(task_id)
             if current and current.status == "running":
                 try:

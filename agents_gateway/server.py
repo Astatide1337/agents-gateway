@@ -51,6 +51,19 @@ from agents_gateway.runtime import create_default_registry
 from agents_gateway.storage import TaskStorage, TransitionError
 from agents_gateway.worker import TaskWorker
 
+# Harness-runtime plane imports (kept lazy where possible to avoid
+# import cost when handlers aren't called).
+from agents_gateway.harness.models import (
+    ComposerInteractionStatus,
+    HarnessSessionStatus,
+)
+from agents_gateway.harness.profiles import (
+    get_profile as _get_harness_profile,
+    list_profiles as _list_harness_profiles,
+    register_profile as _register_harness_profile,
+)
+from agents_gateway.harness.storage import HarnessStorage
+
 # Paths that are intentionally public even when auth is enabled.
 PUBLIC_PATHS = {
     "/health",
@@ -92,6 +105,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
     auth_handler = AuthHandler(config.auth)
     storage = TaskStorage(config.storage.sqlite_path)
     runtime_registry = create_default_registry(config.runtime)
+    harness_storage = HarnessStorage(config.storage.sqlite_path)
 
     if config.observability.metrics_enabled:
         init_gateway_metrics(_registry)
@@ -115,12 +129,30 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
 
     # Background worker for off-request-path task execution. Pass the
     # environment onto the runtime config so ProcessRuntime can self-gate
-    # in production.
+    # in production. The harness_config drives the harness_session task
+    # runtime path.
     config.runtime._environment = config.environment
+    from agents_gateway.harness.runtime import HarnessRuntimeConfig
+    harness_runtime_cfg = HarnessRuntimeConfig(
+        workspace_root=config.harness.workspace_root,
+        worktree_root=config.harness.worktree_root,
+        artifacts_root=config.harness.artifacts_root,
+        session_poll_interval_seconds=config.harness.session_poll_interval_seconds,
+        session_stall_seconds=config.harness.session_stall_seconds,
+        auto_commit=config.harness.auto_commit,
+        auto_push=config.harness.auto_push,
+        auto_pr=config.harness.auto_pr,
+        use_fake_tmux=config.harness.use_fake_tmux,
+        command_timeout_seconds=config.harness.command_timeout_seconds,
+        completion_wait_seconds=config.harness.completion_wait_seconds,
+        relay_max_time_seconds=config.harness.relay_max_time_seconds,
+        max_verify_iterations=config.harness.max_verify_iterations,
+    )
     worker = TaskWorker(storage=storage, catalog=catalog,
                         runtime_registry=runtime_registry,
                         runtime_config=config.runtime,
-                        artifacts_dir=config.storage.artifacts_dir)
+                        artifacts_dir=config.storage.artifacts_dir,
+                        harness_config=harness_runtime_cfg)
     worker.start()
 
     # Auth middleware that runs for every Starlette route (including
@@ -401,14 +433,39 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         except Exception:
             return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
         agent_id = body.get("agent_id", "")
-        input_data = body.get("input", "")
+        # Harness-session path: when the request shape includes an
+        # `execution.mode == "harness_session"` (or agent_id literally
+        # equals "harness_session"), the task is composer-controlled
+        # and bypasses the agent catalog. The full task spec is stored
+        # in task.input (JSON) + task.metadata so the worker can route
+        # it to HarnessRuntime.
+        is_harness = (
+            body.get("execution", {}).get("mode") == "harness_session"
+            or agent_id == "harness_session"
+            or body.get("runtime_type") == "harness_session"
+        )
+        if is_harness:
+            task = storage.create_harness_task(
+                agent_id="harness_session",
+                task_spec=body,
+                metadata={"composer_task_id": body.get("composer_task_id"),
+                          "objective_id": body.get("objective_id"),
+                          "title": body.get("title", "")[:120]},
+            )
+            _registry.inc_counter("tasks_total")
+            _registry.inc_counter("tasks_created_total")
+            log_event("task_created",
+                      f"Harness session task {task.id} created",
+                      task_id=task.id, agent_id=task.agent_id,
+                      runtime_type="harness_session")
+            return JSONResponse(task.model_dump(), status_code=201)
         agent = catalog.get_agent(agent_id)
         if agent is None:
             return JSONResponse(
                 status_code=400,
                 content={"error": f"Agent '{agent_id}' not found or not in active profile"},
             )
-        task = storage.create_task(agent_id, input_data)
+        task = storage.create_task(agent_id, body.get("input", ""))
         _registry.inc_counter("tasks_total")
         _registry.inc_counter("tasks_created_total")
         log_event("task_created", f"Task {task.id} created for agent {agent_id}",
@@ -470,19 +527,26 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         if task is None:
             return JSONResponse(status_code=404,
                                 content={"error": f"Task '{task_id}' not found"})
-        agent = catalog.get_agent(task.agent_id)
-        if agent is None:
-            return JSONResponse(
-                status_code=400,
-                content={"error": f"Agent '{task.agent_id}' not found"},
-            )
 
-        if agent.risk_level.value == "high":
-            headers = dict(request.headers)
-            risk_check = auth_handler.check_high_risk(headers)
-            if not risk_check.allowed:
-                return JSONResponse(status_code=403,
-                                    content={"error": risk_check.error})
+        # Harness-session tasks bypass the agent catalog; they're
+        # composer-controlled and the harness runtime is responsible
+        # for starting the harness inside the worktree.
+        is_harness = bool(getattr(task, "metadata", {}) and
+                          task.metadata.get("runtime_type") == "harness_session")
+        if not is_harness:
+            agent = catalog.get_agent(task.agent_id)
+            if agent is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Agent '{task.agent_id}' not found"},
+                )
+
+            if agent.risk_level.value == "high":
+                headers = dict(request.headers)
+                risk_check = auth_handler.check_high_risk(headers)
+                if not risk_check.allowed:
+                    return JSONResponse(status_code=403,
+                                        content={"error": risk_check.error})
 
         # Enqueue: this transitions created -> queued. The background worker
         # owns queued -> running -> terminal.
@@ -499,13 +563,415 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
 
         log_event("task_enqueued", f"Task {task_id} enqueued for run",
                   task_id=task_id, agent_id=task.agent_id,
-                  runtime_type=agent.runtime.type)
+                  runtime_type=("harness_session" if is_harness
+                                 else (agent.runtime.type if not is_harness else "")))
         return JSONResponse(
             {"task_id": task_id, "status": "queued", "agent_id": task.agent_id},
             status_code=202,
         )
 
-    return mcp
+    # ===================================================================
+    # Harness worktree runtime HTTP API
+    # ===================================================================
+    #
+    # All endpoints below require the same auth as /tasks. Public paths
+    # set (health/ready/version/docs/oauth) remain unchanged.
+
+    # -- Harness profiles -------------------------------------------------
+
+    @mcp.custom_route("/harness-profiles", methods=["GET"])
+    async def list_harness_profiles(request: Request):
+        return JSONResponse(
+            {"profiles": [p.to_dict() for p in _list_harness_profiles()]},
+        )
+
+    @mcp.custom_route("/harness-profiles/validate", methods=["POST"])
+    async def validate_harness_profile(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400,
+                                content={"error": "Invalid JSON body"})
+        name = body.get("name", "")
+        profile = _get_harness_profile(name)
+        if profile is None:
+            return JSONResponse(
+                status_code=404,
+                content={"valid": False, "error": f"Unknown profile: {name}"},
+            )
+        # Validate goal-strategy compatibility: if user requests
+        # slash_goal but profile doesn't support it, fail validation.
+        strat = body.get("goal_strategy", profile.goal_strategy)
+        if strat == "slash_goal" and not profile.supports_slash_goal:
+            return JSONResponse(
+                status_code=400,
+                content={"valid": False,
+                         "error": (f"Profile '{name}' does not support "
+                                   "slash_goal goal_strategy")},
+            )
+        return JSONResponse({"valid": True, "profile": profile.to_dict()})
+
+    @mcp.custom_route("/harness-profiles/{name}", methods=["GET"])
+    async def get_harness_profile(request: Request):
+        name = request.path_params["name"]
+        profile = _get_harness_profile(name)
+        if profile is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"Unknown profile: {name}"})
+        return JSONResponse(profile.to_dict())
+
+    # -- Worktrees -------------------------------------------------------
+
+    @mcp.custom_route("/worktrees", methods=["GET"])
+    async def list_worktrees(request: Request):
+        return JSONResponse(
+            {"worktrees": [w.__dict__ for w in harness_storage.list_worktrees()]}
+        )
+
+    @mcp.custom_route("/worktrees/{wt_id}", methods=["GET"])
+    async def get_worktree(request: Request):
+        wt_id = request.path_params["wt_id"]
+        wt = harness_storage.get_worktree(wt_id)
+        if wt is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"Worktree '{wt_id}' not found"})
+        return JSONResponse(wt.__dict__)
+
+    @mcp.custom_route("/tasks/{task_id}/worktree", methods=["GET"])
+    async def get_task_worktree(request: Request):
+        task_id = request.path_params["task_id"]
+        wt = harness_storage.get_worktree_by_task(task_id)
+        if wt is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"No worktree for task {task_id}"})
+        return JSONResponse(wt.__dict__)
+
+    # -- Sessions ---------------------------------------------------------
+
+    @mcp.custom_route("/sessions", methods=["GET"])
+    async def list_sessions(request: Request):
+        status = request.query_params.get("status")
+        task_id = request.query_params.get("task_id")
+        sessions = harness_storage.list_sessions(status=status, task_id=task_id)
+        return JSONResponse(
+            {"sessions": [s.__dict__ for s in sessions]}
+        )
+
+    @mcp.custom_route("/sessions/{session_id}", methods=["GET"])
+    async def get_session(request: Request):
+        session_id = request.path_params["session_id"]
+        session = harness_storage.get_session(session_id)
+        if session is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Session '{session_id}' not found"})
+        return JSONResponse(session.__dict__)
+
+    @mcp.custom_route("/tasks/{task_id}/session", methods=["GET"])
+    async def get_task_session(request: Request):
+        task_id = request.path_params["task_id"]
+        session = harness_storage.get_session_by_task(task_id)
+        if session is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"No active session for task {task_id}"})
+        return JSONResponse(session.__dict__)
+
+    @mcp.custom_route("/sessions/{session_id}/capture", methods=["GET"])
+    async def capture_session(request: Request):
+        session_id = request.path_params["session_id"]
+        # Lazy import to keep server.py import cost low when the
+        # harness-runtime endpoints aren't called.
+        from agents_gateway.harness.driver import HarnessDriver
+        session = harness_storage.get_session(session_id)
+        if session is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Session '{session_id}' not found"})
+        # Construct a transient driver bound to the session's tmux
+        # session. Fetch last 2000 lines.
+        driver = HarnessDriver(storage=harness_storage)
+        try:
+            output = driver.capture_output(session, lines=2000)
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"capture failed: {e}"})
+        return JSONResponse({"session_id": session_id,
+                             "lines_captured": len(output.splitlines()),
+                             "output": output})
+
+    @mcp.custom_route("/sessions/{session_id}/send", methods=["POST"])
+    async def send_to_session(request: Request):
+        """Send text to a session (intended for Composer/system use only)."""
+        session_id = request.path_params["session_id"]
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+        text = str(body.get("text", ""))
+        submit = bool(body.get("submit", True))
+        if not text:
+            return JSONResponse(status_code=400, content={"error": "text required"})
+        from agents_gateway.harness.driver import HarnessDriver
+        session = harness_storage.get_session(session_id)
+        if session is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"Session '{session_id}' not found"})
+        driver = HarnessDriver(storage=harness_storage)
+        try:
+            driver.tmux.send_text(driver._ref(session), text)
+            if submit:
+                driver.tmux.send_enter(driver._ref(session))
+        except Exception as e:
+            return JSONResponse(status_code=500,
+                                content={"error": f"send_text failed: {e}"})
+        _registry.inc_counter("harness_session_send_total")
+        return JSONResponse({"session_id": session_id,
+                             "status": "sent",
+                             "text_chars": len(text)})
+
+    @mcp.custom_route("/sessions/{session_id}/stop", methods=["POST"])
+    async def stop_session(request: Request):
+        session_id = request.path_params["session_id"]
+        from agents_gateway.harness.driver import HarnessDriver
+        session = harness_storage.get_session(session_id)
+        if session is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"Session '{session_id}' not found"})
+        driver = HarnessDriver(storage=harness_storage)
+        try:
+            driver.stop_session(session)
+        except Exception as e:
+            return JSONResponse(status_code=500,
+                                content={"error": f"stop failed: {e}"})
+        return JSONResponse({"session_id": session_id,
+                             "status": session.status})
+
+    # -- Composer interactions --------------------------------------------
+
+    @mcp.custom_route("/interactions", methods=["GET"])
+    async def list_interactions(request: Request):
+        status = request.query_params.get("status")
+        task_id = request.query_params.get("task_id")
+        agent_run_id = request.query_params.get("agent_run_id")
+        interactions = harness_storage.list_interactions(
+            status=status, task_id=task_id, agent_run_id=agent_run_id,
+        )
+        return JSONResponse(
+            {"interactions": [i.__dict__ for i in interactions]}
+        )
+
+    @mcp.custom_route("/interactions/{interaction_id}", methods=["GET"])
+    async def get_interaction(request: Request):
+        interaction_id = request.path_params["interaction_id"]
+        interaction = harness_storage.get_interaction(interaction_id)
+        if interaction is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"Interaction '{interaction_id}' not found"})
+        return JSONResponse(interaction.__dict__)
+
+    @mcp.custom_route("/interactions/{interaction_id}/reply", methods=["POST"])
+    async def reply_to_interaction(request: Request):
+        """Composer sends a reply which is then injected into the session."""
+        interaction_id = request.path_params["interaction_id"]
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+        reply_text = str(body.get("reply", ""))
+        if not reply_text:
+            return JSONResponse(status_code=400, content={"error": "reply required"})
+        interaction = harness_storage.get_interaction(interaction_id)
+        if interaction is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Interaction '{interaction_id}' not found"})
+        if interaction.status != ComposerInteractionStatus.pending.value:
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"Interaction is not pending (status={interaction.status})"})
+        # Deliver into the session via the harness driver.
+        from agents_gateway.harness.driver import HarnessDriver
+        session = harness_storage.get_session(interaction.session_id)
+        if session is None:
+            # Session was cleaned up; we still mark interaction answered
+            # so Composer gets an ack, and surface the missing session
+            # via the metadata.
+            harness_storage.update_interaction_status(
+                interaction_id, ComposerInteractionStatus.answered.value,
+                composer_reply=reply_text,
+            )
+            return JSONResponse(
+                {"interaction_id": interaction_id,
+                 "status": "answered",
+                 "warning": "session_missing_ delivery_skipped"},
+            )
+        driver = HarnessDriver(storage=harness_storage)
+        try:
+            driver.send_reply(session, reply_text)
+        except Exception as e:
+            return JSONResponse(status_code=500,
+                                content={"error": f"send_reply failed: {e}"})
+        # Mark answered.
+        harness_storage.update_interaction_status(
+            interaction_id, ComposerInteractionStatus.answered.value,
+            composer_reply=reply_text,
+        )
+        _registry.inc_counter("harness_composer_interactions_answered_total")
+        # Emit events into the task timeline.
+        storage.append_event(interaction.task_id,
+                             "composer.interaction.answered",
+                             {"interaction_id": interaction_id})
+        storage.append_event(interaction.task_id,
+                             "agent.resumed",
+                             {"interaction_id": interaction_id,
+                              "session_id": interaction.session_id})
+        return JSONResponse(
+            {"interaction_id": interaction_id,
+             "status": "answered",
+             "session_id": interaction.session_id}
+        )
+
+    @mcp.custom_route("/interactions/{interaction_id}/cancel", methods=["POST"])
+    async def cancel_interaction(request: Request):
+        interaction_id = request.path_params["interaction_id"]
+        interaction = harness_storage.get_interaction(interaction_id)
+        if interaction is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"Interaction '{interaction_id}' not found"})
+        if interaction.status != ComposerInteractionStatus.pending.value:
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"Interaction is not pending (status={interaction.status})"})
+        harness_storage.update_interaction_status(
+            interaction_id, ComposerInteractionStatus.cancelled.value,
+        )
+        return JSONResponse(
+            {"interaction_id": interaction_id, "status": "cancelled"}
+        )
+
+    # -- Verification + artifacts ----------------------------------------
+
+    @mcp.custom_route("/agent-runs/{agent_run_id}/verification",
+                      methods=["GET"])
+    async def get_verification(request: Request):
+        agent_run_id = request.path_params["agent_run_id"]
+        vr = harness_storage.get_verification_run_by_agent_run(agent_run_id)
+        if vr is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "No verification run found"})
+        return JSONResponse({
+            "id": vr.id,
+            "agent_run_id": vr.agent_run_id,
+            "task_id": vr.task_id,
+            "status": vr.status,
+            "started_at": vr.started_at,
+            "completed_at": vr.completed_at,
+            "commands": [c.__dict__ for c in vr.commands],
+            "metadata": vr.metadata,
+        })
+
+    @mcp.custom_route("/agent-runs/{agent_run_id}/verify", methods=["POST"])
+    async def trigger_verification(request: Request):
+        """Trigger a fresh verification run for the agent_run.
+
+        The runtime orchestrator runs verification automatically, but
+        Composer can also trigger an explicit re-verification via this
+        endpoint. Returns the resulting VerificationRun as JSON.
+        """
+        agent_run_id = request.path_params["agent_run_id"]
+        worktree = harness_storage.get_worktree_by_run(agent_run_id)
+        if worktree is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"No worktree found for agent_run {agent_run_id}"},
+            )
+        session = harness_storage.get_session(
+            harness_storage.get_session_by_task(worktree.task_id).id
+            if harness_storage.get_session_by_task(worktree.task_id)
+            else ""
+        ) if harness_storage.get_session_by_task(worktree.task_id) else None
+        # Pull existing verification commands from the task spec
+        task = storage.get_task(worktree.task_id)
+        if task is None:
+            return JSONResponse(status_code=404, content={"error": "task not found"})
+        import json as _json
+        try:
+            spec = _json.loads(task.input) if task.input else {}
+        except (ValueError, TypeError):
+            spec = {}
+        from agents_gateway.harness.verification import (
+            VerificationCommand, VerificationRunner,
+        )
+        vrunner = VerificationRunner(
+            storage=harness_storage,
+            artifacts_root=config.harness.artifacts_root,
+        )
+        cmds = []
+        for c in spec.get("verification", {}).get("commands", []):
+            cmds.append(VerificationCommand(
+                name=str(c.get("name", "cmd")),
+                command=str(c.get("command", "")),
+                required=bool(c.get("required", True)),
+                live_e2e=False, env_required=[],
+            ))
+        live_e2e = spec.get("verification", {}).get("live_e2e") or {}
+        if live_e2e.get("required"):
+            cmds.append(VerificationCommand(
+                name=str(live_e2e.get("name", "live_e2e")),
+                command=str(live_e2e.get("command", "")),
+                required=bool(live_e2e.get("required", False)),
+                live_e2e=True,
+                env_required=list(live_e2e.get("env_required", []) or []),
+            ))
+        if not cmds:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No verification commands configured"})
+        session_obj = None
+        existing_sessions = harness_storage.list_sessions(task_id=worktree.task_id)
+        if existing_sessions:
+            session_obj = existing_sessions[0]
+        vr = vrunner.run(agent_run_id, worktree.task_id, worktree.path,
+                         cmds, session=session_obj)
+        return JSONResponse({
+            "id": vr.id, "agent_run_id": vr.agent_run_id,
+            "task_id": vr.task_id, "status": vr.status,
+            "commands": [c.__dict__ for c in vr.commands],
+        })
+
+    @mcp.custom_route("/agent-runs/{agent_run_id}/artifacts", methods=["GET"])
+    async def list_run_artifacts(request: Request):
+        agent_run_id = request.path_params["agent_run_id"]
+        artifacts = harness_storage.list_harness_artifacts(agent_run_id=agent_run_id)
+        return JSONResponse({"artifacts": artifacts})
+
+    @mcp.custom_route("/artifacts/{artifact_id}", methods=["GET"])
+    async def get_artifact(request: Request):
+        artifact_id = request.path_params["artifact_id"]
+        artifact = harness_storage.get_harness_artifact(artifact_id)
+        if artifact is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"Artifact '{artifact_id}' not found"})
+        # If viewer=true and the artifact is on the local filesystem,
+        # return the content streaming from disk.
+        if request.query_params.get("view") == "true":
+            from pathlib import Path
+            try:
+                p = Path(artifact["path"])
+                if not p.exists():
+                    return JSONResponse(status_code=410,
+                                        content={"error": "artifact file missing"})
+                content = p.read_bytes()
+                return Response(content, media_type=artifact.get("mime_type",
+                                                                "application/octet-stream"))
+            except Exception as e:
+                return JSONResponse(status_code=500,
+                                    content={"error": f"read failed: {e}"})
+        return JSONResponse(artifact)
+
+    return mcp  # end of create_app
 
 
 def create_asgi_app(config: GatewayConfig, reg: MetricsRegistry | None = None):
