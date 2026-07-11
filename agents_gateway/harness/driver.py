@@ -121,6 +121,24 @@ class HarnessDriver:
         self.storage.save_session(session)
         self._emit(session, "session.created", {"profile": profile.name})
 
+        # Wait for the harness process to be ready before injecting the
+        # goal. Full-screen TUI harnesses (opencode, claude-code) need
+        # time to render their UI after spawning; if we send text too
+        # early the keystrokes are lost. We poll the tmux pane until it
+        # has content (indicating the TUI has rendered) or a short
+        # timeout expires. The FakeTmuxDriver doesn't need this.
+        if not isinstance(self.tmux, FakeTmuxDriver):
+            import time as _time
+            _ready_deadadline = _time.time() + 15.0
+            while _time.time() < _ready_deadadline:
+                try:
+                    _early = self.tmux.capture(self._ref(session), lines=50)
+                except Exception:
+                    _early = ""
+                if _early and _early.strip():
+                    break
+                _time.sleep(1.0)
+
         # Inject goal if provided.
         if goal_context is not None:
             try:

@@ -332,3 +332,152 @@ class TestEventEmissions:
         assert "composer.interaction.cancelled" in event_names, (
             f"Expected composer.interaction.cancelled event, got: {event_names}"
         )
+
+
+# ---------------------------------------------------------------------------
+# /tasks/{id} detailed harness state exposure
+# (runtime_status, blockers, interaction_pending)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskDetailedHarnessState:
+    """Verify that /tasks/{id} exposes runtime_status, blockers, and
+    interaction_pending as non-breaking top-level fields, allowing
+    Composer to distinguish waiting_for_reply / blocked_external /
+    stalled without breaking the legacy task status field."""
+
+    def _make_task_and_session(self, server, tmp_path, *,
+                                session_status):
+        """Helper: create a harness task + session with given status."""
+        hs: HarnessStorage = server._harness_storage
+        ts: TaskStorage = server._task_storage
+        spec = {
+            "title": "detailed-state-test",
+            "brief": "test",
+            "execution": {"harness_profile": "fake-test",
+                           "mode": "harness_session"},
+            "goal": {"strategy": "auto", "text": "/goal nothing"},
+            "verification": {"required": False, "commands": []},
+        }
+        task = ts.create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"},
+        )
+        ts.update_task_status(task.id, "queued")
+        ts.update_task_status(task.id, "running")
+        s = HarnessSession.new(
+            agent_run_id=task.id, task_id=task.id,
+            harness_profile="fake-test", harness="fake",
+            tmux_session="agw_" + str(task.id)[:8],
+            working_directory=str(tmp_path),
+        )
+        s.status = session_status
+        hs.save_session(s)
+        return task, s
+
+    def test_no_session_yields_null_runtime_status(self, server):
+        """A task with no harness session has runtime_status=null,
+        empty blockers, interaction_pending=False."""
+        ts: TaskStorage = server._task_storage
+        nd: dict = {"title": "no-session", "brief": "test"}
+        task = ts.create_harness_task(
+            agent_id="process", task_spec=nd,
+            metadata={"runtime_type": "process"},
+        )
+        resp = server.get(f"/tasks/{task.id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["runtime_status"] is None
+        assert body["blockers"] == []
+        assert body["interaction_pending"] is False
+
+    def test_waiting_for_reply_exposed(self, server, tmp_path):
+        """runtime_status=waiting_for_reply, legacy status=waiting,
+        interaction_pending=False (no pending interaction created)."""
+        task, s = self._make_task_and_session(
+            server, tmp_path,
+            session_status=HarnessSessionStatus.waiting_for_reply.value,
+        )
+        resp = server.get(f"/tasks/{task.id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["runtime_status"] == "waiting_for_reply"
+        # Legacy status still exists and separate from runtime_status.
+        assert body["status"] in ("waiting", "running")
+        assert body["runtime_status"] != body["status"]
+        assert body["blockers"] == []
+        assert body["interaction_pending"] is False
+
+    def test_blocked_external_exposed_with_blocker(self, server, tmp_path):
+        """runtime_status=blocked_external, blockers list populated.
+        Legacy status is whatever the worker last set (not translated
+        on read); runtime_status is the authoritative distinction."""
+        task, s = self._make_task_and_session(
+            server, tmp_path,
+            session_status=HarnessSessionStatus.blocked_external.value,
+        )
+        resp = server.get(f"/tasks/{task.id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["runtime_status"] == "blocked_external"
+        assert body["runtime_status"] != body["status"]
+        assert len(body["blockers"]) >= 1
+        assert any("blocked_external" in b for b in body["blockers"])
+
+    def test_stalled_exposed_with_blocker(self, server, tmp_path):
+        """runtime_status=stalled, blockers list populated."""
+        task, s = self._make_task_and_session(
+            server, tmp_path,
+            session_status=HarnessSessionStatus.stalled.value,
+        )
+        resp = server.get(f"/tasks/{task.id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["runtime_status"] == "stalled"
+        assert body["runtime_status"] != body["status"]
+        assert len(body["blockers"]) >= 1
+        assert any("stalled" in b for b in body["blockers"])
+
+    def test_interaction_pending_true_when_pending_interaction_exists(
+            self, server, tmp_path):
+        """interaction_pending=True when a pending Composer
+        interaction exists for the task."""
+        task, s = self._make_task_and_session(
+            server, tmp_path,
+            session_status=HarnessSessionStatus.waiting_for_reply.value,
+        )
+        hs: HarnessStorage = server._harness_storage
+        inter = ComposerInteraction.new(
+            agent_run_id=task.id, task_id=task.id, session_id=s.id,
+            type_=ComposerInteractionType.needs_reply.value,
+            prompt_excerpt="waiting for clarification",
+            full_context_ref="",
+        )
+        hs.save_interaction(inter)
+        resp = server.get(f"/tasks/{task.id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["runtime_status"] == "waiting_for_reply"
+        assert body["interaction_pending"] is True
+
+    def test_three_states_distinguishable_in_list_view(self, server, tmp_path):
+        """/tasks (list) returns all three distinct runtime_status values
+        so Composer can distinguish them in a dashboard view."""
+        states = [
+            HarnessSessionStatus.waiting_for_reply.value,
+            HarnessSessionStatus.blocked_external.value,
+            HarnessSessionStatus.stalled.value,
+        ]
+        for st in states:
+            self._make_task_and_session(
+                server, tmp_path, session_status=st)
+        resp = server.get("/tasks")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        tasks = body.get("tasks", body)
+        statuses = {t.get("runtime_status") for t in tasks
+                    if t.get("runtime_status") is not None}
+        assert states[0] in statuses
+        assert states[1] in statuses
+        assert states[2] in statuses
+        assert len({states[0], states[1], states[2]} & statuses) == 3

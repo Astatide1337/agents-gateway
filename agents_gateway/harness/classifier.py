@@ -68,11 +68,25 @@ COMPLETION_MARKERS: tuple[str, ...] = (
     "\ndone\n",
     "\ndone:",
     "done.\n",
+    "done. ",
     "completed.\n",
     "task complete",
     "all tests passed",
     "verification passed",
     "all required verification",
+    # Opencode / Claude Code natural language completion patterns.
+    # These match phrases that appear when the agent finishes its task
+    # and reports the result to the user.
+    "both tests pass",
+    "tests pass (",
+    "tests passed",
+    "passed in",
+    "all tests pass",
+    "task is complete",
+    "i'm done",
+    "finished.",
+    "changes have been made",
+    "implementation complete",
 )
 
 

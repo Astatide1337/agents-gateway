@@ -109,12 +109,27 @@ def _enrich_task(task, harness_storage: "HarnessStorage") -> dict[str, Any]:
     The legacy ``status`` field is still authoritative for the
     state-machine view; ``harness.status`` is the harness-runtime view.
     Conductor reconciles by reading both.
+
+    Additionally, three non-breaking top-level fields are added so
+    Composer can distinguish ``waiting_for_reply`` / ``blocked_external``
+    / ``stalled`` without inspecting the ``harness`` sub-object:
+
+    - ``runtime_status``: the raw HarnessSessionStatus value (or null
+      when the task has no harness session).
+    - ``blockers``: list of human-readable blocker strings (e.g.
+      missing binary/credential or verification blockers). Empty when
+      the session is healthy.
+    - ``interaction_pending``: True when there is at least one
+      ``pending`` Composer interaction on this task awaiting a reply.
     """
     d = task.model_dump()
     try:
         session = harness_storage.get_session_by_task(task.id)
     except Exception:
         session = None
+    d["runtime_status"] = None
+    d["blockers"] = []
+    d["interaction_pending"] = False
     if session is not None:
         d["harness"] = {
             "session_id": session.id,
@@ -125,7 +140,48 @@ def _enrich_task(task, harness_storage: "HarnessStorage") -> dict[str, Any]:
             "started_at": session.started_at,
             "ended_at": session.ended_at,
         }
+        d["runtime_status"] = session.status
+        d["blockers"] = _blockers_for(harness_storage, session)
+        d["interaction_pending"] = _interaction_pending(harness_storage, task.id)
     return d
+
+
+def _blockers_for(harness_storage: "HarnessStorage",
+                  session: "HarnessSession") -> list[str]:
+    """Collect human-readable blockers for a harness session."""
+    blockers: list[str] = []
+    if session.status == "blocked_external":
+        blockers.append("blocked_external: missing binary or credential")
+    if session.status == "stalled":
+        blockers.append("stalled: tmux session missing after restart")
+    try:
+        vr = harness_storage.get_verification_run_by_agent_run(
+            session.agent_run_id)
+    except Exception:
+        vr = None
+    if vr is not None:
+        for cmd in vr.commands:
+            if cmd.blocked and cmd.blocked_reason:
+                blockers.append(
+                    f"verification: {cmd.name}: {cmd.blocked_reason}")
+    if session.status == "failed" and session.metadata:
+        for key, value in session.metadata.items():
+            if "error" in key.lower() and isinstance(value, str):
+                blockers.append(value)
+                break
+    return blockers
+
+
+def _interaction_pending(harness_storage: "HarnessStorage",
+                         task_id: str) -> bool:
+    """True when there is a pending (unanswered) Composer interaction."""
+    try:
+        inters = harness_storage.list_interactions(
+            status=ComposerInteractionStatus.pending.value,
+            task_id=task_id)
+    except Exception:
+        return False
+    return bool(inters)
 
 
 def _worktree_id_for(harness_storage: "HarnessStorage", task_id: str) -> str | None:

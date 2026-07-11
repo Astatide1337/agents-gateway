@@ -151,7 +151,7 @@ trap cleanup EXIT
 git init -q -b master "$SCRATCH_REPO" 2>/dev/null || (
     cd "$SCRATCH_REPO" && git init -q && git symbolic-ref HEAD refs/heads/master
 )
-mkdir -p "${SCRATCH_REPO}/src"
+mkdir -p "${SCRATCH_REPO}/src" "${SCRATCH_REPO}/tests"
 cat > "${SCRATCH_REPO}/src/calculator.py" <<'PY'
 def add(a, b):
     return a + b

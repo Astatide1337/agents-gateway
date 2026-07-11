@@ -68,14 +68,40 @@ class TmuxDriver:
         return TmuxSessionRef(session=session_name, window="main", pane="0")
 
     def send_text(self, ref: TmuxSessionRef, text: str) -> None:
-        """Send text into the pane without pressing Enter."""
+        """Send text into the pane without pressing Enter.
+
+        We use plain ``send-keys`` (no ``-l``) because full-screen TUI
+        harnesses (opencode, claude-code) use raw terminal mode and
+        don't process literal bytes the same way a shell prompt does.
+        Plain send-keys translates spaces and printable characters into
+        key events which the TUI picks up correctly.
+
+        For multi-line text, we send each line separately (without
+        pressing Enter) so the receiving application can gather the
+        complete text before the caller invokes ``send_enter``.
+
+        Special characters that tmux interprets as key names (e.g.
+        ``Enter``, ``Escape``, ``Space``) are sent via the ``-l`` flag
+        to preserve their literal meaning.
+        """
         target = self._target(ref)
-        # -l preserves literal characters incl. spaces; do NOT use -H which
-        # interprets hex/octal escapes and could swallow text.
-        argv = [self.tmux_bin, "send-keys", "-t", target, "-l", text]
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
-        if proc.returncode != 0:
-            raise RuntimeError(f"tmux send_text failed: {proc.stderr.strip()}")
+        # Split on newlines and send each line separately.
+        for line in text.split("\n"):
+            if line:
+                argv = [self.tmux_bin, "send-keys", "-t", target, line]
+                proc = subprocess.run(
+                    argv, capture_output=True, text=True, timeout=10)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"tmux send_text failed: {proc.stderr.strip()}")
+            # Send a literal newline via -l to avoid tmux interpreting "Enter"
+            # as a key name.
+            argv = [self.tmux_bin, "send-keys", "-t", target, "-l", "\n"]
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=10)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"tmux send_text failed: {proc.stderr.strip()}")
 
     def send_enter(self, ref: TmuxSessionRef) -> None:
         target = self._target(ref)
