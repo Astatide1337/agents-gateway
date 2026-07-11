@@ -56,13 +56,19 @@ Agents Gateway splits into two execution planes that share a single SQLite store
 ### Harness-runtime plane (`agents_gateway/harness/*.py`)
 
 - HTTP + MCP API for Composer-driven long-horizon agent runs
-- Bypasses `AgentCatalog` entirely — composer-controlled tasks have no fixed agent manifest
+- Now flows through `AgentCatalog` (harness profiles are catalog
+  entries) and `RuntimeRegistry` (`HarnessSessionRuntimeAdapter`)
+  — no longer a bypass
 - Each task gets an isolated git worktree, a tmux-backed harness session, and an artifact tree
 - Sessions are supervised by a background thread; composer replies keep the agent going
 - Verification commands are mandatory before `completed` status is granted
 - A structured `HarnessRunResult` with diff/commit/artifacts is returned to Composer
+- On gateway restart, `reconcile_harness_sessions()` recovers alive
+  sessions and marks missing sessions `stalled` so Composer can
+  intervene
 
-The legacy plane is preserved verbatim; the harness-runtime plane is purely additive.
+The legacy plane is preserved verbatim; the harness-runtime plane is
+purely additive and now shares the same dispatch path.
 
 ## Module map
 
@@ -70,20 +76,22 @@ The legacy plane is preserved verbatim; the harness-runtime plane is purely addi
 agents_gateway/
 ├── server.py             ASGI app, routes, auth middleware
 ├── auth.py               dev-none, internal-only, cloudflare-access
-├── catalog.py            agent manifest scanning
+├── catalog.py            agent manifest scanning + harness catalog entries + availability
 ├── storage.py            task state machine + harness task creation
-├── runtime.py            StubRuntime / ProcessRuntime / DockerRuntime
-├── worker.py             background task worker (legacy + harness)
-├── mcp_tools.py          FastMCP tool registration
-├── config.py             GatewayConfig + HarnessRuntimeConfig
+├── runtime.py            StubRuntime / ProcessRuntime / DockerRuntime + HarnessSessionRuntimeAdapter
+├── harness_runtime_adapter.py  wraps HarnessRuntime for RuntimeRegistry dispatch
+├── worker.py             background task worker (unified dispatch via RuntimeRegistry)
+├── mcp_tools.py          FastMCP tool registration (legacy + harness + agents_* aliases)
+├── config.py             GatewayConfig + HarnessRuntimeConfig (incl. retention)
 ├── logging.py            structured logging with header redaction
 ├── metrics.py            Prometheus-style counters
+├── redact.py             redaction helpers for session captures
 └── harness/
     ├── models.py         dataclasses for sessions, worktrees, verifications
     ├── profiles.py       builtin harness profiles (opencode-deepseek, claude-code, codex, fake-test)
-    ├── tmux.py           TmuxDriver (real) + FakeTmuxDriver (tests)
+    ├── tmux.py           Tmux Driver (real) + FakeTmuxDriver (tests)
     ├── driver.py         HarnessDriver: start+goal+classify+reply+stop
-    ├── goal.py           GoalContext + inject_goal (slash, plain, file_modes)
+    ├── goal.py           GoalContext + inject_goal (slash, plain, file_based)
     ├── classifier.py     classify_state from recent tmux capture
     ├── supervisor.py     SessionSupervisor background loop
     ├── workspace.py      RepoWorkspaceManager: clone/fetch/worktree
@@ -94,7 +102,9 @@ agents_gateway/
     ├── git.py            diff capture + commit / push / open PR
     ├── client_skills.py  Skills Gateway validation client
     ├── client_mcp.py     MCP Gateway tools-summary + TOOLS.md rendering
-    └── runtime.py        HarnessRuntime.execute_task full lifecycle
+    ├── runtime.py        HarnessRuntime.execute_task full lifecycle
+    ├── reconcile.py      restart reconciliation — recover alive sessions
+    └── cleanup.py        retention cleanup — artifact + worktree pruning
 ```
 
 ## Data store
@@ -118,23 +128,6 @@ All tables use `CREATE TABLE IF NOT EXISTS` so existing deployments upgrade in p
 -tmux sessions are independent OS processes; concurrent harness runs do not share state
 
 ## Known limitations / TODOs
-
-### `harness_session` bypasses `RuntimeRegistry` and `AgentCatalog`
-
-The `harness_session` execution mode routes directly from the worker to
-`HarnessRuntime` by checking `task.metadata.runtime_type == "harness_session"`.
-It does NOT go through the `RuntimeRegistry` or consult agent manifests.
-
-**TODO**: Register a `HarnessRuntimeAdapter` in the `RuntimeRegistry` so that
-`harness_session` tasks flow through the same `runtime_type` dispatch path
-as `process` and `docker` runtimes. This would:
-- Allow agent manifests to configure harness profiles and goal strategies.
-- Let the worker dispatch generically via `registry.create("harness_session", ...)`.
-- Enable legacy task-level safety checks (risk-level gating, manifest validation)
-  before a harness session starts.
-
-Until then, Composer is the trust boundary for which harness profile + repo
-URL + skills to invoke — not Agents Gateway.
 
 ### Containerized harness sessions
 

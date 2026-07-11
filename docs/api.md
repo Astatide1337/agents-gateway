@@ -49,6 +49,7 @@ State transitions required by the legacy task model: `created → queued → run
 | `GET` | `/harness-profiles` | List all registered profiles |
 | `GET` | `/harness-profiles/{name}` | Get a single profile |
 | `POST` | `/harness-profiles/validate` | Validate goal strategy compatibility |
+| `GET` | `/harness-profiles/{name}/availability` | Structured availability report (binary_present, credentials_present, runnable) |
 
 The validate endpoint accepts a JSON body:
 
@@ -91,17 +92,26 @@ Returned shape:
 | `GET` | `/sessions` | List sessions (filters: `status`, `task_id`) |
 | `GET` | `/sessions/{id}` | Get a single session |
 | `GET` | `/tasks/{task_id}/session` | Get the active session for a task |
-| `GET` | `/sessions/{id}/capture` | Capture recent tmux output |
-| `POST` | `/sessions/{id}/send` | Send text into the session |
+| `GET` | `/sessions/{id}/capture` | Capture recent tmux output (redacted, returns structured response) |
+| `POST` | `/sessions/{id}/send` | Send text into the session (emits `composer.session_send` event) |
 | `POST` | `/sessions/{id}/stop` | Force-stop the session |
 
-`POST /sessions/{id}/send` body:
+`GET /sessions/{id}/capture?lines=N` returns:
 
 ```json
-{"text": "Continue working on the spec.", "submit": true}
+{
+  "session_id": "session_...",
+  "status": "running",
+  "capture": "<redacted tmux output text>",
+  "captured_at": "2024-01-01T00:00:00Z",
+  "lines": 42
+}
 ```
 
-If `submit` is true (default), the gateway sends `<Enter>` after the text.
+The `capture` field is passed through `redact_text()` which applies
+the same redaction patterns as the HTML review reports
+(`Authorization` headers, GitHub tokens, URL credentials, etc.) so
+no secrets leak to Composer clients.
 
 ### Interactions
 
@@ -110,7 +120,7 @@ If `submit` is true (default), the gateway sends `<Enter>` after the text.
 | `GET` | `/interactions` | List interactions (filters: `status`, `task_id`, `agent_run_id`) |
 | `GET` | `/interactions/{id}` | Get a single interaction |
 | `POST` | `/interactions/{id}/reply` | Composer replies; text delivered into the session |
-| `POST` | `/interactions/{id}/cancel` | Composer cancels the interaction |
+| `POST` | `/interactions/{id}/cancel` | Composer cancels the interaction (emits `composer.interaction.cancelled` event) |
 
 `POST /interactions/{id}/reply` body:
 
@@ -161,6 +171,58 @@ The `POST /verify` endpoint reads the verification commands from the stored task
 correct `Content-Type` (defaults to
 `application/octet-stream` if the artifact has no recorded mime type).
 
+### Unified agent-run view
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/agent-runs/{id}` | Unified view: task record + harness block (session_id, status, harness_profile, worktree_id) + full event stream |
+
+Returns:
+
+```json
+{
+  "id": "task_...",
+  "agent_id": "opencode-deepseek",
+  "status": "completed",
+  "input": "{...}",
+  "created_at": "...",
+  "updated_at": "...",
+  "harness": {
+    "session_id": "session_...",
+    "status": "completed",
+    "harness_profile": "opencode-deepseek",
+    "worktree_id": "wt_..."
+  },
+  "events": [
+    {"task_id": "task_...", "type": "task.received", "data": {...}, "created_at": "..."},
+    {"task_id": "task_...", "type": "runtime_selected", "data": {...}, "created_at": "..."},
+    ...
+    {"task_id": "task_...", "type": "agent_run.completed", "data": {...}, "created_at": "..."}
+  ]
+}
+```
+
+### Cleanup / retention
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/cleanup/dry-run` | Preview what would be deleted under the retention policy (no disk changes) |
+| `POST` | `/cleanup/run` | Execute retention cleanup (honours `cleanup_dry_run`; use `?force=true` to override) |
+
+Retention config env vars:
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `AGW_HARNESS__ARTIFACT_RETENTION_DAYS` | `14` | Artifacts older than this are pruning candidates |
+| `AGW_HARNESS__WORKTREE_RETENTION_DAYS` | `7` | Worktrees older than this are pruning candidates |
+| `AGW_HARNESS__MAX_ARTIFACT_BYTES` | `1073741824` (1 GB) | Total artifact budget — oldest artifacts over budget are pruned |
+| `AGW_HARNESS__CLEANUP_DRY_RUN` | `true` | When `true`, `/cleanup/run` acts as a dry-run unless `?force=true` |
+
+Cleanup **never** touches sessions that are still active (`status in
+(created, starting, running, waiting_for_reply, verifying)`) or their
+worktrees. Pruned artifacts are removed from disk but the DB row is
+retained for audit trail.
+
 ### Harness task creation
 
 `POST /tasks` accepts harness-session tasks when any of these conditions holds:
@@ -173,4 +235,37 @@ The full task body is preserved as-is in the `input` column. The legacy `agent_i
 
 ### MCP protocol
 
-The MCP protocol is served at `POST /mcp`. The tool inventory includes both legacy `agent_*` tools and new `harness_*` tools — see `docs/runtime.md` for the full tool inventory.
+The MCP protocol is served at `POST /mcp`. The tool inventory includes:
+
+**Legacy task tools:**
+- `agents_list` — list agent catalog entries
+- `agents_search` — search agents by keyword
+- `agents_inspect` — get one agent's manifest
+- `agent_task_create` — create a legacy task
+- `agent_task_get` — get a task record
+- `agent_task_events` — list task events
+
+**Harness tools (`harness_*` prefix):**
+- `harness_task_create` — create a harness_session task
+- `harness_task_run` — enqueue a harness task
+- `harness_list_worktrees` — list all worktrees
+- `harness_list_sessions` — list harness sessions
+- `harness_get_session` — get one harness session
+- `harness_get_session_capture` — capture tmux output
+- `harness_send_to_session` — send text into a session
+- `harness_stop_session` — force-stop a session
+- `harness_list_interactions` — list Composer interactions
+- `harness_get_interaction` — get one interaction
+- `harness_reply_interaction` — Composer reply to an interaction
+- `harness_get_verification` — get latest verification run
+- `harness_list_artifacts` — list proof artifacts
+- `harness_get_artifact` — get artifact metadata or content
+
+**Unified tools (`agents_*` prefix — recommended for new clients):**
+- `agents_check_harness_availability` — structured availability report for a profile
+- `agents_list_sessions` — list harness sessions (task_id/status filter)
+- `agents_get_session` — get one harness session
+- `agents_capture_session` — redacted tmux capture (structured response)
+- `agents_send_session` — send text into a session + emit `composer.session_send` event
+- `agents_list_interactions` — list Composer interactions
+- `agents_reply_interaction` — Composer reply (delivers to session + emits event)

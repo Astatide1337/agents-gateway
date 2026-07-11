@@ -78,6 +78,7 @@ PUBLIC_PREFIXES = (
     "/.well-known/",
 )
 
+
 # OAuth flow paths. /authorize must be Cloudflare-Access-protected at the
 # edge (documented assumption). /token and /register are reachable by MCP
 # clients but enforce flow integrity at the handler level. /register and
@@ -95,6 +96,46 @@ def _is_public(path: str) -> bool:
     return False
 
 
+def _enrich_task(task, harness_storage: "HarnessStorage") -> dict[str, Any]:
+    """Augment a TaskRecord with harness-runtime state for /tasks{,/{id}}.
+
+    Adds a ``harness`` block to the response when the task has a
+    corresponding harness session — this is the bridge between the
+    legacy task state machine (created/queued/running/waiting/
+    completed/failed/cancelled) and the richer harness session state
+    (created/starting/running/waiting_for_reply/verifying/
+    completed/blocked_external/failed/cancelled/stalled).
+
+    The legacy ``status`` field is still authoritative for the
+    state-machine view; ``harness.status`` is the harness-runtime view.
+    Conductor reconciles by reading both.
+    """
+    d = task.model_dump()
+    try:
+        session = harness_storage.get_session_by_task(task.id)
+    except Exception:
+        session = None
+    if session is not None:
+        d["harness"] = {
+            "session_id": session.id,
+            "status": session.status,
+            "harness_profile": session.harness_profile,
+            "tmux_session": session.tmux_session,
+            "worktree_id": _worktree_id_for(harness_storage, task.id),
+            "started_at": session.started_at,
+            "ended_at": session.ended_at,
+        }
+    return d
+
+
+def _worktree_id_for(harness_storage: "HarnessStorage", task_id: str) -> str | None:
+    try:
+        wt = harness_storage.get_worktree_by_task(task_id)
+        return wt.id if wt else None
+    except Exception:
+        return None
+
+
 def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> FastMCP:
     _registry = reg or registry
     setup_logging(
@@ -104,8 +145,37 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
 
     auth_handler = AuthHandler(config.auth)
     storage = TaskStorage(config.storage.sqlite_path)
-    runtime_registry = create_default_registry(config.runtime)
+    # Build the harness runtime config once so it can be shared with
+    # the HarnessSessionRuntimeAdapter via the RuntimeRegistry.
+    config.runtime._environment = config.environment
+    from agents_gateway.harness.runtime import HarnessRuntimeConfig
+    harness_runtime_cfg = HarnessRuntimeConfig(
+        workspace_root=config.harness.workspace_root,
+        worktree_root=config.harness.worktree_root,
+        artifacts_root=config.harness.artifacts_root,
+        session_poll_interval_seconds=config.harness.session_poll_interval_seconds,
+        session_stall_seconds=config.harness.session_stall_seconds,
+        auto_commit=config.harness.auto_commit,
+        auto_push=config.harness.auto_push,
+        auto_pr=config.harness.auto_pr,
+        use_fake_tmux=config.harness.use_fake_tmux,
+        command_timeout_seconds=config.harness.command_timeout_seconds,
+        completion_wait_seconds=config.harness.completion_wait_seconds,
+        relay_max_time_seconds=config.harness.relay_max_time_seconds,
+        max_verify_iterations=config.harness.max_verify_iterations,
+    )
+    runtime_registry = create_default_registry(
+        config.runtime, harness_config=harness_runtime_cfg)
     harness_storage = HarnessStorage(config.storage.sqlite_path)
+
+    # Single shared tmux driver so all session-level endpoints
+    # (send/capture/stop) honor the gateway ``use_fake_tmux`` flag
+    # instead of forcing a real TmuxDriver() instance.
+    from agents_gateway.harness.tmux import (FakeTmuxDriver,
+                                              TmuxDriver)
+    _shared_tmux_driver = (FakeTmuxDriver()
+                           if config.harness.use_fake_tmux
+                           else TmuxDriver())
 
     if config.observability.metrics_enabled:
         init_gateway_metrics(_registry)
@@ -129,31 +199,30 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
 
     # Background worker for off-request-path task execution. Pass the
     # environment onto the runtime config so ProcessRuntime can self-gate
-    # in production. The harness_config drives the harness_session task
-    # runtime path.
-    config.runtime._environment = config.environment
-    from agents_gateway.harness.runtime import HarnessRuntimeConfig
-    harness_runtime_cfg = HarnessRuntimeConfig(
-        workspace_root=config.harness.workspace_root,
-        worktree_root=config.harness.worktree_root,
-        artifacts_root=config.harness.artifacts_root,
-        session_poll_interval_seconds=config.harness.session_poll_interval_seconds,
-        session_stall_seconds=config.harness.session_stall_seconds,
-        auto_commit=config.harness.auto_commit,
-        auto_push=config.harness.auto_push,
-        auto_pr=config.harness.auto_pr,
-        use_fake_tmux=config.harness.use_fake_tmux,
-        command_timeout_seconds=config.harness.command_timeout_seconds,
-        completion_wait_seconds=config.harness.completion_wait_seconds,
-        relay_max_time_seconds=config.harness.relay_max_time_seconds,
-        max_verify_iterations=config.harness.max_verify_iterations,
-    )
+    # in production. The harness_config is already set on the registry
+    # above and the HarnessSessionRuntimeAdapter reads it from there.
     worker = TaskWorker(storage=storage, catalog=catalog,
                         runtime_registry=runtime_registry,
                         runtime_config=config.runtime,
                         artifacts_dir=config.storage.artifacts_dir,
                         harness_config=harness_runtime_cfg)
     worker.start()
+
+    # Reconcile any harness tmux sessions that survived a gateway
+    # process restart. Cheap: one ``tmux has-session`` per
+    # recoverable session. Runs synchronously at boot so by the time
+    # the gateway advertises ready the picture is consistent.
+    try:
+        from agents_gateway.harness.reconcile import reconcile_harness_sessions
+        rr = reconcile_harness_sessions(harness_storage)
+        log_event("harness_reconcile",
+                  f"recovered={len(rr.recovered)}, "
+                  f"missing={len(rr.missing)}, "
+                  f"skipped={len(rr.skipped)}")
+    except Exception as e:
+        log_event("harness_reconcile_error",
+                  f"reconciliation failed: {e}",
+                  level="WARNING")
 
     # Auth middleware that runs for every Starlette route (including
     # custom_route handlers and /mcp). We attach it to the FastMCP instance
@@ -406,9 +475,18 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
     # Agent catalog HTTP API (PROTECTED)
     @mcp.custom_route("/agents", methods=["GET"])
     async def list_agents(request: Request):
+        # Manifest-backed agents.
         agents = catalog.list_agents()
-        log_event("agent_list", f"Listed {len(agents)} agents")
-        return JSONResponse({"agents": [a.model_dump() for a in agents]})
+        manifest_entries = [a.model_dump() for a in agents]
+        # Harness-profile entries (harness_session runtime type).
+        harness_entries = [e.model_dump() for e in catalog.list_harness_profiles()]
+        log_event("agent_list",
+                  f"Listed {len(manifest_entries)} manifest agents + "
+                  f"{len(harness_entries)} harness profiles")
+        return JSONResponse({
+            "agents": manifest_entries,
+            "harness_profiles": harness_entries,
+        })
 
     @mcp.custom_route("/agents/validate", methods=["POST"])
     async def validate_agents(request: Request):
@@ -418,12 +496,19 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
     @mcp.custom_route("/agents/{agent_id}", methods=["GET"])
     async def get_agent(request: Request):
         agent_id = request.path_params["agent_id"]
+        # First check the manifest catalog.
         agent = catalog.get_agent(agent_id)
-        if agent is None:
-            return JSONResponse(status_code=404,
-                                content={"error": f"Agent '{agent_id}' not found"})
-        log_event("agent_inspect", f"Inspected agent {agent_id}", agent_id=agent_id)
-        return JSONResponse(agent.model_dump())
+        if agent is not None:
+            log_event("agent_inspect",
+                      f"Inspected agent {agent_id}", agent_id=agent_id)
+            return JSONResponse(agent.model_dump())
+        # Then the harness-profile catalog so /agents/opencode-deepseek
+        # returns the harness entry instead of 404.
+        harness_entry = catalog.get_harness_profile_entry(agent_id)
+        if harness_entry is not None:
+            return JSONResponse(harness_entry.model_dump())
+        return JSONResponse(status_code=404,
+                            content={"error": f"Agent '{agent_id}' not found"})
 
     # Tasks HTTP API (PROTECTED)
     @mcp.custom_route("/tasks", methods=["POST"])
@@ -433,18 +518,29 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         except Exception:
             return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
         agent_id = body.get("agent_id", "")
-        # Harness-session path: when the request shape includes an
-        # `execution.mode == "harness_session"` (or agent_id literally
-        # equals "harness_session"), the task is composer-controlled
-        # and bypasses the agent catalog. The full task spec is stored
-        # in task.input (JSON) + task.metadata so the worker can route
-        # it to HarnessRuntime.
-        is_harness = (
+        # Harness-session path: a task is composer-controlled when
+        #   * the body declares execution.mode == "harness_session"
+        #   * the body declares runtime_type == "harness_session"
+        #   * agent_id is literally "harness_session"
+        #   * agent_id matches a known harness profile (so callers can
+        #     create a task with agent_id="opencode-deepseek" and zero
+        #     additional ceremony — the worker dispatches through the
+        #     harness_session RuntimeRegistry entry)
+        is_harness_explicit = (
             body.get("execution", {}).get("mode") == "harness_session"
             or agent_id == "harness_session"
             or body.get("runtime_type") == "harness_session"
         )
-        if is_harness:
+        matches_harness_profile = bool(agent_id and agent_id != "harness_session"
+                                       and _get_harness_profile(agent_id) is not None)
+        if is_harness_explicit or matches_harness_profile:
+            # Stamp harness_profile into the spec so the
+            # HarnessSessionRuntimeAdapter finds it deterministically.
+            if matches_harness_profile:
+                body.setdefault("execution", {})
+                body.setdefault("execution", {}).setdefault(
+                    "harness_profile", agent_id)
+                body.setdefault("execution", {})["mode"] = "harness_session"
             task = storage.create_harness_task(
                 agent_id="harness_session",
                 task_spec=body,
@@ -486,7 +582,8 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                                        limit=limit, offset=offset)
         except ValueError as e:
             return JSONResponse(status_code=400, content={"error": str(e)})
-        return JSONResponse({"tasks": [t.model_dump() for t in tasks]})
+        return JSONResponse({"tasks": [_enrich_task(t, harness_storage)
+                                       for t in tasks]})
 
     @mcp.custom_route("/tasks/{task_id}", methods=["GET"])
     async def get_task(request: Request):
@@ -495,7 +592,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         if task is None:
             return JSONResponse(status_code=404,
                                 content={"error": f"Task '{task_id}' not found"})
-        return JSONResponse(task.model_dump())
+        return JSONResponse(_enrich_task(task, harness_storage))
 
     @mcp.custom_route("/tasks/{task_id}/events", methods=["GET"])
     async def get_task_events(request: Request):
@@ -620,6 +717,19 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                                 content={"error": f"Unknown profile: {name}"})
         return JSONResponse(profile.to_dict())
 
+    @mcp.custom_route("/harness-profiles/{name}/availability", methods=["GET"])
+    async def get_harness_availability(request: Request):
+        """Return a structured availability report for one harness profile.
+
+        Never raises and never leaks secrets — only binary/credential
+        *presence* is reported, not their values.
+        """
+        name = request.path_params["name"]
+        report = catalog.check_harness_availability(name)
+        status_code = 200 if report.get("configured") else 404
+        _registry.inc_counter("harness_availability_checks_total")
+        return JSONResponse(status_code=status_code, content=report)
+
     # -- Worktrees -------------------------------------------------------
 
     @mcp.custom_route("/worktrees", methods=["GET"])
@@ -679,27 +789,46 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
 
     @mcp.custom_route("/sessions/{session_id}/capture", methods=["GET"])
     async def capture_session(request: Request):
+        """Capture recent session output.
+
+        Returns the latest ``lines`` lines of tmux capture plus the
+        session status and a redacted capture. The redaction regexes
+        are the same ones used by the HTML review report (see
+        ``harness/reports.py``) — they scrub Bearer tokens, GitHub
+        PATs, and URL credentials. This means Composer never needs to
+        post-process captures to safely log them.
+        """
         session_id = request.path_params["session_id"]
-        # Lazy import to keep server.py import cost low when the
-        # harness-runtime endpoints aren't called.
+        lines_requested = 2000
+        try:
+            lines_requested = max(1, int(request.query_params.get("lines", "2000")))
+        except (TypeError, ValueError):
+            lines_requested = 2000
         from agents_gateway.harness.driver import HarnessDriver
+        from agents_gateway.harness.reports import redact_text as _redact_secrets
         session = harness_storage.get_session(session_id)
         if session is None:
             return JSONResponse(
                 status_code=404,
                 content={"error": f"Session '{session_id}' not found"})
         # Construct a transient driver bound to the session's tmux
-        # session. Fetch last 2000 lines.
-        driver = HarnessDriver(storage=harness_storage)
+        # session.
+        driver = HarnessDriver(storage=harness_storage, tmux_driver=_shared_tmux_driver)
         try:
-            output = driver.capture_output(session, lines=2000)
+            output = driver.capture_output(session, lines=lines_requested)
         except Exception as e:
             return JSONResponse(
                 status_code=500,
                 content={"error": f"capture failed: {e}"})
-        return JSONResponse({"session_id": session_id,
-                             "lines_captured": len(output.splitlines()),
-                             "output": output})
+        safe_output = _redact_secrets(output) if output else output
+        _registry.inc_counter("harness_session_captures_total")
+        return JSONResponse({
+            "session_id": session_id,
+            "status": session.status,
+            "capture": safe_output,
+            "captured_at": session.last_output_at,
+            "lines": lines_requested,
+        })
 
     @mcp.custom_route("/sessions/{session_id}/send", methods=["POST"])
     async def send_to_session(request: Request):
@@ -718,7 +847,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         if session is None:
             return JSONResponse(status_code=404,
                                 content={"error": f"Session '{session_id}' not found"})
-        driver = HarnessDriver(storage=harness_storage)
+        driver = HarnessDriver(storage=harness_storage, tmux_driver=_shared_tmux_driver)
         try:
             driver.tmux.send_text(driver._ref(session), text)
             if submit:
@@ -727,6 +856,16 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
             return JSONResponse(status_code=500,
                                 content={"error": f"send_text failed: {e}"})
         _registry.inc_counter("harness_session_send_total")
+        # Log the send as a task event so Composer's audit trail is
+        # self-contained.
+        try:
+            storage.append_event(session.task_id,
+                                 "composer.session_send",
+                                 {"session_id": session_id,
+                                  "text_chars": len(text),
+                                  "submitted": bool(submit)})
+        except Exception:
+            pass
         return JSONResponse({"session_id": session_id,
                              "status": "sent",
                              "text_chars": len(text)})
@@ -739,7 +878,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         if session is None:
             return JSONResponse(status_code=404,
                                 content={"error": f"Session '{session_id}' not found"})
-        driver = HarnessDriver(storage=harness_storage)
+        driver = HarnessDriver(storage=harness_storage, tmux_driver=_shared_tmux_driver)
         try:
             driver.stop_session(session)
         except Exception as e:
@@ -807,7 +946,7 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                  "status": "answered",
                  "warning": "session_missing_ delivery_skipped"},
             )
-        driver = HarnessDriver(storage=harness_storage)
+        driver = HarnessDriver(storage=harness_storage, tmux_driver=_shared_tmux_driver)
         try:
             driver.send_reply(session, reply_text)
         except Exception as e:
@@ -847,6 +986,14 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         harness_storage.update_interaction_status(
             interaction_id, ComposerInteractionStatus.cancelled.value,
         )
+        # Log the cancellation as a task event so Composer has a
+        # complete audit trail without polling the interaction table.
+        try:
+            storage.append_event(interaction.task_id,
+                                 "composer.interaction.cancelled",
+                                 {"interaction_id": interaction_id})
+        except Exception:
+            pass
         return JSONResponse(
             {"interaction_id": interaction_id, "status": "cancelled"}
         )
@@ -947,6 +1094,24 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         artifacts = harness_storage.list_harness_artifacts(agent_run_id=agent_run_id)
         return JSONResponse({"artifacts": artifacts})
 
+    @mcp.custom_route("/agent-runs/{agent_run_id}", methods=["GET"])
+    async def get_agent_run(request: Request):
+        """Return the unified agent-run view for one agent_run (== task).
+
+        Combines the legacy TaskRecord, the harness session(s), the
+        worktree, the latest verification run, and the enriched
+        artifacts list — so Conductor can reconcile a run through a
+        single GET instead of stitching multiple endpoints.
+        """
+        agent_run_id = request.path_params["agent_run_id"]
+        task = storage.get_task(agent_run_id)
+        if task is None:
+            return JSONResponse(status_code=404,
+                                content={"error": f"Run '{agent_run_id}' not found"})
+        result = _enrich_task(task, harness_storage)
+        result["events"] = [e.model_dump() for e in storage.list_events(task.id)]
+        return JSONResponse(result)
+
     @mcp.custom_route("/artifacts/{artifact_id}", methods=["GET"])
     async def get_artifact(request: Request):
         artifact_id = request.path_params["artifact_id"]
@@ -970,6 +1135,49 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                 return JSONResponse(status_code=500,
                                     content={"error": f"read failed: {e}"})
         return JSONResponse(artifact)
+
+    # -- Cleanup / retention --------------------------------------------
+    @mcp.custom_route("/cleanup/dry-run", methods=["POST"])
+    async def cleanup_dry_run(request: Request):
+        """Report what *would* be deleted under the current retention
+        policy. Does not touch disk."""
+        from agents_gateway.harness.cleanup import run_cleanup
+        report = run_cleanup(
+            harness_storage,
+            artifact_retention_days=config.harness.artifact_retention_days,
+            worktree_retention_days=config.harness.worktree_retention_days,
+            max_artifact_bytes=config.harness.max_artifact_bytes,
+            dry_run=True,
+        )
+        _registry.inc_counter("harness_cleanup_dry_run_total")
+        return JSONResponse(report.to_dict())
+
+    @mcp.custom_route("/cleanup/run", methods=["POST"])
+    async def cleanup_run(request: Request):
+        """Actually run the retention cleanup pass.
+
+        Honours ``config.harness.cleanup_dry_run`` — when the operator
+        hasn't flipped it to false via
+        ``AGW_HARNESS__CLEANUP_DRY_RUN=false`` this endpoint returns
+        the dry-run report with a ``dry_run`` flag so callers don't
+        silently believe work was deleted.
+
+        ``?force=true`` overrides the dry-run gate so an operator with
+        explicit intent can run a one-shot live cleanup without
+        reconfiguring the gateway.
+        """
+        from agents_gateway.harness.cleanup import run_cleanup
+        force = request.query_params.get("force", "").lower() in ("1", "true", "yes")
+        dry = config.harness.cleanup_dry_run and not force
+        report = run_cleanup(
+            harness_storage,
+            artifact_retention_days=config.harness.artifact_retention_days,
+            worktree_retention_days=config.harness.worktree_retention_days,
+            max_artifact_bytes=config.harness.max_artifact_bytes,
+            dry_run=dry,
+        )
+        _registry.inc_counter("harness_cleanup_run_total")
+        return JSONResponse(report.to_dict())
 
     return mcp  # end of create_app
 

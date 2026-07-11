@@ -66,14 +66,29 @@ class RuntimeRegistry:
         return runtime_type in self._adapters
 
 
-def create_default_registry(runtime_config: Any = None) -> RuntimeRegistry:
-    """Create a RuntimeRegistry pre-populated with the built-in adapters."""
+def create_default_registry(runtime_config: Any = None,
+                            harness_config: Any = None,
+                            ) -> RuntimeRegistry:
+    """Create a RuntimeRegistry pre-populated with the built-in adapters.
+
+    ``harness_config`` is an optional ``HarnessRuntimeConfig`` (from
+    ``agents_gateway.harness.runtime``) used by the
+    ``HarnessSessionRuntimeAdapter``. When omitted the adapter falls
+    back to safe dev defaults (fake tmux, /tmp workspaces).
+    """
     registry = RuntimeRegistry()
     registry.register("local-stub", StubRuntime)
     registry.register("process", ProcessRuntime)
     registry.register("docker", DockerRuntime)
     # Stash the runtime config on the registry so adapters can pull it.
     registry.runtime_config = runtime_config
+    # Lazily import the harness adapter to avoid paying the import
+    # cost when harness_session tasks are never used.
+    from agents_gateway.harness_runtime_adapter import (
+        HarnessSessionRuntimeAdapter,
+    )
+    registry.register("harness_session", HarnessSessionRuntimeAdapter)
+    registry.harness_config = harness_config  # type: ignore[attr-defined]
     return registry
 
 

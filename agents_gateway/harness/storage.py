@@ -369,6 +369,29 @@ class HarnessStorage:
         conn.close()
         return [_row_to_session(r) for r in rows]
 
+    def list_recoverable_sessions(self) -> list[HarnessSession]:
+        """Sessions that should be re-examined after a restart.
+
+        This is wider than ``list_active_sessions`` because it also
+        includes ``verifying`` and ``stalled`` sessions — both of
+        those should NOT be silently forgotten if the gateway process
+        crashes and comes back. Only true terminal states
+        (``completed``/``failed``/``blocked_external``/``cancelled``)
+        are excluded.
+        """
+        conn = self._connect()
+        rows = conn.execute(
+            """SELECT * FROM harness_sessions
+               WHERE status NOT IN (?, ?, ?, ?)
+               ORDER BY started_at DESC""",
+            (HarnessSessionStatus.completed.value,
+             HarnessSessionStatus.failed.value,
+             HarnessSessionStatus.blocked_external.value,
+             HarnessSessionStatus.cancelled.value),
+        ).fetchall()
+        conn.close()
+        return [_row_to_session(r) for r in rows]
+
     # -------------------------------------------------------------------
     # Composer interactions
     # -------------------------------------------------------------------

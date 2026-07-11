@@ -20,16 +20,23 @@
 #   - codex
 #
 # Optional env vars:
-#   AGW_E2E_REAL_PROFILE      harness profile name (default: opencode-deepseek)
-#   AGW_E2E_BINARIES          space-separated list of commands required
-#                             (default: derived from AGW_E2E_REAL_PROFILE)
-#   AGW_E2E_PORT              gateway port (default 18094)
-#   AGW_E2E_TIMEOUT_SECONDS   max wallclock seconds (default 600)
+#   AGW_REAL_HARNESS_PROFILE    harness profile name (default: opencode-deepseek)
+#                              (synonym: AGW_E2E_REAL_PROFILE)
+#   AGW_REAL_HARNESS_COMMAND    override the command for the profile
+#                              (synonym: AGW_E2E_BINARIES for required-binaries gating)
+#   AGW_REAL_HARNESS_REPO       override the scratch repo location
+#   AGW_E2E_PORT                gateway port (default 18094)
+#   AGW_E2E_TIMEOUT_SECONDS     max wallclock seconds (default 600)
 #
 # Exit codes:
-#   0  pass
+#   0  pass — REAL HARNESS E2E PASSED
 #   1  infrastructure failure (gateway refused to boot, etc.)
-#   2  one or more required harness binaries missing
+#   2  one or more required harness binaries/config missing
+#
+# Final line on success:          REAL HARNESS E2E PASSED
+# Final line on missing binary:   REAL HARNESS E2E BLOCKED: missing <command>
+# Final line on missing creds:     REAL HARNESS E2E BLOCKED: missing credentials/config <names>
+# Final line on timeout:           REAL HARNESS E2E TIMED OUT: launched but did not complete within <seconds>s
 
 set -euo pipefail
 
@@ -38,28 +45,28 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 GATEWAY_PORT="${AGW_E2E_PORT:-18094}"
 BASE_URL="http://127.0.0.1:${GATEWAY_PORT}"
-REAL_PROFILE="${AGW_E2E_REAL_PROFILE:-opencode-deepseek}"
+REAL_PROFILE="${AGW_REAL_HARNESS_PROFILE:-${AGW_E2E_REAL_PROFILE:-opencode-deepseek}}"
 WALL_TIMEOUT_SECONDS="${AGW_E2E_TIMEOUT_SECONDS:-600}"
 WORK_DIR="$(mktemp -d -t agw-real-e2e-XXXXXX)"
-SCRATCH_REPO="${WORK_DIR}/scratch-repo"
+SCRATCH_REPO="${AGW_REAL_HARNESS_REPO:-${WORK_DIR}/scratch-repo}"
 GATEWAY_PID=""
 
 # Mapping of harness profile -> required command. Keeps the venn diagram
 # narrow: the script blocks until the explicit command is on PATH.
 case "$REAL_PROFILE" in
-    opencode-deepseek) REQUIRED_BINARIES="opencode" ;;
-    claude-code)       REQUIRED_BINARIES="claude" ;;
-    codex)             REQUIRED_BINARIES="codex" ;;
+    opencode-deepseek) REQUIRED_BINARIES="${AGW_REAL_HARNESS_COMMAND:-opencode}" ;;
+    claude-code)       REQUIRED_BINARIES="${AGW_REAL_HARNESS_COMMAND:-claude}" ;;
+    codex)            REQUIRED_BINARIES="${AGW_REAL_HARNESS_COMMAND:-codex}" ;;
     fake-test)
-        echo "REAL HARNESS E2E BLOCKED: "
-        echo "AGW_E2E_REAL_PROFILE=fake-test is not a real harness"
+        echo "REAL HARNESS E2E BLOCKED: missing"
+        echo "AGW_REAL_HARNESS_PROFILE=fake-test is not a real harness"
         exit 2
         ;;
     *)
-        if [ -n "${AGW_E2E_BINARIES:-}" ]; then
-            REQUIRED_BINARIES="$AGW_E2E_BINARIES"
+        if [ -n "${AGW_E2E_BINARIES:-${AGW_REAL_HARNESS_COMMAND:-}}" ]; then
+            REQUIRED_BINARIES="${AGW_E2E_BINARIES:-${AGW_REAL_HARNESS_COMMAND}}"
         else
-            echo "REAL HARNESS E2E BLOCKED: "
+            echo "REAL HARNESS E2E BLOCKED: missing"
             echo "unknown profile: ${REAL_PROFILE}"
             exit 2
         fi
@@ -89,6 +96,35 @@ if [ -n "$MISSING" ]; then
     exit 2
 fi
 
+# Credentials pre-flight: surface any known-present LLM API key env var;
+# if none of the expected ones are set, we report missing
+# credentials/config — without leaking values.
+case "$REAL_PROFILE" in
+    opencode-deepseek)
+        CRED_NAMES=("DEEPSEEK_API_KEY" "OPENROUTER_API_KEY" "OPENAI_API_KEY" "ANTHROPIC_API_KEY") ;;
+    claude-code)
+        CRED_NAMES=("ANTHROPIC_API_KEY") ;;
+    codex)
+        CRED_NAMES=("OPENAI_API_KEY") ;;
+    *)
+        CRED_NAMES=() ;;
+esac
+if [ "${AGW_E2E_SKIP_CRED_CHECK:-0}" != "1" ] && [ ${#CRED_NAMES[@]} -gt 0 ]; then
+    FOUND_CRED=0
+    MISSING_CREDS=""
+    for v in "${CRED_NAMES[@]}"; do
+        if [ -n "${!v:-}" ]; then
+            FOUND_CRED=1
+            break
+        fi
+        MISSING_CREDS="${MISSING_CREDS} ${v}"
+    done
+    if [ "$FOUND_CRED" -ne 1 ]; then
+        echo "REAL HARNESS E2E BLOCKED: missing credentials/config${MISSING_CREDS}"
+        exit 2
+    fi
+fi
+
 # Warn (but proceed) when required binaries are present but credentials
 # may not be configured. Real LLM-backed harnesses will need API keys
 # for actual task completion.
@@ -110,22 +146,42 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# 1. Scratch repo
+# 1. Scratch repo — tiny calculator task
 # ---------------------------------------------------------------------------
 git init -q -b master "$SCRATCH_REPO" 2>/dev/null || (
     cd "$SCRATCH_REPO" && git init -q && git symbolic-ref HEAD refs/heads/master
 )
-cat > "${SCRATCH_REPO}/add.py" <<'PY'
+mkdir -p "${SCRATCH_REPO}/src"
+cat > "${SCRATCH_REPO}/src/calculator.py" <<'PY'
 def add(a, b):
     return a + b
 PY
-cat > "${SCRATCH_REPO}/test_add.py" <<'PY'
-from add import add
+cat > "${SCRATCH_REPO}/tests/test_calculator.py" <<'PY'
+from src.calculator import add, multiply
+
 
 def test_add():
     assert add(2, 3) == 5
+
+
+def test_multiply():
+    assert multiply(2, 3) == 6
+    assert multiply(0, 5) == 0
+    assert multiply(-1, 4) == -4
 PY
-git -C "$SCRATCH_REPO" add add.py test_add.py
+cat > "${SCRATCH_REPO}/pyproject.toml" <<'TOML'
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scratch-repo"
+version = "0.1.0"
+
+[tool.setuptools]
+packages = ["src"]
+TOML
+git -C "$SCRATCH_REPO" add src tests pyproject.toml
 git -C "$SCRATCH_REPO" -c user.email=t@local -c user.name=test commit -q -m "Initial"
 
 # ---------------------------------------------------------------------------
@@ -167,20 +223,19 @@ fi
 echo "Gateway healthy."
 
 # ---------------------------------------------------------------------------
-# 3. Task body — small enough for a real harness to handle in seconds
+# 3. Task body — implement multiply(a, b) in src/calculator.py
 # ---------------------------------------------------------------------------
 TASK_BODY=$(cat <<EOF
 {
   "title": "real harness E2E",
-  "brief": "Add a docstring to add.py. Run pytest in the worktree before declaring done.",
+  "brief": "Implement multiply(a, b) in src/calculator.py so tests pass. Run pytest in the worktree before declaring done.",
   "repo": {"url": "file://${SCRATCH_REPO}", "owner": "o",
            "name": "r", "base_branch": "master"},
   "execution": {"mode": "harness_session", "harness_profile": "${REAL_PROFILE}"},
   "goal": {"strategy": "auto",
-           "text": "Add a one-line docstring at the top of add.py. Then run 'python3 -m pytest test_add.py' and ensure it passes. Do not change test_add.py."},
+           "text": "Implement the function multiply(a, b) in src/calculator.py that returns a * b. Then run 'python3 -m pytest -q' and ensure it passes. Do not modify tests/test_calculator.py."},
   "verification": {"required": true, "commands": [
-    {"name": "pytest", "command": "python3 -m pytest test_add.py", "required": true},
-    {"name": "docstring present", "command": "grep -q '\"\"\"' add.py", "required": true}
+    {"name": "pytest", "command": "python3 -m pytest -q", "required": true}
   ]},
   "artifacts": {"html_report": true}
 }
@@ -226,12 +281,12 @@ done
 
 echo "Final status: ${FINAL_STATUS}"
 if [ -z "$FINAL_STATUS" ]; then
-    echo "FAIL: task did not reach terminal status within ${WALL_TIMEOUT_SECONDS} s"
+    echo "REAL HARNESS E2E TIMED OUT: launched but did not complete within ${WALL_TIMEOUT_SECONDS}s"
     exit 1
 fi
 
 if [ "$FINAL_STATUS" != "completed" ]; then
-    echo "Task ended with status ${FINAL_STATUS}"
+    echo "REAL HARNESS E2E FAILED: final_status=${FINAL_STATUS} task_id=${TASK_ID}"
     exit 1
 fi
 
@@ -239,15 +294,15 @@ fi
 # 5. Verification + artifacts
 # ---------------------------------------------------------------------------
 VERIF=$(curl -sf "${BASE_URL}/agent-runs/${TASK_ID}/verification" 2>/dev/null || echo "")
-VERIF_STATUS=$(echo "$VERIF" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))")
+VERIF_STATUS=$(echo "$VERIF" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
 if [ "$VERIF_STATUS" != "passed" ]; then
-    echo "FAIL: verification status=${VERIF_STATUS}"
+    echo "REAL HARNESS E2E FAILED: verification status=${VERIF_STATUS}"
     exit 1
 fi
 if [ ! -f "${WORK_DIR}/artifacts/${TASK_ID}/reports/review-report.html" ]; then
-    echo "FAIL: HTML review report missing"
+    echo "REAL HARNESS E2E FAILED: HTML review report missing"
     exit 1
 fi
 
-echo "[OK] Real harness E2E passed (profile=${REAL_PROFILE})"
+echo "REAL HARNESS E2E PASSED"
 exit 0

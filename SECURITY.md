@@ -142,7 +142,10 @@ report. The current security boundary is regex-based and brittle.
 - Multi-tenant deployments are out of scope for this build; treat
   the gateway itself as trusted infrastructure managed by a single
   operator.
-- The `harness_session` runtime currently bypasses the legacy
-  `RuntimeRegistry` and `AgentCatalog`. No agent manifests are
-  consulted. Composer is the trust boundary for which harness profile
-  + repo URL + skills to invoke — not Agents Gateway.
+- The `harness_session` runtime is now a first-class
+  `RuntimeRegistry` entry (`HarnessSessionRuntimeAdapter`) and its
+  profiles are registered in `AgentCatalog`. All the safety checks
+  that apply to legacy runtimes (risk-level gating, manifest
+  validation, registry dispatch) now apply to harness tasks too.
+  Composer still owns intent (which profile + repo + skills to
+  invoke) but the gateway is no longer bypassed.

@@ -97,6 +97,12 @@ class HarnessRuntimeConfig(BaseModel):
       * use_fake_tmux defaults to False in production-like setups.
         For the local E2E script + tests we set it True so no real
         tmux daemon is required.
+      * cleanup_* retention knobs default to two weeks for artifacts
+        and a week for worktrees. ``dry_run`` defaults to True so a
+        naive ``POST /cleanup/run`` doesn't immediately delete
+        orphaned content; the operator flips it to false (via
+        ``AGW_HARNESS__CLEANUP_DRY_RUN=false``) once the dry-run
+        output looks right.
     """
     workspace_root: str = "/tmp/agents-gateway/repos"
     worktree_root: str = "/tmp/agents-gateway/worktrees"
@@ -111,6 +117,10 @@ class HarnessRuntimeConfig(BaseModel):
     completion_wait_seconds: float = 0.5
     relay_max_time_seconds: float = 3600.0
     max_verify_iterations: int = 50
+    artifact_retention_days: int = 14
+    worktree_retention_days: int = 7
+    max_artifact_bytes: int = 1_073_741_824
+    cleanup_dry_run: bool = True
 
 
 class IntegrationsConfig(BaseModel):

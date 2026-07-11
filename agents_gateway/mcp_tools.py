@@ -341,4 +341,129 @@ def create_mcp_server(config: GatewayConfig) -> FastMCP:
                 return json.dumps({"error": f"read failed: {e}"})
         return json.dumps(artifact)
 
+    # ===================================================================
+    # agents_* aliases (Phase 10: standardise the MCP tool surface so
+    # Composer / external clients have a single consistent naming
+    # convention regardless of runtime type).
+    # ===================================================================
+
+    @mcp.tool()
+    def agents_check_harness_availability(name: str) -> str:
+        """Return a structured availability report for a harness profile.
+
+        Tells the caller whether the binary exists, whether
+        credentials are present, and whether the profile is runnable
+        without actually launching a session. Cheap (shutil.which +
+        env-var presence)."""
+        report = catalog.check_harness_availability(name)
+        return json.dumps(report)
+
+    @mcp.tool()
+    def agents_list_sessions(task_id: str = "",
+                             status: str = "") -> str:
+        """List harness sessions (optional task_id/status filter)."""
+        sessions = harness_storage.list_sessions(
+            status=status or None,
+            task_id=task_id or None,
+        )
+        return json.dumps([s.__dict__ for s in sessions])
+
+    @mcp.tool()
+    def agents_get_session(session_id: str) -> str:
+        """Get one harness session by id (includes metadata + status)."""
+        session = harness_storage.get_session(session_id)
+        if session is None:
+            return json.dumps({"error": f"Session '{session_id}' not found"})
+        return json.dumps(session.__dict__)
+
+    @mcp.tool()
+    def agents_capture_session(session_id: str,
+                               lines: int = 2000) -> str:
+        """Capture the recent output of one harness session (redacted)."""
+        from agents_gateway.harness.driver import HarnessDriver
+        from agents_gateway.redact import redact_text
+        session = harness_storage.get_session(session_id)
+        if session is None:
+            return json.dumps({"error": f"Session '{session_id}' not found"})
+        driver = HarnessDriver(storage=harness_storage)
+        try:
+            output = driver.capture_output(session, lines=lines)
+        except Exception as e:
+            return json.dumps({"error": f"capture failed: {e}"})
+        captured_at = __import__("datetime").datetime.utcnow().isoformat()
+        return json.dumps({
+            "session_id": session_id,
+            "status": session.status,
+            "capture": redact_text(output),
+            "captured_at": captured_at,
+            "lines": len(output.splitlines()),
+        })
+
+    @mcp.tool()
+    def agents_send_session(session_id: str, text: str,
+                            submit: bool = True) -> str:
+        """Send text into a harness session (Composer/supervisor use).
+
+        Records the send as a ``composer.session_send`` event on the
+        session's task so the event stream stays complete."""
+        from agents_gateway.harness.driver import HarnessDriver
+        session = harness_storage.get_session(session_id)
+        if session is None:
+            return json.dumps({"error": f"Session '{session_id}' not found"})
+        driver = HarnessDriver(storage=harness_storage)
+        try:
+            driver.tmux.send_text(driver._ref(session), text)
+            if submit:
+                driver.tmux.send_enter(driver._ref(session))
+        except Exception as e:
+            return json.dumps({"error": f"send_text failed: {e}"})
+        if session.task_id:
+            storage.append_event(session.task_id,
+                                 "composer.session_send",
+                                 {"session_id": session_id,
+                                  "text_length": len(text),
+                                  "submit": submit})
+        return json.dumps({"session_id": session_id, "status": "sent"})
+
+    @mcp.tool()
+    def agents_list_interactions(status: str = "pending",
+                                 task_id: str = "") -> str:
+        """List Composer interactions (pending by default)."""
+        interactions = harness_storage.list_interactions(
+            status=status or None,
+            task_id=task_id or None,
+        )
+        return json.dumps([i.__dict__ for i in interactions])
+
+    @mcp.tool()
+    def agents_reply_interaction(interaction_id: str,
+                                 reply: str) -> str:
+        """Composer sends a reply to a pending interaction; the reply
+        is injected into the associated harness session."""
+        from agents_gateway.harness.models import ComposerInteractionStatus
+        interaction = harness_storage.get_interaction(interaction_id)
+        if interaction is None:
+            return json.dumps({"error": f"Interaction '{interaction_id}' not found"})
+        if interaction.status not in ("pending",):
+            return json.dumps({"error": f"Interaction not pending: {interaction.status}"})
+        session = harness_storage.get_session(interaction.session_id)
+        delivered = False
+        if session is not None:
+            from agents_gateway.harness.driver import HarnessDriver
+            driver = HarnessDriver(storage=harness_storage)
+            driver.send_reply(session, reply)
+            delivered = True
+        harness_storage.update_interaction_status(
+            interaction_id, ComposerInteractionStatus.answered.value,
+            composer_reply=reply,
+        )
+        if interaction.task_id:
+            storage.append_event(interaction.task_id,
+                                 "composer.interaction.answered",
+                                 {"interaction_id": interaction_id,
+                                  "delivered_to_session": delivered})
+        return json.dumps({"interaction_id": interaction_id,
+                           "status": "answered",
+                           "delivered_to_session": delivered})
+
     return mcp

@@ -165,6 +165,9 @@ class VerificationRunner:
             "Continue fixing until all required verification commands pass.",
             "Do not mark this task complete until they do.",
         ])
+        self._emit(session, "verification.failed_feedback_sent",
+                   {"failed_count": len(failed),
+                    "names": [c.name for c in failed]})
         driver.send_reply(session, "\n".join(lines))
 
     def blocked_interactions(self, vr: VerificationRun,

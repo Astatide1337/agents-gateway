@@ -39,11 +39,12 @@ agents-gateway version    # Print version
           ┌───────────┼───────────┐
           ▼           ▼           ▼
     Agent Catalog  Task Storage  Runtime Registry
-     (manifests)   (SQLite/WAL)  (stub/process/docker)
-                      │
-                      ▼
-              Background Worker
-              (claims & executes)
+     (manifests +   (SQLite/WAL)  (stub/process/docker/
+      harness       harness_session)
+      profiles)           │
+                          ▼
+                  Background Worker
+                  (claims & executes)
 ```
 
 ### Components
@@ -52,14 +53,17 @@ agents-gateway version    # Print version
 |-----------|---------|
 | `server.py` | ASGI app creation, auth middleware, custom routes |
 | `auth.py` | AuthHandler (dev-none, internal-only, cloudflare-access) |
-| `catalog.py` | Agent manifest scanning, profiles, search |
+| `catalog.py` | Agent manifest scanning, profiles, search, harness catalog entries, availability checks |
 | `storage.py` | SQLite task state machine (validated transitions) |
-| `runtime.py` | Runtime adapters: StubRuntime, DockerRuntime, ProcessRuntime |
-| `worker.py` | Background thread claiming & executing tasks |
-| `mcp_tools.py` | FastMCP tool registration |
+| `runtime.py` | Runtime adapters: StubRuntime, DockerRuntime, ProcessRuntime, HarnessSessionRuntimeAdapter |
+| `harness_runtime_adapter.py` | Wraps HarnessRuntime for unified RuntimeRegistry dispatch |
+| `worker.py` | Background thread claiming & executing tasks (unified dispatch) |
+| `mcp_tools.py` | FastMCP tool registration (legacy + harness + agents_* aliases) |
 | `logging.py` | Structured JSON/text logging, contextvars, header redaction |
 | `metrics.py` | In-memory Prometheus-formatted metrics |
 | `config.py` | GatewayConfig (YAML + env override layering) |
+| `harness/reconcile.py` | Restart reconciliation — recovers alive sessions after gateway restart |
+| `harness/cleanup.py` | Retention cleanup — dry-run + live artifact/worktree pruning |
 
 ## Security Model
 
@@ -101,14 +105,35 @@ These paths require authentication in `cloudflare-access` and `internal-only` mo
 
 ```
 /mcp              (MCP protocol: initialize, tools/call, etc.)
-/agents           (agent listing)
-/agents/{id}      (agent detail)
+/agents           (agent listing — includes harness profiles)
+/agents/{id}      (agent detail — falls back to harness catalog entry)
 /tasks            (create, list)
 /tasks/{id}       (task detail)
 /tasks/{id}/run   (enqueue for execution)
 /tasks/{id}/events
 /tasks/{id}/artifacts
 /tasks/{id}/cancel
+/agent-runs/{id}             (unified task + harness session + events view)
+/harness-profiles            (harness profile listing)
+/harness-profiles/{name}     (harness profile detail)
+/harness-profiles/{name}/availability  (structured availability report)
+/sessions                    (harness session list)
+/sessions/{id}               (harness session detail)
+/sessions/{id}/capture       (redacted tmux capture)
+/sessions/{id}/send           (inject text + emit event)
+/sessions/{id}/stop
+/interactions                (Composer interaction listing)
+/interactions/{id}           (interaction detail)
+/interactions/{id}/reply     (Composer reply — injected into session)
+/interactions/{id}/cancel    (Composer cancel — emits event)
+/agent-runs/{id}/verification
+/agent-runs/{id}/verify
+/agent-runs/{id}/artifacts
+/artifacts/{id}              (metadata or ?view=true raw bytes)
+/worktrees
+/worktrees/{id}
+/cleanup/dry-run             (retention preview — no disk changes)
+/cleanup/run                 (retention execution — honours cleanup_dry_run flag)
 /inventory         (service inventory)
 /metrics           (Prometheus metrics, sensitive in production)
 ```
@@ -203,16 +228,36 @@ Terminal states (`completed`, `failed`, `cancelled`) have no valid outgoing tran
 | `StubRuntime` (`local-stub`) | Safe local stub, no external calls | Default, dev, testing |
 | `DockerRuntime` (`docker`) | Hardened Docker container | Production agent execution |
 | `ProcessRuntime` (`process`) | NO sandbox (trusted-only) | Local trusted scripts, dev workflows |
+| `HarnessSessionRuntimeAdapter` (`harness_session`) | Wraps HarnessRuntime — worktree + tmux session + supervision + verification + artifacts | Composer-driven long-horizon agent work |
 
-In addition to the legacy adapter family, the gateway supports a
-**harness worktree runtime** for Composer-driven long-horizon agent
-work. See [docs/harness-runtime.md](docs/harness-runtime.md) for the
-full contract. In short: each task gets an isolated git worktree, a
+In addition to the adapter family, the gateway supports auto-routing
+of `agent_id` matching a harness profile to the `harness_session`
+runtime — no explicit `execution.mode` needed. See
+[docs/harness-runtime.md](docs/harness-runtime.md) for the full
+contract. In short: each task gets an isolated git worktree, a
 tmux-backed harness session (Claude Code / opencode / Codex / fake
 harness), Composer-controlled interactions, mandatory verification,
 and an HTML review report generated when verification passes. The
-harness runtime is purely additive — legacy dispatch paths continue
-to work unchanged.
+harness runtime is now a first-class `RuntimeRegistry` entry —
+dispatch flows through the same `registry.create()` path as every
+other runtime.
+
+## Restart reconciliation
+
+When the gateway boots, `reconcile_harness_sessions()` inspects all
+recent harness sessions. Alive tmux sessions are marked
+`recovered_after_restart` + `running` so Composer can re-attach.
+Missing sessions are marked `stalled` (not `failed`) so Composer can
+still intervene.
+
+## Retention cleanup
+
+The `/cleanup/dry-run` endpoint previews what would be deleted under
+the configured retention policy. `/cleanup/run` executes the cleanup
+but honours `AGW_HARNESS__CLEANUP_DRY_RUN` (default: `true`) — use
+`?force=true` to override. Active sessions and their worktrees are
+never touched. See `scripts/cleanup-harness-artifacts.sh` for a CLI
+wrapper.
 
 ## DockerRuntime Sandboxing
 
@@ -274,6 +319,11 @@ uv run agents-gateway run
 - [ ] Agent manifests validated (`agents-gateway validate`)
 - [ ] Health check endpoint accessible
 - [ ] Metrics endpoint access controlled
+- [ ] `AGW_HARNESS__ARTIFACTS_ROOT` on a persistent volume
+- [ ] `AGW_HARNESS__WORKTREE_ROOT` on a writable volume
+- [ ] `AGW_HARNESS__CLEANUP_DRY_RUN` reviewed (default `true`)
+- [ ] `AGW_HARNESS__ARTIFACT_RETENTION_DAYS` reviewed (default `14`)
+- [ ] `AGW_HARNESS__WORKTREE_RETENTION_DAYS` reviewed (default `7`)
 
 ## Testing
 

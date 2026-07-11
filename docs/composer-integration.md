@@ -28,8 +28,23 @@ Composer uses these HTTP endpoints (all under the same auth as the rest of the g
 | Fetch artifacts | `GET /agent-runs/{id}/artifacts` and then `GET /artifacts/{id}?view=true` for the raw bytes |
 | Browse harness profiles | `GET /harness-profiles` to see what's configured |
 | Validate a profile against a goal strategy | `POST /harness-profiles/validate` |
+| Check if a profile is runnable | `GET /harness-profiles/{name}/availability` |
+| Get a unified run view (task + harness + events) | `GET /agent-runs/{id}` |
+| Preview what cleanup would delete | `POST /cleanup/dry-run` |
+| Run retention cleanup | `POST /cleanup/run` (or `POST /cleanup/run?force=true` to override dry-run) |
 
-The MCP protocol (mounted at `POST /mcp`) exposes equivalent `harness_*` tools for Composer to call without an HTTP round-trip — see `docs/api.md` for the full tool inventory.
+The MCP protocol (mounted at `POST /mcp`) exposes equivalent `harness_*`
+tools and unified `agents_*` tools for Composer to call without an HTTP
+round-trip — see `docs/api.md` for the full tool inventory.
+
+### Auto-routing by `agent_id`
+
+Composer does not need to set `execution.mode=harness_session`
+explicitly. When `agent_id` matches a registered harness profile name
+(e.g. `opencode-deepseek`, `claude-code`, `codex`, `fake-test`), the
+gateway automatically routes the task to the `harness_session` runtime.
+This means Composer can dispatch to a harness using the same
+`POST /tasks` flow as legacy agents.
 
 ## Task spec accepted by `POST /tasks`
 

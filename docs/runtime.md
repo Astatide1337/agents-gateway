@@ -14,6 +14,23 @@ Used by `agent_id`-keyed tasks registered via `agents/*/agent.yaml`. The runtime
 
 The legacy adapter family is preserved untouched by the harness-runtime milestone.
 
+### HarnessSessionRuntimeAdapter (`harness_session`)
+
+Wraps `HarnessRuntime` so `harness_session` tasks flow through the same
+`RuntimeRegistry` dispatch path as `process` and `docker`. The worker
+no longer special-cases harness tasks; it calls
+`registry.create("harness_session", ...)` like every other runtime.
+
+Features:
+
+- Resolves harness profile from task spec or from `agent_id` matching a
+  registered profile (auto-routing — no explicit `execution.mode` needed).
+- Emits `runtime_selected` + `agent.catalog_resolved` events on dispatch.
+- Translates `HarnessRunResult.status` → legacy task state machine
+  (`completed` / `waiting` / `failed` / `cancelled`).
+- Records harness artifacts into the legacy `task_artifacts` table
+  for uniform `/tasks/{id}/artifacts` access.
+
 ## 2. Harness worktree runtime (`harness_session`)
 
 Drives a Composer-controlled task through the full lifecycle:
@@ -134,6 +151,10 @@ When blocked:
 | `AGW_HARNESS__RELAY_MAX_TIME_SECONDS` | `3600` | Hard wallclock for one full task |
 | `AGW_HARNESS__MAX_VERIFY_ITERATIONS` | `50` | Max verification rounds before `stalled` |
 | `AGW_HARNESS__COMPLETION_WAIT_SECONDS` | `0.5` | Loop wait between completion checks |
+| `AGW_HARNESS__ARTIFACT_RETENTION_DAYS` | `14` | Artifacts older than this are cleanup candidates |
+| `AGW_HARNESS__WORKTREE_RETENTION_DAYS` | `7` | Worktrees older than this are cleanup candidates |
+| `AGW_HARNESS__MAX_ARTIFACT_BYTES` | `1073741824` | Total artifact budget (1 GB); oldest over budget pruned |
+| `AGW_HARNESS__CLEANUP_DRY_RUN` | `true` | When `true`, `/cleanup/run` is a dry-run unless `?force=true` |
 
 ### Skills + MCP Gateway integration
 

@@ -146,10 +146,52 @@ The runtime has three safety nets that mark a session `stalled` (not `failed`) s
 
 Today sessions run on host via tmux. Long-term target is containerized harness sessions (`ContainerDriver`) where each worktree is mounted into a sandboxed container with no host contact except via the configured MCP Gateway and Skills Gateway URLs. The abstraction (`HarnessDriver.tmux`) is structured so a future `ContainerDriver` can slot in without changing the runtime contract.
 
+## Restart reconciliation
+
+When the gateway boots, `reconcile_harness_sessions()` (in
+`harness/reconcile.py`) inspects all recoverable harness sessions:
+
+- **Alive tmux sessions** → marked `recovered_after_restart` + status
+  set to `running`. Composer can re-attach and let the session
+  continue.
+- **Missing tmux sessions** → marked `stalled` (NOT `failed`) so
+  Composer can still intervene via interactions or cancel.
+
+This replaces the old behavior where a gateway restart left orphaned
+sessions with no gateway-side state. The reconciliation runs once at
+boot, before the worker starts claiming new tasks.
+
+## Retention cleanup
+
+The `harness/cleanup.py` module implements artifact and worktree
+retention pruning:
+
+- **Time-based** — artifacts older than `artifact_retention_days` and
+  worktrees older than `worktree_retention_days` are deletion
+  candidates.
+- **Size-based** — if total artifact bytes exceed
+  `max_artifact_bytes`, the oldest artifacts beyond the budget are
+  pruned first.
+- **Active guard** — sessions with `status in (created, starting,
+  running, waiting_for_reply, verifying)` and their worktrees are
+  **never** touched, regardless of age.
+
+Accessed via:
+
+- `POST /cleanup/dry-run` — preview only, no disk changes.
+- `POST /cleanup/run` — executes cleanup; honours
+  `AGW_HARNESS__CLEANUP_DRY_RUN` (default `true`). Use
+  `?force=true` to override.
+- `scripts/cleanup-harness-artifacts.sh` — CLI wrapper for in-process
+  or HTTP invocation.
+
+Pruned artifacts are removed from disk but the DB row is retained for
+audit trail.
+
 ## Known limitations (current state)
 
 - Single per-task supervisor thread — no thread-pool reuse across tasks
 - Sessions run on host (no per-task container isolation)
 - Live E2E verification requires explicit env config (no auto-injection of `GITHUB_TOKEN` etc.)
 - Classifier is heuristic — false positives create `needs_reply` interactions that Composer can safely cancel; false negatives are surfaced when the supervisor stops calling classify (session dies, stalls, or completes)
-- No checkpoint/resume — if the gateway restarts mid-task, the harness session survives (tmux persists) but the runtime's `execute_task` loop is gone. Re-running the task (after gateway restart) starts a new session; the old session can be cleaned up via `POST /sessions/{id}/stop`.
+- No checkpoint/resume of the `execute_task` loop — if the gateway restarts mid-task, the harness session survives (tmux persists) but the runtime loop is gone. Reconciliation marks the session `recovered_after_restart` so Composer can re-attach, but the runtime does not automatically resume the supervision loop. Re-running the task starts a new session; the old session can be cleaned up via `POST /sessions/{id}/stop`.

@@ -163,3 +163,82 @@ If you're using `internal-only` auth mode:
 2. Update the env var `AGW_AUTH__INTERNAL_SECRET` on every gateway replica + every MCP client (Composer, Conductor, etc.)
 3. Restart the gateway. Old secrets stop working immediately.
 4. Check your logs for unexpected `auth_failed` events — likely a Composer instance still using the old secret.
+
+## 13. Recover sessions after a gateway restart
+
+When the gateway restarts, `reconcile_harness_sessions()` runs at boot:
+
+1. **Alive tmux sessions** → marked `recovered_after_restart` + status
+   set to `running`. Composer can re-attach via
+   `GET /sessions/{id}/capture` and `POST /sessions/{id}/send`.
+2. **Missing tmux sessions** → marked `stalled`. Composer can cancel
+   the interaction or stop the session.
+
+```bash
+# Find sessions that were recovered after the last restart:
+curl $AUTH_HEADERS "$BASE_URL/sessions?status=running"
+
+# Check each session's capture to see where the harness is:
+curl $AUTH_HEADERS "$BASE_URL/sessions/<session_id>/capture"
+
+# Inject a "continue" prompt to resume work:
+curl -X POST $AUTH_HEADERS "$BASE_URL/sessions/<session_id>/send" \
+  -d '{"text": "Continue per spec. You were interrupted by a gateway restart.", "submit": true}'
+```
+
+If a session is truly dead (tmux gone), stop it and re-dispatch:
+
+```bash
+curl -X POST $AUTH_HEADERS "$BASE_URL/sessions/<session_id>/stop"
+# Then create a new task with POST /tasks as usual.
+```
+
+## 14. Run artifact / worktree cleanup
+
+Over time, artifacts and worktrees accumulate on disk. The retention
+cleanup prunes old ones while never touching active sessions.
+
+**Dry-run (default — no disk changes):**
+
+```bash
+# Via HTTP:
+curl -X POST $AUTH_HEADERS "$BASE_URL/cleanup/dry-run"
+
+# Via CLI script (in-process, no HTTP needed):
+bash scripts/cleanup-harness-artifacts.sh --dry-run
+```
+
+**Live cleanup:**
+
+```bash
+# Via HTTP with force (overrides cleanup_dry_run):
+curl -X POST "$AUTH_HEADERS" "$BASE_URL/cleanup/run?force=true"
+
+# Via CLI:
+bash scripts/cleanup-harness-artifacts.sh --force
+
+# Or set AGW_HARNESS__CLEANUP_DRY_RUN=false and use --run:
+AGW_HARNESS__CLEANUP_DRY_RUN=false bash scripts/cleanup-harness-artifacts.sh --run
+```
+
+The report returns:
+
+```json
+{
+  "dry_run": false,
+  "deleted_artifacts": ["artifact_...", "artifact_..."],
+  "deleted_worktrees": ["wt_..."],
+  "skipped_active_artifacts": 3,
+  "skipped_active_worktrees": 1,
+  "bytes_freed": 1048576,
+  "total_artifact_bytes_before": 5242880
+}
+```
+
+Active sessions (`status in (created, starting, running,
+waiting_for_reply, verifying)`) and their worktrees are never
+touched — ensure you stop sessions before running cleanup if you
+want to reclaim their disk space.
+
+DB rows for pruned artifacts are kept for audit trail (only the
+on-disk file is removed).
