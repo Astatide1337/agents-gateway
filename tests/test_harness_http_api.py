@@ -421,6 +421,54 @@ class TestArtifactsAPI:
         resp = server.get("/artifacts/art_missing")
         assert resp.status_code == 404
 
+    def test_get_artifact_view_legacy_task_artifact(self, server, tmp_path):
+        """The unified /artifacts/{artifact_id}?view=true endpoint must
+        also serve blobs recorded via TaskStorage.add_artifact (the
+        non-harness path). Composers that recorded artifacts before the
+        harness artifact store existed rely on this fallback."""
+        from agents_gateway.server import create_asgi_app
+        from agents_gateway.config import GatewayConfig
+        from agents_gateway.storage import TaskStorage
+        from agents_gateway.metrics import MetricsRegistry
+
+        cfg = GatewayConfig(
+            auth={"mode": "dev-none"},
+            storage={"sqlite_path": str(tmp_path / "agw2.db"),
+                     "artifacts_dir": str(tmp_path / "artifacts2")},
+            service={"rate_limiting": {"enabled": False,
+                                       "requests_per_minute": 999}},
+            harness={"workspace_root": str(tmp_path / "repos2"),
+                     "worktree_root": str(tmp_path / "worktrees2"),
+                     "artifacts_root": str(tmp_path / "artifacts2"),
+                     "use_fake_tmux": True},
+            agents={"dir": str(tmp_path / "agents2")},
+            integrations={"skills_gateway": {"enabled": False},
+                          "mcp_gateway": {"enabled": False}},
+        )
+        app = create_asgi_app(cfg, reg=MetricsRegistry())
+        with TestClient(app) as cli:
+            # Insert a task + artifact directly via the storage layer,
+            # bypassing the harness store — this is what runtime.py does
+            # for non-harness agents that finish with a result.json blob.
+            store = TaskStorage(cfg.storage.sqlite_path)
+            task = store.create_task(agent_id="legacy")
+            blob_path = tmp_path / "result.json"
+            blob_path.write_text('{"commit_sha": "abc123"}')
+            artifact = store.add_artifact(task.id, "result.json",
+                                          str(blob_path), len('{"commit_sha": "abc123"}'))
+
+            # First confirm the metadata endpoint works (no view).
+            meta = cli.get(f"/artifacts/{artifact.id}")
+            assert meta.status_code == 200, meta.text
+            assert meta.json()["name"] == "result.json"
+            assert meta.json()["task_id"] == task.id
+
+            # Then fetch the bytes via ?view=true (the path the Conductor follows).
+            view = cli.get(f"/artifacts/{artifact.id}?view=true")
+            assert view.status_code == 200, view.text
+            assert view.content == b'{"commit_sha": "abc123"}'
+            assert "application/octet-stream" in view.headers.get("content-type", "")
+
 
 # ---------------------------------------------------------------------------
 # Tasks: harness_session task creation + run path

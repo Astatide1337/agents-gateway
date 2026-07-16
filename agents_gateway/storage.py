@@ -323,3 +323,20 @@ class TaskStorage:
         rows = conn.execute("SELECT * FROM task_artifacts WHERE task_id=? ORDER BY created_at", (task_id,)).fetchall()
         conn.close()
         return [TaskArtifact(**dict(r)) for r in rows]
+
+    def get_artifact(self, artifact_id: str) -> TaskArtifact | None:
+        """Return the single task_artifact row with ``id == artifact_id``.
+
+        Used by the unified ``/artifacts/{artifact_id}`` endpoint when the
+        harness_artifacts lookup misses — so non-harness (TaskStorage-only)
+        artifacts remain downloadable, preserving backwards compatibility
+        with consumers that recorded via ``add_artifact``.
+        """
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT * FROM task_artifacts WHERE id=?", (artifact_id,)
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return TaskArtifact(**dict(row))

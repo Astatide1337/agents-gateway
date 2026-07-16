@@ -1172,6 +1172,23 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
     async def get_artifact(request: Request):
         artifact_id = request.path_params["artifact_id"]
         artifact = harness_storage.get_harness_artifact(artifact_id)
+        # Fall back to the legacy task_artifacts table so consumers that
+        # only recorded through TaskStorage (non-harness agents) can still
+        # stream content. Normalise the record shape so the downstream
+        # viewer branch treats it identically.
+        if artifact is None:
+            legacy = storage.get_artifact(artifact_id)
+            if legacy is not None:
+                artifact = {
+                    "id": legacy.id,
+                    "task_id": legacy.task_id,
+                    "name": legacy.name,
+                    "path": legacy.path,
+                    "mime_type": "application/octet-stream",
+                    "size_bytes": legacy.size_bytes,
+                    "created_at": legacy.created_at,
+                    "metadata": {},
+                }
         if artifact is None:
             return JSONResponse(status_code=404,
                                 content={"error": f"Artifact '{artifact_id}' not found"})
