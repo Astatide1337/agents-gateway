@@ -65,12 +65,67 @@ class SkillsGatewayIntegrationConfig(BaseModel):
     enabled: bool = False
     base_url: str = "http://localhost:8091"
     mcp_path: str = "/mcp"
+    auth_mode: str = "dev-none"
+    internal_token: str = ""
     strict: bool = False
     timeout_seconds: float = 5.0
 
 
+class McpGatewayIntegrationConfig(BaseModel):
+    enabled: bool = False
+    base_url: str = ""
+    auth_mode: str = "dev-none"
+    internal_token: str = ""
+    timeout_seconds: float = 5.0
+
+
+class HarnessRuntimeConfig(BaseModel):
+    """Configuration for the harness worktree runtime (harness_session tasks).
+
+    Defaults are conservative and host-friendly:
+
+      * workspace_root / worktree_root / artifacts_root under
+        ``/tmp/agents-gateway/*`` so the gateway can boot read-only
+        in a Compose container without explicit volume mounts (the
+        Docker Compose example below mounts /data; users should
+        override these paths via env vars to put worktrees/artifacts
+        on a persistent volume).
+      * auto_commit defaults to True (so verified work survives cleanly
+        on a branch per task). auto_push / auto_pr default to False
+        per the milestone spec (you opt in via env vars when you have
+        push access configured and CI is enabled).
+      * use_fake_tmux defaults to False in production-like setups.
+        For the local E2E script + tests we set it True so no real
+        tmux daemon is required.
+      * cleanup_* retention knobs default to two weeks for artifacts
+        and a week for worktrees. ``dry_run`` defaults to True so a
+        naive ``POST /cleanup/run`` doesn't immediately delete
+        orphaned content; the operator flips it to false (via
+        ``AGW_HARNESS__CLEANUP_DRY_RUN=false``) once the dry-run
+        output looks right.
+    """
+    workspace_root: str = "/tmp/agents-gateway/repos"
+    worktree_root: str = "/tmp/agents-gateway/worktrees"
+    artifacts_root: str = "/tmp/agents-gateway/artifacts"
+    session_poll_interval_seconds: float = 10.0
+    session_stall_seconds: int = 900
+    auto_commit: bool = True
+    auto_push: bool = False
+    auto_pr: bool = False
+    use_fake_tmux: bool = False
+    command_timeout_seconds: int = 1800
+    completion_wait_seconds: float = 0.5
+    relay_max_time_seconds: float = 3600.0
+    max_verify_iterations: int = 50
+    artifact_retention_days: int = 14
+    worktree_retention_days: int = 7
+    max_artifact_bytes: int = 1_073_741_824
+    cleanup_dry_run: bool = True
+
+
 class IntegrationsConfig(BaseModel):
     skills_gateway: SkillsGatewayIntegrationConfig = Field(default_factory=SkillsGatewayIntegrationConfig)
+    mcp_gateway: McpGatewayIntegrationConfig = Field(default_factory=McpGatewayIntegrationConfig)
 
 
 class GatewayConfig(BaseModel):
@@ -81,6 +136,7 @@ class GatewayConfig(BaseModel):
     storage: StorageConfig = StorageConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
+    harness: HarnessRuntimeConfig = Field(default_factory=HarnessRuntimeConfig)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     profile: str | None = None
     environment: str = "dev"

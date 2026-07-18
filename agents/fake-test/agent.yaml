@@ -1,0 +1,17 @@
+id: fake-test
+name: Fake Test Harness
+description: Deterministic fake harness for the harness worktree runtime milestone. Reads `/goal <text>` (or plain text) from tmux stdin, performs scripted behaviour (write a file, optionally ask a clarifying question, optionally fail then fix). Used by unit tests and the local E2E script.
+version: 0.1.0
+runtime:
+  type: process
+  command: python3 agents/fake-test/run.py
+skills: []
+tools: []
+permissions: {}
+risk_level: low
+tags:
+  - fake
+  - test
+  - harness
+  - local-e2e
+author: agents-gateway

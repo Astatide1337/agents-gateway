@@ -39,11 +39,12 @@ agents-gateway version    # Print version
           ┌───────────┼───────────┐
           ▼           ▼           ▼
     Agent Catalog  Task Storage  Runtime Registry
-     (manifests)   (SQLite/WAL)  (stub/process/docker)
-                      │
-                      ▼
-              Background Worker
-              (claims & executes)
+     (manifests +   (SQLite/WAL)  (stub/process/docker/
+      harness       harness_session)
+      profiles)           │
+                          ▼
+                  Background Worker
+                  (claims & executes)
 ```
 
 ### Components
@@ -52,14 +53,17 @@ agents-gateway version    # Print version
 |-----------|---------|
 | `server.py` | ASGI app creation, auth middleware, custom routes |
 | `auth.py` | AuthHandler (dev-none, internal-only, cloudflare-access) |
-| `catalog.py` | Agent manifest scanning, profiles, search |
+| `catalog.py` | Agent manifest scanning, profiles, search, harness catalog entries, availability checks |
 | `storage.py` | SQLite task state machine (validated transitions) |
-| `runtime.py` | Runtime adapters: StubRuntime, DockerRuntime, ProcessRuntime |
-| `worker.py` | Background thread claiming & executing tasks |
-| `mcp_tools.py` | FastMCP tool registration |
+| `runtime.py` | Runtime adapters: StubRuntime, DockerRuntime, ProcessRuntime, HarnessSessionRuntimeAdapter |
+| `harness_runtime_adapter.py` | Wraps HarnessRuntime for unified RuntimeRegistry dispatch |
+| `worker.py` | Background thread claiming & executing tasks (unified dispatch) |
+| `mcp_tools.py` | FastMCP tool registration (legacy + harness + agents_* aliases) |
 | `logging.py` | Structured JSON/text logging, contextvars, header redaction |
 | `metrics.py` | In-memory Prometheus-formatted metrics |
 | `config.py` | GatewayConfig (YAML + env override layering) |
+| `harness/reconcile.py` | Restart reconciliation — recovers alive sessions after gateway restart |
+| `harness/cleanup.py` | Retention cleanup — dry-run + live artifact/worktree pruning |
 
 ## Security Model
 
@@ -101,14 +105,35 @@ These paths require authentication in `cloudflare-access` and `internal-only` mo
 
 ```
 /mcp              (MCP protocol: initialize, tools/call, etc.)
-/agents           (agent listing)
-/agents/{id}      (agent detail)
+/agents           (agent listing — includes harness profiles)
+/agents/{id}      (agent detail — falls back to harness catalog entry)
 /tasks            (create, list)
 /tasks/{id}       (task detail)
 /tasks/{id}/run   (enqueue for execution)
 /tasks/{id}/events
 /tasks/{id}/artifacts
 /tasks/{id}/cancel
+/agent-runs/{id}             (unified task + harness session + events view)
+/harness-profiles            (harness profile listing)
+/harness-profiles/{name}     (harness profile detail)
+/harness-profiles/{name}/availability  (structured availability report)
+/sessions                    (harness session list)
+/sessions/{id}               (harness session detail)
+/sessions/{id}/capture       (redacted tmux capture)
+/sessions/{id}/send           (inject text + emit event)
+/sessions/{id}/stop
+/interactions                (Composer interaction listing)
+/interactions/{id}           (interaction detail)
+/interactions/{id}/reply     (Composer reply — injected into session)
+/interactions/{id}/cancel    (Composer cancel — emits event)
+/agent-runs/{id}/verification
+/agent-runs/{id}/verify
+/agent-runs/{id}/artifacts
+/artifacts/{id}              (metadata or ?view=true raw bytes)
+/worktrees
+/worktrees/{id}
+/cleanup/dry-run             (retention preview — no disk changes)
+/cleanup/run                 (retention execution — honours cleanup_dry_run flag)
 /inventory         (service inventory)
 /metrics           (Prometheus metrics, sensitive in production)
 ```
@@ -203,6 +228,36 @@ Terminal states (`completed`, `failed`, `cancelled`) have no valid outgoing tran
 | `StubRuntime` (`local-stub`) | Safe local stub, no external calls | Default, dev, testing |
 | `DockerRuntime` (`docker`) | Hardened Docker container | Production agent execution |
 | `ProcessRuntime` (`process`) | NO sandbox (trusted-only) | Local trusted scripts, dev workflows |
+| `HarnessSessionRuntimeAdapter` (`harness_session`) | Wraps HarnessRuntime — worktree + tmux session + supervision + verification + artifacts | Composer-driven long-horizon agent work |
+
+In addition to the adapter family, the gateway supports auto-routing
+of `agent_id` matching a harness profile to the `harness_session`
+runtime — no explicit `execution.mode` needed. See
+[docs/harness-runtime.md](docs/harness-runtime.md) for the full
+contract. In short: each task gets an isolated git worktree, a
+tmux-backed harness session (Claude Code / opencode / Codex / fake
+harness), Composer-controlled interactions, mandatory verification,
+and an HTML review report generated when verification passes. The
+harness runtime is now a first-class `RuntimeRegistry` entry —
+dispatch flows through the same `registry.create()` path as every
+other runtime.
+
+## Restart reconciliation
+
+When the gateway boots, `reconcile_harness_sessions()` inspects all
+recent harness sessions. Alive tmux sessions are marked
+`recovered_after_restart` + `running` so Composer can re-attach.
+Missing sessions are marked `stalled` (not `failed`) so Composer can
+still intervene.
+
+## Retention cleanup
+
+The `/cleanup/dry-run` endpoint previews what would be deleted under
+the configured retention policy. `/cleanup/run` executes the cleanup
+but honours `AGW_HARNESS__CLEANUP_DRY_RUN` (default: `true`) — use
+`?force=true` to override. Active sessions and their worktrees are
+never touched. See `scripts/cleanup-harness-artifacts.sh` for a CLI
+wrapper.
 
 ## DockerRuntime Sandboxing
 
@@ -264,14 +319,41 @@ uv run agents-gateway run
 - [ ] Agent manifests validated (`agents-gateway validate`)
 - [ ] Health check endpoint accessible
 - [ ] Metrics endpoint access controlled
+- [ ] `AGW_HARNESS__ARTIFACTS_ROOT` on a persistent volume
+- [ ] `AGW_HARNESS__WORKTREE_ROOT` on a writable volume
+- [ ] `AGW_HARNESS__CLEANUP_DRY_RUN` reviewed (default `true`)
+- [ ] `AGW_HARNESS__ARTIFACT_RETENTION_DAYS` reviewed (default `14`)
+- [ ] `AGW_HARNESS__WORKTREE_RETENTION_DAYS` reviewed (default `7`)
 
 ## Testing
 
 ```bash
-uv run pytest -q                        # 258 tests
+uv run pytest -q                        # 495 tests
 uv run pytest tests/test_auth.py -v     # JWT verification proofs
 uv run pytest tests/test_endpoints.py -v # HTTP auth + task lifecycle
 uv run pytest tests/test_runtime.py -v  # Docker sandbox + ProcessRuntime gating
+uv run pytest tests/test_harness_runtime_e2e.py -v  # fake-harness 3-flow E2E
+uv run pytest tests/test_harness_http_api.py -v     # harness HTTP endpoints
+uv run pytest tests/test_session_supervisor.py -v   # supervisor + classifier
+```
+
+### Local harness E2E
+
+Drives the full harness flow end-to-end using the bundled `fake-test` harness profile. No real Claude/opencode/Codex required.
+
+```bash
+bash scripts/e2e-harness-runtime-local.sh
+# Expected: "Passed: 3 / Failed: 0" + "[OK] Harness runtime local E2E passed"
+```
+
+### Real harness E2E (optional)
+
+Requires `opencode` / `claude` / `codex` on PATH and configured with LLM credentials. Refuses with exit code 2 if the binary is missing — never fakes success.
+
+```bash
+bash scripts/e2e-harness-runtime-real.sh                 # opencode-deepseek profile
+AGW_E2E_REAL_PROFILE=claude-code bash scripts/e2e-harness-runtime-real.sh
+# Missing binary → "REAL HARNESS E2E BLOCKED: missing <command>" + exit 2
 ```
 
 ## Docker
@@ -295,6 +377,22 @@ docker compose down
 - No task cancellation for in-flight Docker containers (docker rm is async best-effort)
 - `stub-runtime` only; real Docker/Process execution needs Docker daemon
 - No multi-replica coordination (SQLite single-writer; WAL mode helps but does not solve multi-process contention)
+- Harness sessions today run on host via tmux (long-term containerization is roadmap)
+- HTML review report redaction is regex-based and may miss novel token formats — report leaks at https://github.com/Astatide1337/agents-gateway/issues
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [README.md](README.md) | This file — overview, quick start, security model, runtime model |
+| [SECURITY.md](SECURITY.md) | Threat model, the `_safe_env` boundary, redaction patterns, production checklist |
+| [docs/architecture.md](docs/architecture.md) | Component map, module layout, data store, concurrency |
+| [docs/api.md](docs/api.md) | Full HTTP + MCP API reference (legacy + harness-runtime planes) |
+| [docs/runtime.md](docs/runtime.md) | Legacy adapters + harness worktree runtime configuration |
+| [docs/harness-runtime.md](docs/harness-runtime.md) | Runtime contract — goal injection, supervision, verification, completion flow |
+| [docs/verification.md](docs/verification.md) | Verification runner, env-required gate, failure feedback loop |
+| [docs/composer-integration.md](docs/composer-integration.md) | Composer contract — endpoint map, task spec, reply protocol, terminal outcomes |
+| [docs/runbooks.md](docs/runbooks.md) | Operational runbooks (boot, E2E, diagnose stall/blocked/missing artifacts) |
 
 ## License
 

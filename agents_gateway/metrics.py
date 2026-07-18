@@ -64,5 +64,31 @@ def init_gateway_metrics(reg: MetricsRegistry | None = None) -> None:
         "tasks_total", "tasks_created_total", "tasks_completed_total",
         "tasks_failed_total", "tasks_cancelled_total", "artifacts_total",
         "requests_total", "request_errors_total",
+        # Harness-runtime counters
+        "harness_sessions_started_total",
+        "harness_sessions_completed_total",
+        "harness_sessions_failed_total",
+        "harness_sessions_blocked_external_total",
+        "harness_sessions_waiting_for_reply_total",
+        "harness_worktrees_created_total",
+        "harness_worktrees_cleaned_up_total",
+        "harness_verification_runs_total",
+        "harness_verification_runs_passed_total",
+        "harness_verification_runs_failed_total",
+        "harness_verification_runs_blocked_total",
+        "harness_composer_interactions_total",
+        "harness_composer_interactions_answered_total",
+        "harness_artifacts_created_total",
+        "harness_reports_generated_total",
     ):
         r.inc_counter(name, 0)
+    # Harness gauges initialised to zero — supervisor updates them.
+    for name in (
+        "harness_sessions_active",
+        "harness_sessions_running",
+        "harness_sessions_waiting_for_reply",
+        "harness_sessions_verifying",
+        "harness_worktrees_active",
+        "harness_composer_interactions_pending",
+    ):
+        r.set_gauge(name, 0)

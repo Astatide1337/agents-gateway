@@ -30,6 +30,7 @@ class TaskWorker:
         runtime_config: Any,
         artifacts_dir: str,
         poll_interval_seconds: float = 0.5,
+        harness_config: Any = None,
     ) -> None:
         self._storage = storage
         self._catalog = catalog
@@ -37,6 +38,7 @@ class TaskWorker:
         self._runtime_config = runtime_config
         self._artifacts_dir = artifacts_dir
         self._poll_interval = poll_interval_seconds
+        self._harness_config = harness_config
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -130,29 +132,64 @@ class TaskWorker:
         task = self._storage.get_task(task_id)
         if task is None:
             return
-        agent = self._catalog.get_agent(task.agent_id)
-        if agent is None:
+
+        meta = getattr(task, "metadata", {}) or {}
+        runtime_type = meta.get("runtime_type")
+        agent = None
+
+        # ═══════════════════════════════════════════════════════════
+        # Runtime selection. The harness_session runtime is now a
+        # first-class RuntimeRegistry entry. We still sniff
+        # `task.metadata.runtime_type == 'harness_session'` first
+        # (cheap path for composer-created tasks) and fall back to
+        # the agent manifest's runtime.type for legacy tasks. When
+        # neither is set but the agent_id maps to a harness profile,
+        # we also treat it as a harness_session task so callers can
+        # create tasks with `agent_id="opencode-deepseek"` and zero
+        # ceremony.
+        # ═══════════════════════════════════════════════════════════
+        if not runtime_type:
+            # Resolve via the agent catalog (legacy path).
+            agent = self._catalog.get_agent(task.agent_id)
+            if agent is not None:
+                runtime_type = agent.runtime.type
+            else:
+                # Try the harness profile catalog — if the agent_id
+                # is a known harness profile, dispatch as
+                # harness_session instead of failing the task.
+                try:
+                    from agents_gateway.harness.profiles import get_profile
+                    if task.agent_id and get_profile(task.agent_id) is not None:
+                        runtime_type = "harness_session"
+                except Exception:
+                    pass
+
+        if runtime_type is None:
             self._storage.append_event(task_id, "runtime_error",
                                       {"error": f"agent '{task.agent_id}' not found"})
             self._storage.update_task_status(task_id, "failed")
             return
 
         log_event("worker_task_start",
-                  f"Executing task {task_id} via {agent.runtime.type}",
+                  f"Executing task {task_id} via {runtime_type}",
                   task_id=task_id, agent_id=task.agent_id,
-                  runtime_type=agent.runtime.type)
+                  runtime_type=runtime_type)
         self._storage.append_event(task_id, "runtime_started",
-                                  {"runtime": agent.runtime.type,
+                                  {"runtime": runtime_type,
                                    "task_id": task_id})
 
         try:
             adapter = self._runtime_registry.create(
-                agent.runtime.type,
+                runtime_type,
                 storage=self._storage,
                 artifacts_dir=self._artifacts_dir,
-                command=agent.runtime.command,
-                docker_image=getattr(agent.runtime, "docker_image", "") or "",
+                command=self._command_for(agent, runtime_type),
+                docker_image=self._docker_image_for(agent, runtime_type),
                 runtime_config=self._runtime_config,
+                # Passed for every runtime type; adapters ignore
+                # unknown kwargs (their __init__ accepts **kwargs).
+                harness_config=getattr(self._runtime_registry,
+                                       "harness_config", None),
             )
         except KeyError as e:
             self._storage.append_event(task_id, "runtime_error",
@@ -163,11 +200,21 @@ class TaskWorker:
         try:
             result = adapter.execute(task_id)
             # Convert the adapter's terminal signal into a final state.
-            # The adapter may have already moved the task to completed/failed;
-            # if not, drive it from result["status"].
+            # The adapter may have already moved the task to
+            # completed/failed/waiting; if not, drive it from
+            # result["status"].
             current = self._storage.get_task(task_id)
             if current and current.status == "running":
-                final = "completed" if result.get("status") == "completed" else "failed"
+                status = result.get("status", "")
+                if status in ("completed", "passed"):
+                    final = "completed"
+                elif status in ("blocked_external", "stalled",
+                                 "waiting_for_reply", "waiting"):
+                    final = "waiting"
+                elif status == "cancelled":
+                    final = "cancelled"
+                else:
+                    final = "failed"
                 try:
                     self._storage.update_task_status(task_id, final)
                 except TransitionError:
@@ -181,3 +228,15 @@ class TaskWorker:
                     self._storage.update_task_status(task_id, "failed")
                 except TransitionError:
                     pass
+
+    @staticmethod
+    def _command_for(agent, runtime_type: str) -> str:
+        if runtime_type in ("process", "docker"):
+            return getattr(agent.runtime, "command", "") if agent else ""
+        return ""
+
+    @staticmethod
+    def _docker_image_for(agent, runtime_type: str) -> str:
+        if runtime_type == "docker" and agent is not None:
+            return getattr(agent.runtime, "docker_image", "") or ""
+        return ""
