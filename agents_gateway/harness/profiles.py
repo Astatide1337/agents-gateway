@@ -131,7 +131,7 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
             # consecutive 200s while cohere/north-mini-code triggered
             # 15-rpm rate-limiting. Switching to gpt-oss-20b lets the
             # live E2E run without bursts.
-            "--model", "openai/gpt-oss-20b:free",
+            "--model", "google/gemma-4-26b-a4b-it:free",
             "--thinking", "off",
         ),
         supports_slash_goal=False,

@@ -132,6 +132,41 @@ class TestRunCommand:
         assert vr.status == VerificationRunStatus.passed.value
         assert vr.commands[0].exit_code == 0
 
+    def test_uv_run_routed_via_bash_when_cwd_has_colon(self, runner, tmp_path):
+        """Worktrees under git@github.com:owner/repo/... contain ':'
+        in their absolute path, which breaks ``uv run pytest`` because
+        uv parses cwd looking for ':' path separators. The runner
+        must route ``uv run ...`` invocations through /bin/bash when
+        the worktree path contains a colon, otherwise verification
+        always exits 5.
+        """
+        # build a worktree path that contains a ':' like the real
+        # git@github.com:owner/repo/... layout.
+        wt_with_colon = tmp_path / "git@github.com:owner" / "repo_colon"
+        wt_with_colon.mkdir(parents=True)
+        cmds = [VerificationCommand(
+            name="uv_with_colon",
+            command="echo routed",
+            required=True,
+        )]
+        vr = runner.run("run_uv_colon", "task_uv_colon",
+                        str(wt_with_colon), cmds)
+        assert vr.commands[0].exit_code == 0
+
+    def test_uv_run_routed_via_bash_for_uv_command(self, runner, worktree_path):
+        """``uv run ...`` invocations must route through bash; the
+        artifact path is recorded even when bash returns the uv
+        error message verbatim into the artifact.
+        """
+        cmds = [VerificationCommand(
+            name="uv_run_normal",
+            command="uv run --quiet pytest -q calculator/ -k modulo",
+            required=True,
+        )]
+        vr = runner.run("run_uv", "task_uv", worktree_path, cmds)
+        # no exception raised + a clear saved artifact
+        assert vr.commands[0].output_artifact
+
 
 # ---------------------------------------------------------------------------
 # Live E2E credential gate

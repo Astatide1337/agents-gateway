@@ -239,11 +239,24 @@ class VerificationRunner:
         # directly will fail — ``cd`` is a shell builtin and ``&&`` is
         # not a binary in PATH. Detect these cases and route through
         # ``/bin/bash -c`` instead so command chains work as intended.
+        #
+        # Also route ``uv run pytest`` (and ``uv sync``) through bash
+        # when the worktree cwd contains ``:`` — uv parses the absolute
+        # cwd looking for ``:`` path separators and fails with
+        # ``error: path segment contains separator ':'`` when the cwd
+        # has any. Worktrees under ``git@github.com:owner/repo/...``
+        # always do. The bash wrapper avoids that path collision
+        # because the colon only appears in PATH/argv strings passed
+        # to uv, while the actual cwd lookup is via /bin/bash cwd.
         shell_tokens = {"&&", "||", ";", "|", ">", ">>", "<", "&"}
+        argv0 = argv[0] if argv else ""
+        cwd_has_colon = ":" in str(worktree_path)
+        uv_invocation = argv0 == "uv" and len(argv) >= 2
         needs_shell = (
             any(tok in argv for tok in shell_tokens)
-            or argv[0] in ("cd", "source", "export", "exec", "pushd", "popd")
+            or argv0 in ("cd", "source", "export", "exec", "pushd", "popd")
             or any("${" in a or "`" in a or "$(" in a for a in argv)
+            or (cwd_has_colon and uv_invocation)
         )
         if needs_shell:
             argv = ["/bin/bash", "-c", cmd.command]
