@@ -126,12 +126,12 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         harness="pi",
         command="pi",
         args=(
-            # Free-tier code-tuned model — no per-token cost, billed as
-            # $0 on OpenRouter. AGENTS.md documents deepseek-v4-flash as
-            # the canonical agent model, but a free tier is ideal here
-            # to avoid exhausting OpenRouter credits during routine
-            # CI runs of the live E2E.
-            "--model", "cohere/north-mini-code:free",
+            # Free-tier model chosen after a 10-message burst probe of
+            # OpenRouter free catalog 22:04 UTC: gpt-oss-20b handled 10
+            # consecutive 200s while cohere/north-mini-code triggered
+            # 15-rpm rate-limiting. Switching to gpt-oss-20b lets the
+            # live E2E run without bursts.
+            "--model", "openai/gpt-oss-20b:free",
             "--thinking", "off",
         ),
         supports_slash_goal=False,
