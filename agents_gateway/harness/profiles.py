@@ -125,8 +125,15 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         name="pi-coding-agent",
         harness="pi",
         command="pi",
-        args=("--model", "openrouter/deepseek/deepseek-v4-flash",
-              "--thinking", "low"),
+        args=(
+            # Free-tier code-tuned model — no per-token cost, billed as
+            # $0 on OpenRouter. AGENTS.md documents deepseek-v4-flash as
+            # the canonical agent model, but a free tier is ideal here
+            # to avoid exhausting OpenRouter credits during routine
+            # CI runs of the live E2E.
+            "--model", "cohere/north-mini-code:free",
+            "--thinking", "off",
+        ),
         supports_slash_goal=False,
         input_mode="tmux_stdin",
         completion_strategy="output_classifier",
