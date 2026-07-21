@@ -233,6 +233,21 @@ class VerificationRunner:
                 passed=False, exit_code=None,
             )
 
+        # If the command contains shell metacharacters (use of shell
+        # builtins like ``cd``, redirect operators like ``>``, logical
+        # operators like ``&&``, or pipe ``|``), executing the argv
+        # directly will fail — ``cd`` is a shell builtin and ``&&`` is
+        # not a binary in PATH. Detect these cases and route through
+        # ``/bin/bash -c`` instead so command chains work as intended.
+        shell_tokens = {"&&", "||", ";", "|", ">", ">>", "<", "&"}
+        needs_shell = (
+            any(tok in argv for tok in shell_tokens)
+            or argv[0] in ("cd", "source", "export", "exec", "pushd", "popd")
+            or any("${" in a or "`" in a or "$(" in a for a in argv)
+        )
+        if needs_shell:
+            argv = ["/bin/bash", "-c", cmd.command]
+
         # Execute inside the worktree with a clean environment. We do
         # NOT inherit from os.environ wholesale to avoid leaking gateway
         # secrets into verification subprocesses; we pass through only

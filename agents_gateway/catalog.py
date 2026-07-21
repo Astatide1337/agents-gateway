@@ -213,9 +213,12 @@ class AgentCatalog:
         credentials_present: bool | None = None
         for env_name in _credential_env_names(p.harness):
             present = bool(__import__("os").environ.get(env_name))
-            credentials_present = (credentials_present or False) if credentials_present is not None else present
-            if credentials_present:
+            if present:
+                credentials_present = True
                 break
+        # If no env matched, credentials_present remains None; map to False.
+        if credentials_present is None:
+            credentials_present = False
         runnable = binary_present and (credentials_present is not False)
         log_event("harness_availability_checked",
                   f"harness availability checked: {name} runnable={runnable}",
@@ -281,6 +284,10 @@ def _credential_env_names(harness: str) -> list[str]:
     if harness == "opencode":
         return ["DEEPSEEK_API_KEY", "OPENROUTER_API_KEY",
                 "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+    if harness == "pi":
+        return ["DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY", "NVIDIA_API_KEY",
+                "OPENROUTER_API_KEY"]
     if harness == "claude":
         return ["ANTHROPIC_API_KEY"]
     if harness == "codex":

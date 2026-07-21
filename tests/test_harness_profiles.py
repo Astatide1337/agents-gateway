@@ -16,9 +16,10 @@ from agents_gateway.harness.profiles import (
 
 
 class TestBuiltinProfiles:
-    def test_builtin_table_has_four_profiles(self):
+    def test_builtin_table_has_five_profiles(self):
         assert set(BUILTIN_PROFILES) == {
             "opencode-deepseek", "claude-code", "codex", "fake-test",
+            "pi-coding-agent",
         }
 
     def test_opencode_deeepseek_is_default(self):

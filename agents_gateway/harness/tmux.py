@@ -85,10 +85,15 @@ class TmuxDriver:
         to preserve their literal meaning.
         """
         target = self._target(ref)
-        # Split on newlines and send each line separately.
+        # Split on newlines and send each line separately. We use the
+        # ``--`` separator so leading dashes (e.g. markdown list items
+        # like "- " or argument flags) are not interpreted by tmux as
+        # send-keys flags. Plain send-keys (no ``-l``) is preserved
+        # because full-screen TUI harnesses (pi, opencode, claude-code)
+        # use raw terminal mode and need key events, not literal text.
         for line in text.split("\n"):
             if line:
-                argv = [self.tmux_bin, "send-keys", "-t", target, line]
+                argv = [self.tmux_bin, "send-keys", "-t", target, "--", line]
                 proc = subprocess.run(
                     argv, capture_output=True, text=True, timeout=10)
                 if proc.returncode != 0:

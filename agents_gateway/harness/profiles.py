@@ -121,6 +121,17 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
             "behaviour (write a file, ask a question, fail then fix)."
         ),
     ),
+    "pi-coding-agent": HarnessProfile(
+        name="pi-coding-agent",
+        harness="pi",
+        command="pi",
+        args=(),
+        supports_slash_goal=False,
+        input_mode="tmux_stdin",
+        completion_strategy="output_classifier",
+        goal_strategy=GoalStrategy.plain_prompt.value,
+        description="PI Coding Agent CLI; plain-text prompt input.",
+    ),
 }
 
 

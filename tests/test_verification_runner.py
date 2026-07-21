@@ -106,6 +106,32 @@ class TestRunCommand:
         assert vr.status == VerificationRunStatus.failed.value
         assert vr.commands[0].exit_code == 124
 
+    def test_shell_cd_chain_runs_via_bash(self, runner, worktree_path):
+        """Commands using `cd X && cmd` (cd is a shell builtin) must
+        be routed through /bin/bash -c rather than executed directly,
+        otherwise argv[0]='cd' returns exit 127.
+        """
+        cmds = [VerificationCommand(
+            name="cd_chain",
+            command="cd . && echo ok",
+            required=True,
+        )]
+        vr = runner.run("run_cd_chain", "task_cd", worktree_path, cmds)
+        assert vr.status == VerificationRunStatus.passed.value
+        assert vr.commands[0].passed
+        assert vr.commands[0].exit_code == 0
+
+    def test_pipe_chain_runs_via_bash(self, runner, worktree_path):
+        """Commands using shell pipes (|) must be routed through bash."""
+        cmds = [VerificationCommand(
+            name="pipe_chain",
+            command="echo hello | grep hello",
+            required=True,
+        )]
+        vr = runner.run("run_pipe", "task_pipe", worktree_path, cmds)
+        assert vr.status == VerificationRunStatus.passed.value
+        assert vr.commands[0].exit_code == 0
+
 
 # ---------------------------------------------------------------------------
 # Live E2E credential gate

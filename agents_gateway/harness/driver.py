@@ -145,10 +145,14 @@ class HarnessDriver:
                 self.inject_goal(session, goal_context,
                                 requested_strategy=goal_strategy)
             except Exception as e:
+                import traceback as _tb
                 self._emit(session, "session.goal_injection_failed",
-                          {"error": str(e)})
+                           {"error": str(e), "trace": _tb.format_exc()})
                 session.status = HarnessSessionStatus.failed.value
                 session.ended_at = datetime.now(timezone.utc).isoformat()
+                session.metadata = dict(session.metadata or {})
+                session.metadata["goal_injection_error"] = str(e)
+                session.metadata["goal_injection_trace"] = _tb.format_exc()
                 self.storage.save_session(session)
                 return session
 
