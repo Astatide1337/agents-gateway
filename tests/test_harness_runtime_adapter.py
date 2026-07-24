@@ -142,7 +142,7 @@ def _catalog_for(tmp_path: Path):
 class TestAgentCatalogResolve:
     def test_resolve_known_harness_profile(self, tmp_path):
         cat = _catalog_for(tmp_path)
-        assert cat.resolve_agent_id_to_runtime("opencode-deepseek") == "harness_session"
+        assert cat.resolve_agent_id_to_runtime("pi-coding-agent") == "harness_session"
 
     def test_resolve_unknown_agent(self, tmp_path):
         cat = _catalog_for(tmp_path)
@@ -346,7 +346,7 @@ class TestAvailability:
 
     def test_check_returns_structured_fields(self, tmp_path):
         cat = _catalog_for(tmp_path)
-        report = cat.check_harness_availability("opencode-deepseek")
+        report = cat.check_harness_availability("pi-coding-agent")
         expected_keys = {"profile", "configured", "binary_present",
                          "credentials_present", "runnable", "command",
                          "error"}

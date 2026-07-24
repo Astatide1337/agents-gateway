@@ -27,7 +27,7 @@ from agents_gateway.harness.profiles import get_profile
 
 class TestResolveStrategy:
     def test_auto_resolves_to_slash_goal_when_supported(self):
-        p = get_profile("opencode-deepseek")
+        p = get_profile("opencode")
         assert p.supports_slash_goal
         assert resolve_strategy(p, None) == GoalStrategy.slash_goal.value
 
@@ -37,7 +37,7 @@ class TestResolveStrategy:
         assert resolve_strategy(p, None) == GoalStrategy.plain_prompt.value
 
     def test_explicit_slash_goal_resolves_when_supported(self):
-        p = get_profile("opencode-deepseek")
+        p = get_profile("opencode")
         assert resolve_strategy(p, "slash_goal") == GoalStrategy.slash_goal.value
 
     def test_explicit_slash_goal_raises_when_unsupported(self):
@@ -46,12 +46,12 @@ class TestResolveStrategy:
             resolve_strategy(p, "slash_goal")
 
     def test_plain_prompt_resolves_for_any_profile(self):
-        for name in ("opencode-deepseek", "claude-code", "codex", "fake-test"):
+        for name in ("opencode", "claude-code", "codex", "fake-test"):
             p = get_profile(name)
             assert resolve_strategy(p, "plain_prompt") == GoalStrategy.plain_prompt.value
 
     def test_file_based_resolves_for_all(self):
-        for name in ("opencode-deepseek", "claude-code", "codex", "fake-test"):
+        for name in ("opencode", "claude-code", "codex", "fake-test"):
             p = get_profile(name)
             assert resolve_strategy(p, "file_based") == GoalStrategy.file_based.value
 
@@ -153,7 +153,7 @@ class TestInjectGoal:
     def test_inject_goal_slash_strategy_with_supported_profile(self, tmp_path):
         wt = tmp_path / "wt"
         wt.mkdir()
-        p = get_profile("opencode-deepseek")
+        p = get_profile("opencode")
         ctx = GoalContext(title="t", brief="b",
                           goal_text="Build the timeline endpoint.")
         result = inject_goal(wt, p, ctx, requested_strategy="slash_goal")
@@ -193,7 +193,7 @@ class TestInjectGoal:
     def test_inject_goal_auto_with_supported_profile(self, tmp_path):
         wt = tmp_path / "wt"
         wt.mkdir()
-        p = get_profile("opencode-deepseek")
+        p = get_profile("opencode")
         ctx = GoalContext(goal_text="Implement Y.", title="t", brief="b")
         result = inject_goal(wt, p, ctx, requested_strategy="auto")
         # auto + supports_slash_goal -> slash_goal
@@ -256,7 +256,7 @@ class TestInjectGoal:
 
 class TestBuildDirectiveText:
     def test_build_directive_text_slash_goal(self):
-        p = get_profile("opencode-deepseek")
+        p = get_profile("opencode")
         text = build_directive_text("slash_goal", "Build X.", p)
         assert text.startswith("/goal ")
         assert "Build X." in text

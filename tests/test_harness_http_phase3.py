@@ -199,12 +199,12 @@ class TestAvailabilityEndpoint:
 
     def test_known_missing_binary_profile(self, server):
         """Profile that's configured but binary is missing."""
-        # opencode-deepseek opencode binary may or may not be present.
+        # pi-coding-agent opencode binary may or may not be present.
         # Just verify the endpoint returns a structured response.
-        resp = server.get("/harness-profiles/opencode-deepseek/availability")
+        resp = server.get("/harness-profiles/pi-coding-agent/availability")
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["profile"] == "opencode-deepseek"
+        assert body["profile"] == "pi-coding-agent"
         assert body["configured"] is True
         # Don't assert specifics — depends on the host. Just check structure.
         assert isinstance(body["binary_present"], bool)

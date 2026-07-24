@@ -75,7 +75,7 @@ class TestStartSession:
             worktree_path=worktree_path,
             profile="nonexistent",
         )
-        assert session.harness_profile == "opencode-deepseek"
+        assert session.harness_profile == "pi-coding-agent"
 
     def test_start_session_records_in_storage(self, driver, worktree_path):
         session = driver.start_session(

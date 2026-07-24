@@ -155,16 +155,17 @@ class TestProfilesTools:
     def test_list_returns_all_builtin(self, mcp_server):
         result = call_tool(mcp_server, "harness_profiles_list")
         names = {p["name"] for p in result}
-        assert {"opencode-deepseek", "claude-code", "codex",
+        assert {"pi-coding-agent", "opencode", "claude-code", "codex",
                 "fake-test"}.issubset(names)
         for p in result:
             assert "supports_slash_goal" in p
             assert "command" in p
 
     def test_get_known_profile(self, mcp_server):
+        # opencode supports /goal slash command; pi-coding-agent does not.
         result = call_tool(mcp_server, "harness_profile_get",
-                            name="opencode-deepseek")
-        assert result["name"] == "opencode-deepseek"
+                            name="opencode")
+        assert result["name"] == "opencode"
         assert result["supports_slash_goal"] is True
 
     def test_get_unknown_profile_returns_error(self, mcp_server):

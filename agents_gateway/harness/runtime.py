@@ -47,7 +47,12 @@ from agents_gateway.harness.models import (
     Worktree,
     WorktreeStatus,
 )
-from agents_gateway.harness.profiles import get_profile
+from agents_gateway.harness.profiles import (
+    get_profile,
+    validate_model_for_profile,
+    DisapprovedModelError,
+    MissingModelError,
+)
 from agents_gateway.harness.reports import generate_review_report
 from agents_gateway.harness.storage import HarnessStorage
 from agents_gateway.harness.supervisor import SessionSupervisor
@@ -215,11 +220,27 @@ class HarnessRuntime:
 
         # Re-resolve the profile (might be a name string)
         profile_name = task_spec.get("execution", {}).get(
-            "harness_profile", "opencode-deepseek")
+            "harness_profile", "pi-coding-agent")
         profile = get_profile(profile_name)
         if profile is None:
             return self._fail_with(agent_run_id, task_id, task_spec,
                                     f"unknown harness profile: {profile_name}")
+
+        # Optional per-task model override (e.g.
+        # ``nvidia/nemotron-3-ultra-550b-a55b:free``). Injected via the
+        # profile's model_arg_name flag; profiles without model_arg_name
+        # ignore it.
+        model_override = task_spec.get("execution", {}).get("model")
+
+        # Validate model policy: must be present and on the approved
+        # free-model allowlist for profiles that support model overrides.
+        # Profiles without model_arg_name (claude-code, codex, fake-test)
+        # skip validation.
+        try:
+            model_override = validate_model_for_profile(model_override, profile)
+        except (MissingModelError, DisapprovedModelError) as exc:
+            return self._fail_with(agent_run_id, task_id, task_spec,
+                                    f"model policy violation: {exc}")
 
         # 3. Compose GoalContext (write .agent-task/* files).
         goal_context = self._compose_goal_context(task_spec)
@@ -241,6 +262,7 @@ class HarnessRuntime:
             worktree_path=worktree.path, profile=profile,
             goal_context=goal_context,
             goal_strategy=task_spec.get("goal", {}).get("strategy"),
+            model_override=model_override,
         )
         if session.status == HarnessSessionStatus.failed.value:
             return self._fail_with(agent_run_id, task_id, task_spec,
