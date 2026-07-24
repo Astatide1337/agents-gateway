@@ -202,12 +202,14 @@ class TestEasyComplete:
         orig_start = runtime.driver.start_session
 
         def start_session_wrap(*, task_id, agent_run_id, worktree_path,
-                               profile, goal_context, goal_strategy=None):
+                               profile, goal_context, goal_strategy=None,
+                               model_override=None):
             relay_instance.worktree_path = worktree_path
             return orig_start(
                 task_id=task_id, agent_run_id=agent_run_id,
                 worktree_path=worktree_path, profile=profile,
                 goal_context=goal_context, goal_strategy=goal_strategy,
+                model_override=model_override,
             )
 
         runtime.driver.start_session = start_session_wrap  # type: ignore
@@ -286,12 +288,14 @@ class TestAskQuestionWithReply:
         orig_start = runtime.driver.start_session
 
         def start_session_wrap(*, task_id, agent_run_id, worktree_path,
-                               profile, goal_context, goal_strategy=None):
+                               profile, goal_context, goal_strategy=None,
+                               model_override=None):
             relay_instance.worktree_path = worktree_path
             return orig_start(
                 task_id=task_id, agent_run_id=agent_run_id,
                 worktree_path=worktree_path, profile=profile,
                 goal_context=goal_context, goal_strategy=goal_strategy,
+                model_override=model_override,
             )
 
         runtime.driver.start_session = start_session_wrap  # type: ignore
@@ -401,12 +405,14 @@ class TestFailThenFix:
         orig_start = runtime.driver.start_session
 
         def start_session_wrap(*, task_id, agent_run_id, worktree_path,
-                               profile, goal_context, goal_strategy=None):
+                               profile, goal_context, goal_strategy=None,
+                               model_override=None):
             relay_instance.worktree_path = worktree_path
             return orig_start(
                 task_id=task_id, agent_run_id=agent_run_id,
                 worktree_path=worktree_path, profile=profile,
                 goal_context=goal_context, goal_strategy=goal_strategy,
+                model_override=model_override,
             )
 
         runtime.driver.start_session = start_session_wrap  # type: ignore

@@ -1,18 +1,25 @@
 """Harness profiles describe how to start a real coding harness.
 
 A profile bundles the launch command, whether the harness supports
-`/goal` slash commands, the preferred goal-injection strategy, and the
+``/goal`` slash commands, the preferred goal-injection strategy, and the
 completion-strategy heuristic used by the classifier.
 
 Built-in profiles:
 
-  * opencode-deepseek  - default for opencode sessions
-  * claude-code        - Anthropic Claude Code
-  * codex              - OpenAI Codex CLI
-  * fake-test          - in-tree fake harness for tests and the local
-                          E2E script. Reads `/goal <text>` (or plain
-                          text) from stdin, performs scripted behaviour,
-                          prints "DONE" or asks a clarifying question.
+  * pi-coding-agent  - PI Coding Agent CLI (default; model configurable)
+  * opencode         - opencode CLI (model configurable)
+  * claude-code      - Anthropic Claude Code
+  * codex            - OpenAI Codex CLI
+  * fake-test        - in-tree fake harness for tests and the local E2E
+                       script. Reads ``/goal <text>`` (or plain
+                       text) from stdin, performs scripted behaviour,
+                       prints "DONE" or asks a clarifying question.
+
+The ``pi-coding-agent`` and ``opencode`` profiles do NOT hardcode a
+model — the dispatcher sets ``task_spec.execution.model`` and the driver
+injects the right CLI flag (``--model`` for PI, ``-m`` for opencode)
+from the profile's ``model_arg_name``. If the dispatcher omits the
+model, the profile's ``default_model`` (if set) is used.
 """
 
 from __future__ import annotations
@@ -24,7 +31,18 @@ from agents_gateway.harness.models import GoalStrategy
 
 @dataclass(frozen=True)
 class HarnessProfile:
-    """How to launch one harness and feed it a goal."""
+    """How to launch one harness and feed it a goal.
+
+    The model is **not** baked into ``args``. Instead each profile that
+    supports a model override declares a CLI flag name via
+    ``model_arg_name`` (e.g. ``--model`` for PI, ``-m`` for opencode).
+    At session spawn time the driver injects
+    ``[model_arg_name, task_spec.execution.model]`` if the dispatcher
+    supplied a model override; otherwise a ``default_model`` (if set
+    on the profile) is used. Profiles without ``model_arg_name``
+    (claude-code, codex, fake-test) silently ignore model overrides
+    and always launch with their own runtime defaults.
+    """
 
     name: str
     harness: str
@@ -38,6 +56,11 @@ class HarnessProfile:
     default: bool = False
     env: tuple[tuple[str, str], ...] = ()
     description: str = ""
+    # CLI flag the driver uses to inject ``task_spec.execution.model``
+    # (or ``default_model`` if the dispatcher did not set one).
+    # ``None`` disables model override for this profile.
+    model_arg_name: str | None = None
+    default_model: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -52,7 +75,25 @@ class HarnessProfile:
             "goal_strategy": self.goal_strategy,
             "default": self.default,
             "description": self.description,
+            "model_arg_name": self.model_arg_name,
+            "default_model": self.default_model,
         }
+
+    def effective_args(self, model_override: str | None = None
+                       ) -> tuple[str, ...]:
+        """Return the full argv to pass after ``command``.
+
+        If this profile declares ``model_arg_name`` and a model is
+        available (either the override from the dispatcher or the
+        profile's ``default_model``), the (flag, value) pair is
+        appended. Otherwise plain ``args`` are returned untouched.
+        """
+        out = list(self.args)
+        if self.model_arg_name:
+            model = model_override or self.default_model
+            if model:
+                out.extend([self.model_arg_name, model])
+        return tuple(out)
 
 
 # Built-in profile table. The `fake-test` profile points at the
@@ -70,8 +111,28 @@ _FAKE_TEST_RUNNER = str(
 )
 
 BUILTIN_PROFILES: dict[str, HarnessProfile] = {
-    "opencode-deepseek": HarnessProfile(
-        name="opencode-deepseek",
+    "pi-coding-agent": HarnessProfile(
+        name="pi-coding-agent",
+        harness="pi",
+        command="pi",
+        args=(
+            "--thinking", "off",
+        ),
+        supports_slash_goal=False,
+        input_mode="tmux_stdin",
+        completion_strategy="output_classifier",
+        goal_strategy=GoalStrategy.plain_prompt.value,
+        default=True,
+        description=(
+            "PI Coding Agent CLI; plain-text prompt input. The model "
+            "is intentionally NOT hardcoded here — the dispatcher passes "
+            "it via task_spec.execution.model (or the profile's "
+            "default_model fallback). Uses --model <id>."
+        ),
+        model_arg_name="--model",
+    ),
+    "opencode": HarnessProfile(
+        name="opencode",
         harness="opencode",
         command="opencode",
         args=(),
@@ -80,8 +141,12 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         input_mode="tmux_stdin",
         completion_strategy="output_classifier",
         goal_strategy=GoalStrategy.auto.value,
-        default=True,
-        description="opencode CLI with DeepSeek backend; supports /goal slash command.",
+        description=(
+            "opencode CLI; supports /goal slash command. The model is "
+            "configurable via task_spec.execution.model (or "
+            "default_model fallback). Uses -m <provider/model>."
+        ),
+        model_arg_name="-m",
     ),
     "claude-code": HarnessProfile(
         name="claude-code",
@@ -121,25 +186,6 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
             "behaviour (write a file, ask a question, fail then fix)."
         ),
     ),
-    "pi-coding-agent": HarnessProfile(
-        name="pi-coding-agent",
-        harness="pi",
-        command="pi",
-        args=(
-            # Free-tier model chosen after a 10-message burst probe of
-            # OpenRouter free catalog 22:04 UTC: gpt-oss-20b handled 10
-            # consecutive 200s while cohere/north-mini-code triggered
-            # 15-rpm rate-limiting. Switching to gpt-oss-20b lets the
-            # live E2E run without bursts.
-            "--model", "google/gemma-4-26b-a4b-it:free",
-            "--thinking", "off",
-        ),
-        supports_slash_goal=False,
-        input_mode="tmux_stdin",
-        completion_strategy="output_classifier",
-        goal_strategy=GoalStrategy.plain_prompt.value,
-        description="PI Coding Agent CLI; plain-text prompt input.",
-    ),
 }
 
 
@@ -171,8 +217,8 @@ def get_default_profile() -> HarnessProfile:
     for p in list_profiles():
         if p.default:
             return p
-    # Fall back to opencode-deepseek if no explicit default registered.
-    return BUILTIN_PROFILES["opencode-deepseek"]
+    # Fall back to pi-coding-agent if no explicit default registered.
+    return BUILTIN_PROFILES["pi-coding-agent"]
 
 
 __all__ = [

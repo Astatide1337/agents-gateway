@@ -84,17 +84,28 @@ class HarnessDriver:
                       worktree_path: str,
                       profile: HarnessProfile | str | None = None,
                       goal_context: GoalContext | None = None,
-                      goal_strategy: str | None = None
+                      goal_strategy: str | None = None,
+                      model_override: str | None = None,
                       ) -> HarnessSession:
-        """Bootstrap a harness session for one task + worktree."""
+        """Bootstrap a harness session for one task + worktree.
+
+        ``model_override`` is an optional model id (e.g.
+        ``nvidia/nemotron-3-ultra-550b-a55b:free``). It is injected
+        via the profile's ``model_arg_name`` flag (e.g. ``--model``);
+        profiles without ``model_arg_name`` ignore it.
+        """
         if isinstance(profile, str):
             profile = get_profile(profile) or get_default_profile()
         elif profile is None:
             profile = get_default_profile()
 
-        # Compose the spawn command: profile.command + profile.args
-        # + a marker argv so the harness can identify itself.
-        cmd_parts = [profile.command] + list(profile.args)
+        # Compose the spawn command: profile.command + effective_args
+        # (effective_args injects the model override flag via the
+        # profile's model_arg_name if the override or a default_model
+        # is present) + a marker argv so the harness can identify itself.
+        cmd_parts = [profile.command] + list(
+            profile.effective_args(model_override=model_override)
+        )
         # Sanitize against empty argv (would break tmux).
         cmd_parts = [p for p in cmd_parts if p]
         if not cmd_parts:
@@ -118,6 +129,15 @@ class HarnessDriver:
             working_directory=worktree_path,
             status=HarnessSessionStatus.starting.value,
         )
+        # Record which model actually got injected so downstream
+        # events / reports can surface it without parsing argv later.
+        if profile.model_arg_name:
+            effective_model = (
+                model_override or profile.default_model
+            )
+            if effective_model:
+                session.metadata = dict(session.metadata or {})
+                session.metadata["harness_model"] = effective_model
         self.storage.save_session(session)
         self._emit(session, "session.created", {"profile": profile.name})
 

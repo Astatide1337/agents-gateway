@@ -120,17 +120,18 @@ class TestHarnessProfilesAPI:
         assert resp.status_code == 200
         body = resp.json()
         names = {p["name"] for p in body["profiles"]}
-        assert {"opencode-deepseek", "claude-code", "codex",
+        assert {"pi-coding-agent", "opencode", "claude-code", "codex",
                 "fake-test"}.issubset(names)
         for p in body["profiles"]:
             assert set(p.keys()) >= {"name", "harness", "command",
                                      "supports_slash_goal"}
 
     def test_get_known_profile(self, server):
-        resp = server.get("/harness-profiles/opencode-deepseek")
+        # opencode supports /goal slash command; pi-coding-agent does not.
+        resp = server.get("/harness-profiles/opencode")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["name"] == "opencode-deepseek"
+        assert body["name"] == "opencode"
         assert body["supports_slash_goal"] is True
 
     def test_get_unknown_profile_returns_404(self, server):
@@ -140,7 +141,7 @@ class TestHarnessProfilesAPI:
 
     def test_validate_known(self, server):
         resp = server.post("/harness-profiles/validate",
-                           json={"name": "opencode-deepseek"})
+                           json={"name": "pi-coding-agent"})
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["valid"] is True

@@ -120,7 +120,8 @@ def create_mcp_server(config: GatewayConfig) -> FastMCP:
     def harness_task_create(title: str = "", brief: str = "",
                              repo_url: str = "",
                              base_branch: str = "master",
-                             harness_profile: str = "opencode-deepseek",
+                             harness_profile: str = "pi-coding-agent",
+                             model: str = "",
                              goal_text: str = "",
                              verification_commands_json: str = "[]",
                              required_skills_json: str = "[]",
@@ -136,6 +137,11 @@ def create_mcp_server(config: GatewayConfig) -> FastMCP:
         ``[{"name": ..., "command": ..., "required": true}, ...]``.
         Live E2E, when configured, is included automatically and
         requires the env vars in ``live_e2e_env_json``.
+
+        ``model`` is an optional model id (e.g.
+        ``nvidia/nemotron-3-ultra-550b-a55b:free``) forwarded to the
+        harness via the profile's model_arg_name flag. Empty string
+        means "use the profile's default_model".
         """
         try:
             verif_cmds = json.loads(verification_commands_json)
@@ -144,14 +150,17 @@ def create_mcp_server(config: GatewayConfig) -> FastMCP:
             live_e2e_env = json.loads(live_e2e_env_json)
         except json.JSONDecodeError as e:
             return json.dumps({"error": f"Invalid JSON arg: {e}"})
+        execution = {"mode": "harness_session",
+                     "harness_profile": harness_profile,
+                     "isolation": "worktree", "runtime": "tmux"}
+        if model:
+            execution["model"] = model
         spec = {
             "title": title,
             "brief": brief,
             "repo": {"url": repo_url, "owner": repo_owner,
                      "name": repo_name, "base_branch": base_branch},
-            "execution": {"mode": "harness_session",
-                          "harness_profile": harness_profile,
-                          "isolation": "worktree", "runtime": "tmux"},
+            "execution": execution,
             "goal": {"strategy": "auto", "slash_command": "/goal",
                      "text": goal_text},
             "required_skills": skills,
