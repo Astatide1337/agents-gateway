@@ -11,20 +11,30 @@ Built-in profiles:
   * claude-code      - Anthropic Claude Code
   * codex            - OpenAI Codex CLI
   * fake-test        - in-tree fake harness for tests and the local E2E
-                       script. Reads ``/goal <text>`` (or plain
-                       text) from stdin, performs scripted behaviour,
-                       prints "DONE" or asks a clarifying question.
+                        script. Reads ``/goal <text>`` (or plain
+                        text) from stdin, performs scripted behaviour,
+                        prints "DONE" or asks a clarifying question.
 
 The ``pi-coding-agent`` and ``opencode`` profiles do NOT hardcode a
 model — the dispatcher sets ``task_spec.execution.model`` and the driver
 injects the right CLI flag (``--model`` for PI, ``-m`` for opencode)
-from the profile's ``model_arg_name``. If the dispatcher omits the
-model, the profile's ``default_model`` (if set) is used.
+from the profile's ``model_arg_name``.
+
+Model validation is enforced by ``validate_model_for_profile`` (see
+below). If the profile declares ``model_arg_name`` (i.e. it accepts a
+model override), the dispatcher MUST supply a model that is on the
+approved free-model allowlist (configured via ``AGW_APPROVED_FREE_MODELS``,
+default ``nvidia/nemotron-3-ultra-550b-a55b:free``). If no model is
+supplied, or if the supplied model is not on the allowlist, the dispatch
+fails with a clear error. Profiles without ``model_arg_name``
+(claude-code, codex, fake-test) ignore the override and launch with
+their own runtime defaults.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass
 
 from agents_gateway.harness.models import GoalStrategy
 
@@ -94,6 +104,83 @@ class HarnessProfile:
             if model:
                 out.extend([self.model_arg_name, model])
         return tuple(out)
+
+
+# Model allowlist enforcement
+
+class MissingModelError(ValueError):
+    """Raised when a profile that requires a model receives none."""
+    pass
+
+
+class DisapprovedModelError(ValueError):
+    """Raised when a model is not on the approved allowlist."""
+
+    def __init__(self, model: str, allowlist: list[str]) -> None:
+        self.model = model
+        self.allowlist = allowlist
+        super().__init__(
+            f"Model '{model}' is not on the approved free-model allowlist. "
+            f"Allowed: {', '.join(allowlist)}"
+        )
+
+
+def _load_allowlist() -> list[str]:
+    env_val = os.environ.get("AGW_APPROVED_FREE_MODELS", "")
+    if not env_val:
+        return ["nvidia/nemotron-3-ultra-550b-a55b:free"]
+    return [m.strip() for m in env_val.split(",") if m.strip()]
+
+
+_ALLOWLIST: list[str] | None = None
+
+
+def _get_allowlist() -> list[str]:
+    global _ALLOWLIST
+    if _ALLOWLIST is None:
+        _ALLOWLIST = _load_allowlist()
+    return _ALLOWLIST
+
+
+def reload_allowlist() -> list[str]:
+    """Force reload of the allowlist from environment (for tests)."""
+    global _ALLOWLIST
+    _ALLOWLIST = _load_allowlist()
+    return _ALLOWLIST
+
+
+def validate_model_for_profile(model: str | None, profile: "HarnessProfile") -> str:
+    """Validate that the model is present and approved for the profile.
+
+    Args:
+        model: The model ID to validate (e.g. from task_spec.execution.model).
+        profile: The HarnessProfile that will receive the model.
+
+    Returns:
+        The validated model string (same as input if valid).
+
+    Raises:
+        MissingModelError: If profile requires a model but none is supplied.
+        DisapprovedModelError: If model is not on the approved allowlist.
+    """
+    if profile.model_arg_name is None:
+        # Profile doesn't support model override (claude-code, codex, fake-test)
+        return model or ""
+
+    if not model or not model.strip():
+        raise MissingModelError(
+            f"Profile '{profile.name}' requires a model override "
+            f"(flag: {profile.model_arg_name}) but task_spec.execution.model "
+            "was empty. Set CONDUCTOR_COMPOSER_LLM_MODEL in the environment "
+            "or provide a per-task model in the plan."
+        )
+
+    model = model.strip()
+    allowlist = _get_allowlist()
+    if model not in allowlist:
+        raise DisapprovedModelError(model, allowlist)
+
+    return model
 
 
 # Built-in profile table. The `fake-test` profile points at the
@@ -228,4 +315,8 @@ __all__ = [
     "get_profile",
     "list_profiles",
     "register_profile",
+    "MissingModelError",
+    "DisapprovedModelError",
+    "validate_model_for_profile",
+    "reload_allowlist",
 ]

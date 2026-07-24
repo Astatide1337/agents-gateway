@@ -190,3 +190,73 @@ class TestModelOverride:
         assert "-m" in args
         assert args[args.index("-m") + 1] == \
             "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+class TestModelPolicy:
+    """Enforced free-model allowlist via validate_model_for_profile."""
+
+    def test_missing_model_for_pi_raises_missing_model_error(self):
+        from agents_gateway.harness.profiles import (
+            MissingModelError,
+            validate_model_for_profile,
+        )
+        p = get_profile("pi-coding-agent")
+        with pytest.raises(MissingModelError):
+            validate_model_for_profile("", p)
+        with pytest.raises(MissingModelError):
+            validate_model_for_profile(None, p)
+        with pytest.raises(MissingModelError):
+            validate_model_for_profile("   ", p)
+
+    def test_disapproved_model_for_pi_raises_disapproved_model_error(self):
+        from agents_gateway.harness.profiles import (
+            DisapprovedModelError,
+            validate_model_for_profile,
+        )
+        p = get_profile("pi-coding-agent")
+        with pytest.raises(DisapprovedModelError) as exc:
+            validate_model_for_profile("anthropic/claude-sonnet-4", p)
+        assert "anthropic/claude-sonnet-4" in str(exc.value)
+        assert "nvidia/nemotron-3-ultra-550b-a55b:free" in str(exc.value)
+
+    def test_approved_model_for_pi_passes(self):
+        from agents_gateway.harness.profiles import validate_model_for_profile
+        p = get_profile("pi-coding-agent")
+        # Default allowlist contains nvidia/nemotron-3-ultra-550b-a55b:free
+        validated = validate_model_for_profile(
+            "nvidia/nemotron-3-ultra-550b-a55b:free", p
+        )
+        assert validated == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+    def test_opencode_approved_model_passes(self):
+        from agents_gateway.harness.profiles import validate_model_for_profile
+        p = get_profile("opencode")
+        validated = validate_model_for_profile(
+            "nvidia/nemotron-3-ultra-550b-a55b:free", p
+        )
+        assert validated == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+    def test_profiles_without_model_arg_name_skip_validation(self):
+        """claude-code, codex, fake-test ignore model override entirely."""
+        from agents_gateway.harness.profiles import validate_model_for_profile
+        for name in ("claude-code", "codex", "fake-test"):
+            p = get_profile(name)
+            # Should return the model (or empty string) without validation
+            assert validate_model_for_profile("any-model-id", p) == "any-model-id"
+            assert validate_model_for_profile("", p) == ""
+            assert validate_model_for_profile(None, p) == ""
+
+    def test_custom_allowlist_via_env(self, monkeypatch):
+        from agents_gateway.harness.profiles import (
+            reload_allowlist,
+            validate_model_for_profile,
+        )
+        monkeypatch.setenv("AGW_APPROVED_FREE_MODELS", "custom/model-a,custom/model-b")
+        reload_allowlist()
+        p = get_profile("pi-coding-agent")
+        # custom/model-a should now be valid
+        assert validate_model_for_profile("custom/model-a", p) == "custom/model-a"
+        assert validate_model_for_profile("custom/model-b", p) == "custom/model-b"
+        # nvidia/nemotron should now be invalid
+        with pytest.raises(Exception):
+            validate_model_for_profile("nvidia/nemotron-3-ultra-550b-a55b:free", p)
