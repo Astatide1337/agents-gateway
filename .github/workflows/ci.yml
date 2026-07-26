@@ -1,18 +1,29 @@
 name: CI
 
+# Test only — Agents Gateway is not containerized in this phase (production
+# containerization is explicitly deferred; see
+# Astatide1337/infra/docs/ci-cd/architecture-decisions.md §3, §6). On a
+# passing push to the default branch, propose-staging-update opens a PR
+# against infra recording this commit as the new staging release — no image
+# is ever built or published for this repo; the "artifact" is the commit
+# itself, deployed via infra's pinned-release model.
+
 on:
   push:
     branches: ["main", "master", "epic/*"]
   pull_request:
     branches: ["main", "master"]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Set up Python
         run: uv python install 3.12
@@ -31,3 +42,58 @@ jobs:
 
       - name: Smoke test
         run: bash scripts/smoke-test.sh
+
+  propose-staging-update:
+    needs: test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Mint GitHub App installation token (infra repo only)
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.ASTATIDE_CI_APP_ID }}
+          private-key: ${{ secrets.ASTATIDE_CI_APP_PRIVATE_KEY }}
+          owner: Astatide1337
+          repositories: infra
+
+      - name: Checkout infra
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: Astatide1337/infra
+          token: ${{ steps.app-token.outputs.token }}
+          path: infra
+
+      - name: Bump staging manifest entry
+        env:
+          COMMIT: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cd infra
+          python3 scripts/bump-manifest.py \
+            --env staging --service agents_gateway \
+            --commit "$COMMIT" --source-run "$RUN_URL"
+
+      - name: Open PR against infra
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          path: infra
+          branch: staging-update/agents-gateway-${{ github.sha }}
+          commit-message: "staging: agents-gateway @ ${{ github.sha }}"
+          title: "staging: agents-gateway @ ${{ github.sha }}"
+          body: |
+            Automated staging-version proposal from a passing Agents Gateway
+            test run. No image is built — this records the exact commit
+            infra's pinned-release model (§6 of architecture-decisions.md)
+            should check out for staging.
+
+            - Source commit: `${{ github.sha }}`
+            - Test evidence: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Merging this PR is the staging-approval step described in
+            `docs/ci-cd/architecture-decisions.md` §2. It does not deploy
+            anything by itself — merging triggers `deploy-staging.yml`.
+          labels: staging-update,automated

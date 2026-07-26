@@ -1,3 +1,7 @@
+# NOTE: not used by staging or production — see the same notice in
+# Dockerfile. Also missing a `networks:` entry, so as written this would
+# land on an isolated default bridge, unreachable from Conductor by Docker
+# DNS even if it were deployed.
 services:
   agents-gateway:
     build: .
