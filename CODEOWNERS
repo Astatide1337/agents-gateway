@@ -1,0 +1,3 @@
+# Placeholder usernames — see Astatide1337/infra/docs/ci-cd/governance-and-fallback.md §3.
+# Requires branch protection with "require code owner review" to have any effect.
+/.github/workflows/  @REPLACE-WITH-DEPLOY-OWNER
