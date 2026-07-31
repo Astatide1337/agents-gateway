@@ -145,6 +145,15 @@ class HarnessSessionRuntimeAdapter(RuntimeAdapter):
             self.storage.append_event(task_id, "runtime_error",
                                       {"error": str(e), "kind": "harness"})
             self._finalize(task_id, "failed")
+            # The legacy task-status column above is now "failed", but
+            # that alone isn't enough: callers like Conductor prefer the
+            # richer harness-session `runtime_status` over the legacy
+            # status whenever a session exists (see _enrich_task in
+            # server.py), and that session's own status column is a
+            # separate row this crash never touched. Left unsynced, it
+            # stays "running" forever and permanently masks the failure
+            # from anyone reading /tasks/{id}.runtime_status.
+            self._sync_session_failed(task_id)
             return {"agent_run_id": task_id, "task_id": task_id,
                     "status": "failed", "error": str(e)}
 
@@ -213,6 +222,27 @@ class HarnessSessionRuntimeAdapter(RuntimeAdapter):
                 task_id, "transition_skipped",
                 {"target": final_status, "current": cur.status},
             )
+
+    def _sync_session_failed(self, task_id: str) -> None:
+        """Best-effort: mark this task's harness session terminal so
+        `runtime_status` stops shadowing the legacy `status=failed`."""
+        from agents_gateway.harness.models import HarnessSessionStatus
+        from agents_gateway.harness.storage import HarnessStorage
+        try:
+            hstorage = HarnessStorage(self.storage.db_path)
+            session = hstorage.get_session_by_task(task_id)
+            if session is None:
+                return
+            if session.status in (HarnessSessionStatus.completed.value,
+                                  HarnessSessionStatus.failed.value,
+                                  HarnessSessionStatus.cancelled.value):
+                return
+            session.status = HarnessSessionStatus.failed.value
+            from datetime import datetime, timezone
+            session.ended_at = session.ended_at or datetime.now(timezone.utc).isoformat()
+            hstorage.save_session(session)
+        except Exception:
+            pass
 
     def _fail(self, task_id: str, reason: str) -> dict[str, Any]:
         self.storage.append_event(task_id, "agent_run.failed", {"reason": reason})

@@ -291,6 +291,55 @@ class TestAdapterDispatches:
         events = [e.event for e in env["storage"].list_events(task.id)]
         assert "agent_run.failed" in events, f"Events: {events}"
 
+    def test_execute_crash_syncs_harness_session_to_failed(
+            self, adapter_env, monkeypatch):
+        """A crash inside HarnessRuntime.execute_task must not just fail
+        the legacy task-status column — it must also mark the
+        associated HarnessSession terminal. Conductor's status mapper
+        prefers `runtime_status` (session.status) over the legacy
+        `status` whenever a session exists, so an unsynced session left
+        "running" would permanently mask the failure from Composer."""
+        env = adapter_env
+        spec = {
+            "objective_id": "obj_4",
+            "execution": {"mode": "harness_session",
+                           "harness_profile": "fake-test"},
+            "goal": {"strategy": "auto", "text": "/goal do nothing"},
+        }
+        from agents_gateway.harness.runtime import HarnessRuntime
+
+        def boom(self, **kwargs):
+            raise RuntimeError("simulated crash mid-run")
+        monkeypatch.setattr(HarnessRuntime, "execute_task", boom)
+
+        task = env["storage"].create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"}
+        )
+        env["storage"].update_task_status(task.id, "queued")
+        env["storage"].update_task_status(task.id, "running")
+
+        session = HarnessSession(
+            id="session_crash1", agent_run_id=task.id, task_id=task.id,
+            harness_profile="fake-test", harness="fake",
+            runtime="tmux-fake",
+            tmux_session="agw_crash_test", tmux_window="main", tmux_pane="0",
+            working_directory="/tmp/test",
+            status=HarnessSessionStatus.running.value,
+            started_at="2026-01-01T00:00:00+00:00",
+            last_output_at="2026-01-01T00:00:01+00:00",
+            ended_at=None, metadata={},
+        )
+        env["harness_storage"].save_session(session)
+
+        result = env["adapter"].execute(task.id)
+        assert result["status"] == "failed"
+        assert env["storage"].get_task(task.id).status == "failed"
+
+        fresh_session = env["harness_storage"].get_session(session.id)
+        assert fresh_session.status == HarnessSessionStatus.failed.value
+        assert fresh_session.ended_at is not None
+
 
 # ---------------------------------------------------------------------------
 # Tests: Status translation
