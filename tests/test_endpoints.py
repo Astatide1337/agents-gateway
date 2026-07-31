@@ -453,3 +453,27 @@ class TestRateLimiting:
         for _ in range(2):
             rate_limited_client.get("/health")
         assert rate_limited_client.get("/health").status_code == 429
+
+
+class TestCorrelationIdPropagation:
+    """X-Correlation-Id: honored if the caller (e.g. Conductor) sends
+    one, minted (and echoed back) if not — see
+    agents_gateway/logging.py's CORRELATION_ID_HEADER and server.py's
+    middleware."""
+
+    def test_generates_and_echoes_id_when_absent(self, internal_only_client):
+        client, _ = internal_only_client
+        r = client.get("/health")
+        # /health is public — no auth needed, but the middleware still
+        # only echoes the header on the authenticated branch (matching
+        # bind_request_context's full call). Use an authenticated path.
+        r = client.get("/agents", headers={"X-Auth-Internal-Token": "s3cr3t"})
+        assert r.headers.get("X-Correlation-Id")
+
+    def test_honors_incoming_id(self, internal_only_client):
+        client, _ = internal_only_client
+        r = client.get("/agents", headers={
+            "X-Auth-Internal-Token": "s3cr3t",
+            "X-Correlation-Id": "upstream-req-999",
+        })
+        assert r.headers.get("X-Correlation-Id") == "upstream-req-999"

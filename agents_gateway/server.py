@@ -40,6 +40,7 @@ from agents_gateway.auth import (
 from agents_gateway.catalog import AgentCatalog
 from agents_gateway.config import GatewayConfig, load_config
 from agents_gateway.logging import (
+    CORRELATION_ID_HEADER,
     bind_request_context,
     clear_request_context,
     log_event,
@@ -304,7 +305,12 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         class _AuthMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request: Request, call_next):
                 path = request.url.path
-                request_id = str(uuid.uuid4())
+                # Prefer an upstream-propagated correlation id (see
+                # conductor/clients/agents_gateway.py) so a single
+                # logical operation's logs share one id across both
+                # services; mint a fresh one only if the caller didn't
+                # send one (e.g. a direct/unrelated request).
+                request_id = request.headers.get(CORRELATION_ID_HEADER) or str(uuid.uuid4())
                 bind_request_context(request_id, "",
                                      request.method, path, str(request.url))
                 try:
@@ -357,7 +363,9 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                     bind_request_context(request_id, auth_result.user,
                                          request.method, path, str(request.url))
                     reg_ref.inc_counter("requests_total")
-                    return await call_next(request)
+                    response = await call_next(request)
+                    response.headers[CORRELATION_ID_HEADER] = request_id
+                    return response
                 finally:
                     clear_request_context()
         return _AuthMiddleware

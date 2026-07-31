@@ -292,6 +292,13 @@ ProcessRuntime runs commands on the host/container process environment with NO s
 ## Request Logging
 
 - Request IDs and auth user identity propagated via `contextvars` (not env vars or thread-locals)
+- Request IDs cross the Conductor <-> Agents Gateway HTTP boundary via
+  `X-Correlation-Id` — Conductor's outgoing clients send the current
+  request's id, this gateway's middleware honors it instead of minting
+  a fresh one when present, and echoes it back in the response header.
+  Lets a single logical operation's structured JSON logs be found by
+  grepping one id across both services' log streams, without standing
+  up a distributed tracing backend.
 - Sensitive headers (`Authorization`, `Cookie`, `Cf-Access-Jwt-Assertion`, `X-Auth-Internal-Token`, `X-Confirm-High-Risk`) redacted
 - JSON formatter has a fixed field whitelist (arbitrary kwargs excluded)
 

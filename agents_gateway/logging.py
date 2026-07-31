@@ -17,6 +17,15 @@ from typing import Any
 
 _service_name = "agents-gateway"
 
+# Header Conductor (and other upstream callers) propagate the current
+# request's correlation id on — when present, the incoming-request
+# middleware uses it as this request's own request_id instead of
+# minting a fresh one, so a single logical operation's structured JSON
+# logs carry the same id in both services' log streams. See
+# conductor/logging.py's CORRELATION_ID_HEADER (kept in sync) and
+# conductor/clients/agents_gateway.py's outgoing header injection.
+CORRELATION_ID_HEADER = "X-Correlation-Id"
+
 # Module-level fallback environment (set once at startup). NOT used for
 # request_id propagation.
 import os
