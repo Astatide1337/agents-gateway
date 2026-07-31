@@ -29,6 +29,34 @@ supplied, or if the supplied model is not on the allowlist, the dispatch
 fails with a clear error. Profiles without ``model_arg_name``
 (claude-code, codex, fake-test) ignore the override and launch with
 their own runtime defaults.
+
+Billing model and task-type routing
+------------------------------------
+
+Every profile carries a ``billing_mode``:
+
+  * ``"metered"``  - pay-per-token via an API key (pi-coding-agent,
+                      opencode). Cost is tracked in Conductor's
+                      cost_ledger and bounded by the allowlist above
+                      plus a monthly quota breaker.
+  * ``"subscription"`` - a CLI logged into a flat-rate subscription
+                      (claude-code, codex). There is no per-token cost
+                      signal; the provider's own backend enforces the
+                      cap, surfaced only when the harness's output
+                      matches a known usage-limit marker (see
+                      ``classifier.HarnessState.usage_limited``). No
+                      allowlist applies — ``model_arg_name`` is ``None``
+                      for these profiles by design.
+
+``TASK_TYPE_ROUTES`` declares, per task kind, the ordered list of
+profile names to try. This is data, not branching code: a new task
+kind or a new provider is a table edit. ``resolve_route()`` looks up a
+task kind (falling back to ``"default"``) and returns the resolved
+``HarnessProfile`` objects in try-order. The scheduler tries each in
+turn, falling through to the next entry when a provider's circuit
+breaker has tripped (cost overrun or usage-limit) or the profile's
+harness binary isn't runnable — see ``conductor/circuit.py``'s
+``evaluate_provider_quota_breaker``.
 """
 
 from __future__ import annotations
@@ -71,6 +99,10 @@ class HarnessProfile:
     # ``None`` disables model override for this profile.
     model_arg_name: str | None = None
     default_model: str | None = None
+    # "metered" (API-key, per-token cost tracked in cost_ledger) or
+    # "subscription" (flat-rate CLI login, no per-token cost signal —
+    # usage limits are detected via classifier markers instead).
+    billing_mode: str = "metered"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -87,6 +119,7 @@ class HarnessProfile:
             "description": self.description,
             "model_arg_name": self.model_arg_name,
             "default_model": self.default_model,
+            "billing_mode": self.billing_mode,
         }
 
     def effective_args(self, model_override: str | None = None
@@ -244,7 +277,12 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         input_mode="tmux_stdin",
         completion_strategy="output_classifier",
         goal_strategy=GoalStrategy.plain_prompt.value,
-        description="Anthropic Claude Code CLI; plain-text prompt input only.",
+        description=(
+            "Anthropic Claude Code CLI; plain-text prompt input only. "
+            "Runs against the operator's Claude subscription login, not "
+            "a metered API key — no per-token allowlist applies."
+        ),
+        billing_mode="subscription",
     ),
     "codex": HarnessProfile(
         name="codex",
@@ -255,7 +293,12 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         input_mode="tmux_stdin",
         completion_strategy="output_classifier",
         goal_strategy=GoalStrategy.plain_prompt.value,
-        description="OpenAI Codex CLI; plain-text prompt input only.",
+        description=(
+            "OpenAI Codex CLI; plain-text prompt input only. Runs "
+            "against the operator's ChatGPT subscription login, not a "
+            "metered API key — no per-token allowlist applies."
+        ),
+        billing_mode="subscription",
     ),
     "fake-test": HarnessProfile(
         name="fake-test",
@@ -308,6 +351,43 @@ def get_default_profile() -> HarnessProfile:
     return BUILTIN_PROFILES["pi-coding-agent"]
 
 
+# Task-type routing table — declarative, not branching code. Each entry
+# is an ordered list of profile names to try for that task kind; the
+# scheduler falls through to the next entry when a provider's circuit
+# breaker has tripped (cost overrun / usage-limit) or its harness
+# binary isn't runnable. "default" is used for any task kind not
+# explicitly listed, and MUST always resolve to at least one runnable
+# free-tier profile so the system degrades gracefully with zero
+# configuration (no subscriptions, no API keys beyond the free tier).
+TASK_TYPE_ROUTES: dict[str, tuple[str, ...]] = {
+    "code-review": ("claude-code", "codex", "pi-coding-agent"),
+    "long-horizon-fix": ("codex", "claude-code", "pi-coding-agent"),
+    "default": ("pi-coding-agent",),
+}
+
+
+def register_route(task_kind: str, profile_names: tuple[str, ...]) -> None:
+    """Add or override a task-type route at runtime."""
+    TASK_TYPE_ROUTES[task_kind] = tuple(profile_names)
+
+
+def resolve_route(task_kind: str | None) -> tuple[HarnessProfile, ...]:
+    """Return the ordered, resolved profiles for a task kind.
+
+    Falls back to the "default" route when ``task_kind`` is None or
+    unlisted. Profile names in a route that don't resolve (e.g. a
+    route references a profile that was never registered) are silently
+    skipped rather than raising, so a stale route entry degrades
+    instead of blocking dispatch entirely.
+    """
+    names = TASK_TYPE_ROUTES.get(task_kind or "default", TASK_TYPE_ROUTES["default"])
+    resolved = [p for p in (get_profile(n) for n in names) if p is not None]
+    if not resolved:
+        default = get_default_profile()
+        resolved = [default]
+    return tuple(resolved)
+
+
 __all__ = [
     "BUILTIN_PROFILES",
     "HarnessProfile",
@@ -319,4 +399,7 @@ __all__ = [
     "DisapprovedModelError",
     "validate_model_for_profile",
     "reload_allowlist",
+    "TASK_TYPE_ROUTES",
+    "register_route",
+    "resolve_route",
 ]

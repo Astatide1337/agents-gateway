@@ -260,3 +260,92 @@ class TestModelPolicy:
         # nvidia/nemotron should now be invalid
         with pytest.raises(Exception):
             validate_model_for_profile("nvidia/nemotron-3-ultra-550b-a55b:free", p)
+
+
+class TestBillingMode:
+    """Metered (API-key) vs subscription (flat-rate CLI login) profiles."""
+
+    def test_pi_and_opencode_are_metered(self):
+        assert get_profile("pi-coding-agent").billing_mode == "metered"
+        assert get_profile("opencode").billing_mode == "metered"
+
+    def test_claude_and_codex_are_subscription(self):
+        assert get_profile("claude-code").billing_mode == "subscription"
+        assert get_profile("codex").billing_mode == "subscription"
+
+    def test_to_dict_includes_billing_mode(self):
+        d = get_profile("claude-code").to_dict()
+        assert d["billing_mode"] == "subscription"
+
+    def test_billing_mode_defaults_to_metered(self):
+        p = HarnessProfile(name="custom", harness="x", command="x")
+        assert p.billing_mode == "metered"
+
+
+class TestTaskTypeRouting:
+    """resolve_route() — declarative task-kind -> ordered-provider table."""
+
+    def test_default_route_is_free_tier_only(self):
+        from agents_gateway.harness.profiles import resolve_route
+        route = resolve_route(None)
+        assert len(route) >= 1
+        assert route[0].name == "pi-coding-agent"
+
+    def test_unknown_task_kind_falls_back_to_default(self):
+        from agents_gateway.harness.profiles import resolve_route
+        route = resolve_route("some-unlisted-kind")
+        assert route == resolve_route(None)
+
+    def test_code_review_prefers_subscription_tiers_first(self):
+        from agents_gateway.harness.profiles import resolve_route
+        route = resolve_route("code-review")
+        names = [p.name for p in route]
+        assert names == ["claude-code", "codex", "pi-coding-agent"]
+        # subscription tiers come before the metered free-tier fallback
+        assert route[0].billing_mode == "subscription"
+        assert route[-1].billing_mode == "metered"
+
+    def test_long_horizon_fix_prefers_codex_first(self):
+        from agents_gateway.harness.profiles import resolve_route
+        route = resolve_route("long-horizon-fix")
+        assert [p.name for p in route][0] == "codex"
+
+    def test_register_route_adds_new_route(self):
+        from agents_gateway.harness.profiles import (
+            TASK_TYPE_ROUTES,
+            register_route,
+            resolve_route,
+        )
+        try:
+            register_route("my-custom-kind", ("codex", "pi-coding-agent"))
+            route = resolve_route("my-custom-kind")
+            assert [p.name for p in route] == ["codex", "pi-coding-agent"]
+        finally:
+            TASK_TYPE_ROUTES.pop("my-custom-kind", None)
+
+    def test_route_with_unresolvable_name_skips_it(self):
+        from agents_gateway.harness.profiles import (
+            TASK_TYPE_ROUTES,
+            register_route,
+            resolve_route,
+        )
+        try:
+            register_route("stale-route", ("nonexistent-profile-xyz", "pi-coding-agent"))
+            route = resolve_route("stale-route")
+            assert [p.name for p in route] == ["pi-coding-agent"]
+        finally:
+            TASK_TYPE_ROUTES.pop("stale-route", None)
+
+    def test_route_with_all_unresolvable_falls_back_to_default_profile(self):
+        from agents_gateway.harness.profiles import (
+            TASK_TYPE_ROUTES,
+            register_route,
+            resolve_route,
+        )
+        try:
+            register_route("empty-route", ("nonexistent-a", "nonexistent-b"))
+            route = resolve_route("empty-route")
+            assert len(route) == 1
+            assert route[0].name == "pi-coding-agent"
+        finally:
+            TASK_TYPE_ROUTES.pop("empty-route", None)

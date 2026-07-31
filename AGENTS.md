@@ -2,20 +2,37 @@
 
 This project is operated by AI coding agents. Follow these rules.
 
-## Model policy
+## Model policy — tiered, task-type routed
 
-- **Only** use `nvidia/nemotron-3-ultra-550b-a55b:free` for LLM-driven
-  work in this repo (PI coding harness, Composer planner LLM, smoke
-  tests, etc.). The `:free` suffix is mandatory — it routes to the
-  zero-cost OpenRouter tier.
-- Do **not** use any other model — not claude, not gpt, not
-  moonshotai/kimi, not gemini, not minimax, not deepseek, not anything
-  from openrouter beyond `nvidia/nemotron-3-ultra-550b-a55b:free`.
-- OpenRouter is the only allowed provider. Other providers
-  (Anthropic, OpenAI, NVIDIA direct, etc.) are forbidden — the model
-  is accessed **via OpenRouter** only, not via NVIDIA's own API.
-- If the `:free` tier returns 429 (rate-limited), retry with backoff.
-  Do not fall back to a paid model variant.
+Two billing modes, both first-class, tracked via `HarnessProfile.billing_mode`
+in `agents_gateway/harness/profiles.py`:
+
+- **`metered`** (`pi-coding-agent`, `opencode`) — pay-per-token via an
+  OpenRouter API key. Bounded by the allowlist
+  (`AGW_APPROVED_FREE_MODELS`, default
+  `nvidia/nemotron-3-ultra-550b-a55b:free`) enforced by
+  `validate_model_for_profile`, plus a monthly quota breaker
+  (`conductor/circuit.py::evaluate_provider_quota_breaker`). If the
+  `:free` tier returns 429, retry with backoff — do not silently swap
+  in a different metered model outside the allowlist.
+- **`subscription`** (`claude-code`, `codex`) — a CLI logged into a
+  flat-rate subscription (`claude login` / `codex login`), not a
+  metered API key. No per-token allowlist applies (`model_arg_name`
+  is `None` for these profiles by design). Usage limits are enforced
+  by the provider's own backend and surfaced only via a classifier
+  marker (`agents_gateway/harness/classifier.py`'s
+  `HarnessState.usage_limited`), not a cost ledger.
+
+**Which provider runs a given task is decided by
+`TASK_TYPE_ROUTES`/`resolve_route()`** in `harness/profiles.py` — an
+ordered, per-task-kind provider list, not a single global default and
+not free-text model guessing. The scheduler tries each profile in a
+route in order, falling through on a tripped breaker (cost overrun or
+usage-limit) or an unavailable harness binary. `"default"` MUST always
+resolve to a free-tier, zero-configuration profile
+(`pi-coding-agent`) so the system works with nothing but the
+OpenRouter free tier configured. Adding a provider or changing a
+route is a data edit to `TASK_TYPE_ROUTES`, not new branching code.
 
 ## Model configurability (per-task model override)
 
@@ -75,10 +92,17 @@ Do not reintroduce it.
 - The Composer/LLM configuration must use the model id
   `nvidia/nemotron-3-ultra-550b-a55b:free`. The env var name is
   `CONDUCTOR_COMPOSER_LLM_MODEL`. Set it in `.env.production`.
-- The credential env var is `OPENROUTER_API_KEY`. The auth file is
-  `~/.pi/agent/auth.json` (key `openrouter`). Do **not** introduce
-  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or
-  `NVIDIA_API_KEY` here — OpenRouter is the only allowed provider.
+- Metered-tier credential env var is `OPENROUTER_API_KEY`. The auth
+  file is `~/.pi/agent/auth.json` (key `openrouter`). Do **not**
+  introduce `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`
+  / `NVIDIA_API_KEY` for the metered tier — OpenRouter is the only
+  metered provider.
+- Subscription-tier profiles (`claude-code`, `codex`) authenticate via
+  their own CLI login (`claude login` / `codex login`), not a gateway-
+  managed API key. Do not wire an `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
+  into these profiles' env — that would silently convert a flat-rate
+  subscription into a metered one and defeat the point of routing
+  work to them.
 - `_credential_env_names` for the `pi` harness entry must include
   `OPENROUTER_API_KEY` so AGW reports `credentials_present=true` for
   `pi-coding-agent` availability checks.
@@ -145,11 +169,17 @@ If either fails, do not dispatch more tasks; surface in the report.
 
 ## What this repo is not
 
-This project does **not** ship `minimax` / `claude-sonnet` / `gpt-4o`
-fall-backs. If a third-party pull request adds one, reject the PR.
-The deleted `opencode-deepseek` profile was the historical source of
-silent profile-substitution bugs (a hard-coded paid model that fell
-back to itself when the dispatcher did not set `harness_profile`).
-Do not reintroduce hardcoded model profiles — use the
-`task_spec.execution.model` override mechanism or the profile's
-`default_model` attribute.
+This project does not ship silent, ungoverned model fallbacks.
+Claude Code and Codex are legitimate, first-class `subscription`-tier
+profiles reached only through `TASK_TYPE_ROUTES` — reject any PR that
+hardcodes a paid model choice outside that table, bypasses
+`billing_mode`/route resolution, or adds a *metered* paid model
+(e.g. a pay-per-token `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` path)
+without an explicit monthly quota breaker
+(`evaluate_provider_quota_breaker`) guarding it. The deleted
+`opencode-deepseek` profile was the historical source of silent
+profile-substitution bugs (a hard-coded paid model that fell back to
+itself when the dispatcher did not set `harness_profile`) — the fix
+was structural (explicit routing, not an implicit fallback), and that
+principle still applies: a task's provider must always be traceable
+to a `TASK_TYPE_ROUTES` entry, never an ad hoc default buried in code.
