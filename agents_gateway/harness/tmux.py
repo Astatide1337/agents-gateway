@@ -138,7 +138,17 @@ class TmuxDriver:
 
     def is_alive(self, ref: TmuxSessionRef) -> bool:
         argv = [self.tmux_bin, "has-session", "-t", ref.session]
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            # Live-found: a transient timeout here (host under load —
+            # e.g. concurrent tmux/docker/pytest activity) used to
+            # propagate uncaught through classify_state's polling loop
+            # and permanently crash the whole task. `has-session` being
+            # slow says nothing about whether the session itself died,
+            # so assume still-alive (checked again next poll) rather
+            # than treat a monitoring hiccup as worse than an unknown.
+            return True
         return proc.returncode == 0
 
     def terminate(self, ref: TmuxSessionRef) -> None:
@@ -348,14 +358,23 @@ class ContainerTmuxDriver:
         # Container gone entirely -> definitely not alive. Checked
         # first since `docker exec` into a missing container also
         # returns nonzero but with a less specific error.
-        inspect = subprocess.run(
-            [self.docker_bin, "inspect", "-f", "{{.State.Running}}", ref.session],
-            capture_output=True, text=True, timeout=10,
-        )
+        try:
+            inspect = subprocess.run(
+                [self.docker_bin, "inspect", "-f", "{{.State.Running}}", ref.session],
+                capture_output=True, text=True, timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            # See TmuxDriver.is_alive's comment — a transient timeout
+            # here means "unknown", not "dead"; assume alive so a
+            # monitoring hiccup never crashes the whole task outright.
+            return True
         if inspect.returncode != 0 or inspect.stdout.strip() != "true":
             return False
         argv = self._exec(ref.session, ["tmux", "has-session", "-t", ref.session])
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            return True
         return proc.returncode == 0
 
     def terminate(self, ref: TmuxSessionRef) -> None:

@@ -320,6 +320,23 @@ class TestContainerTmuxDriverCommandConstruction:
         assert alive is True
         assert mock.call_count == 2
 
+    def test_is_alive_true_on_transient_inspect_timeout(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.side_effect = subprocess.TimeoutExpired(cmd=["docker"], timeout=10)
+            alive = driver.is_alive(TmuxSessionRef(session="sess"))
+        assert alive is True
+
+    def test_is_alive_true_on_transient_has_session_timeout(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.side_effect = [
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="true\n", stderr=""),
+                subprocess.TimeoutExpired(cmd=["tmux"], timeout=10),
+            ]
+            alive = driver.is_alive(TmuxSessionRef(session="sess"))
+        assert alive is True
+
     def test_terminate_kills_tmux_then_removes_container(self):
         driver = ContainerTmuxDriver(docker_image="img")
         with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
@@ -392,6 +409,22 @@ class TestBuildTmuxDriver:
             )
             ref = TmuxSessionRef(session="s")
             assert driver.is_alive(ref) is False
+
+    def test_is_alive_true_on_transient_timeout(self):
+        """Regression test for a real bug caught by live-running
+        scripts/e2e-composer-live.sh: a transient `tmux has-session`
+        timeout (host under load — concurrent docker/pytest/tmux
+        activity) used to propagate as an uncaught
+        subprocess.TimeoutExpired through classify_state's polling
+        loop, permanently crashing the whole harness task
+        ("worker_harness_task_crash"). A slow has-session check proves
+        nothing about whether the session actually died — assume
+        alive so a monitoring hiccup is never worse than an unknown."""
+        driver = TmuxDriver()
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.side_effect = subprocess.TimeoutExpired(cmd=["tmux"], timeout=5)
+            ref = TmuxSessionRef(session="s")
+            assert driver.is_alive(ref) is True
 
     def test_create_session_raises_if_tmux_fails(self):
         driver = TmuxDriver()
