@@ -27,7 +27,7 @@ from agents_gateway.harness.profiles import get_profile
 
 class TestResolveStrategy:
     def test_auto_resolves_to_slash_goal_when_supported(self):
-        p = get_profile("opencode")
+        p = get_profile("fake-test")
         assert p.supports_slash_goal
         assert resolve_strategy(p, None) == GoalStrategy.slash_goal.value
 
@@ -37,7 +37,7 @@ class TestResolveStrategy:
         assert resolve_strategy(p, None) == GoalStrategy.plain_prompt.value
 
     def test_explicit_slash_goal_resolves_when_supported(self):
-        p = get_profile("opencode")
+        p = get_profile("fake-test")
         assert resolve_strategy(p, "slash_goal") == GoalStrategy.slash_goal.value
 
     def test_explicit_slash_goal_raises_when_unsupported(self):
@@ -153,7 +153,7 @@ class TestInjectGoal:
     def test_inject_goal_slash_strategy_with_supported_profile(self, tmp_path):
         wt = tmp_path / "wt"
         wt.mkdir()
-        p = get_profile("opencode")
+        p = get_profile("fake-test")
         ctx = GoalContext(title="t", brief="b",
                           goal_text="Build the timeline endpoint.")
         result = inject_goal(wt, p, ctx, requested_strategy="slash_goal")
@@ -193,7 +193,7 @@ class TestInjectGoal:
     def test_inject_goal_auto_with_supported_profile(self, tmp_path):
         wt = tmp_path / "wt"
         wt.mkdir()
-        p = get_profile("opencode")
+        p = get_profile("fake-test")
         ctx = GoalContext(goal_text="Implement Y.", title="t", brief="b")
         result = inject_goal(wt, p, ctx, requested_strategy="auto")
         # auto + supports_slash_goal -> slash_goal

@@ -266,15 +266,28 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         # the session is already isolated to its own worktree (and,
         # under the docker backend, a hardened sandboxed container).
         args=("--auto",),
-        supports_slash_goal=True,
+        # Live-found: slash_goal ("/goal <text>") was unreliable —
+        # reproduced twice across live E2E runs, goal silently dropped
+        # (session left on its blank welcome screen) even after a
+        # confirmed-fast ready-wait and a verified-registering retry.
+        # A leading "/" very likely opens opencode's own command-
+        # autocomplete popup, which can intercept the Enter keypress
+        # that's meant to submit the message. plain_prompt (no leading
+        # "/", a normal chat message) registered cleanly and
+        # immediately in the same environment/config every time it was
+        # tried. Disabling slash_goal support makes "auto" resolve to
+        # plain_prompt instead (see goal.py's resolve_strategy) — the
+        # agent still reads the full task from the .agent-task/*.md
+        # files either way, so nothing else changes.
+        supports_slash_goal=False,
         goal_command="/goal",
         input_mode="tmux_stdin",
         completion_strategy="output_classifier",
         goal_strategy=GoalStrategy.auto.value,
         description=(
-            "opencode CLI; supports /goal slash command. The model is "
-            "configurable via task_spec.execution.model (or "
-            "default_model fallback). Uses -m <provider/model>."
+            "opencode CLI. The model is configurable via "
+            "task_spec.execution.model (or default_model fallback). "
+            "Uses -m <provider/model>."
         ),
         model_arg_name="-m",
     ),

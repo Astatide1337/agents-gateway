@@ -106,8 +106,17 @@ class TestBuiltinProfiles:
 
 
 class TestProfileProperties:
-    def test_opencode_supports_slash_goal(self):
-        assert BUILTIN_PROFILES["opencode"].supports_slash_goal is True
+    def test_opencode_does_not_use_slash_goal(self):
+        """Regression test for a real bug caught by live-running
+        Composer's live E2E twice: slash_goal ("/goal <text>") was
+        unreliable for opencode — the goal was silently dropped even
+        after a confirmed-fast ready-wait and a verified-registering
+        retry, while plain_prompt registered cleanly every time in the
+        same environment. supports_slash_goal=False makes "auto"
+        resolve to plain_prompt instead (see goal.py resolve_strategy)."""
+        assert BUILTIN_PROFILES["opencode"].supports_slash_goal is False
+
+    def test_fake_test_supports_slash_goal(self):
         assert BUILTIN_PROFILES["fake-test"].supports_slash_goal is True
 
     def test_claude_does_not_support_slash_goal(self):

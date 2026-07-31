@@ -127,12 +127,11 @@ class TestHarnessProfilesAPI:
                                      "supports_slash_goal"}
 
     def test_get_known_profile(self, server):
-        # opencode supports /goal slash command; pi-coding-agent does not.
         resp = server.get("/harness-profiles/opencode")
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "opencode"
-        assert body["supports_slash_goal"] is True
+        assert body["supports_slash_goal"] is False
 
     def test_get_unknown_profile_returns_404(self, server):
         resp = server.get("/harness-profiles/nonexistent")

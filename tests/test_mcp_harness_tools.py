@@ -162,11 +162,10 @@ class TestProfilesTools:
             assert "command" in p
 
     def test_get_known_profile(self, mcp_server):
-        # opencode supports /goal slash command; pi-coding-agent does not.
         result = call_tool(mcp_server, "harness_profile_get",
                             name="opencode")
         assert result["name"] == "opencode"
-        assert result["supports_slash_goal"] is True
+        assert result["supports_slash_goal"] is False
 
     def test_get_unknown_profile_returns_error(self, mcp_server):
         result = call_tool(mcp_server, "harness_profile_get",
