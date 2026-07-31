@@ -118,6 +118,35 @@ class TmuxDriver:
             raise RuntimeError(
                 f"tmux paste-buffer failed: {paste.stderr.strip()}")
 
+    def send_text_literal(self, ref: TmuxSessionRef, text: str) -> None:
+        """Fallback send mechanism: one send-keys call per line plus a
+        literal newline key, instead of a single bracketed paste.
+
+        Used as the retry driver.py's start_session falls back to when
+        the primary paste-buffer mechanism's injection doesn't
+        register (see start_session's docstring) — a structurally
+        different delivery path in case the failure is specific to
+        bracketed paste (e.g. a TUI/terminal combination that doesn't
+        actually enable bracketed-paste mode) rather than a pure
+        timing race, where simply repeating the same mechanism would
+        predictably fail again.
+        """
+        target = self._target(ref)
+        for line in text.split("\n"):
+            if line:
+                argv = [self.tmux_bin, "send-keys", "-t", target, "--", line]
+                proc = subprocess.run(
+                    argv, capture_output=True, text=True, timeout=10)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"tmux send_text_literal failed: {proc.stderr.strip()}")
+            argv = [self.tmux_bin, "send-keys", "-t", target, "-l", "\n"]
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=10)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"tmux send_text_literal failed: {proc.stderr.strip()}")
+
     def send_enter(self, ref: TmuxSessionRef) -> None:
         target = self._target(ref)
         argv = [self.tmux_bin, "send-keys", "-t", target, "Enter"]
@@ -341,6 +370,23 @@ class ContainerTmuxDriver:
                                timeout=self.command_timeout_seconds)
         if paste.returncode != 0:
             raise RuntimeError(f"container paste-buffer failed: {paste.stderr.strip()}")
+
+    def send_text_literal(self, ref: TmuxSessionRef, text: str) -> None:
+        """See TmuxDriver.send_text_literal's docstring — fallback
+        delivery mechanism used on retry."""
+        target = self._target(ref)
+        for line in text.split("\n"):
+            if line:
+                argv = self._exec(ref.session, ["tmux", "send-keys", "-t", target, "--", line])
+                proc = subprocess.run(argv, capture_output=True, text=True,
+                                      timeout=self.command_timeout_seconds)
+                if proc.returncode != 0:
+                    raise RuntimeError(f"container send_text_literal failed: {proc.stderr.strip()}")
+            argv = self._exec(ref.session, ["tmux", "send-keys", "-t", target, "-l", "\n"])
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  timeout=self.command_timeout_seconds)
+            if proc.returncode != 0:
+                raise RuntimeError(f"container send_text_literal failed: {proc.stderr.strip()}")
 
     def send_enter(self, ref: TmuxSessionRef) -> None:
         target = self._target(ref)

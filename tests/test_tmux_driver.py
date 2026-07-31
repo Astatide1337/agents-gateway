@@ -175,6 +175,23 @@ class TestTmuxDriverCommandConstruction:
             driver.send_text(ref, "")
         mock.assert_not_called()
 
+    def test_send_text_literal_uses_send_keys_per_line(self):
+        """send_text_literal is the fallback delivery mechanism used
+        when a retry follows a paste-buffer send that didn't register
+        — a genuinely different code path (per-line send-keys), not
+        just another attempt at the same mechanism that just failed."""
+        driver = TmuxDriver()
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr="",
+            )
+            ref = TmuxSessionRef(session="s", window="main", pane="0")
+            driver.send_text_literal(ref, "line one\nline two")
+        # 2 lines -> 2x (send-keys line, send-keys literal \n) = 4 calls
+        assert mock.call_count == 4
+        assert mock.call_args_list[0][0][0] == ["tmux", "send-keys", "-t", "s:main.0", "--", "line one"]
+        assert mock.call_args_list[1][0][0] == ["tmux", "send-keys", "-t", "s:main.0", "-l", "\n"]
+
     def test_send_enter_sends_the_seq_Enter(self):
         driver = TmuxDriver()
         with patch("agents_gateway.harness.tmux.subprocess.run") as mock:

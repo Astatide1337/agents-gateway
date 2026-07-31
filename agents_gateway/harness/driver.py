@@ -213,8 +213,24 @@ class HarnessDriver:
                     if not (marker and marker in post_capture):
                         self._emit(session, "goal.injection_unconfirmed_retrying",
                                    {"marker": marker})
-                        self.inject_goal(session, goal_context,
-                                        requested_strategy=goal_strategy)
+                        # Deliberately NOT a repeat of self.inject_goal
+                        # (which would just retry the same paste-buffer
+                        # mechanism that already failed once — retrying
+                        # an identical delivery path predictably fails
+                        # again if the problem is structural rather
+                        # than a one-off timing race, which live
+                        # testing showed it sometimes is). Fall back to
+                        # a genuinely different delivery mechanism —
+                        # the original per-line send-keys approach —
+                        # for this second attempt.
+                        ref = self._ref(session)
+                        send_literal = getattr(self.tmux, "send_text_literal", None)
+                        if send_literal is not None:
+                            send_literal(ref, result.sent_text)
+                            self.tmux.send_enter(ref)
+                        else:
+                            self.inject_goal(session, goal_context,
+                                            requested_strategy=goal_strategy)
             except Exception as e:
                 import traceback as _tb
                 self._emit(session, "session.goal_injection_failed",

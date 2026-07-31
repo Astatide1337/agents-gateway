@@ -105,9 +105,11 @@ class TestStartSession:
             )
 
         assert session.status == HarnessSessionStatus.running.value
-        # send_text (part of inject_goal) called twice: once, then once
-        # more on retry after the pane looked unchanged.
-        assert real_tmux.send_text.call_count == 2
+        # First attempt via send_text (paste-buffer); retry uses a
+        # genuinely different mechanism (send_text_literal), not a
+        # repeat of the one that already failed.
+        assert real_tmux.send_text.call_count == 1
+        assert real_tmux.send_text_literal.call_count == 1
         assert any(e == "goal.injection_unconfirmed_retrying" for e, _ in emitted)
 
     def test_does_not_retry_when_marker_present_even_if_pane_also_changed(
