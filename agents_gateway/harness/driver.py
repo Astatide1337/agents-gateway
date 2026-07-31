@@ -55,6 +55,25 @@ class HarnessDriverError(Exception):
     pass
 
 
+def _distinctive_marker(sent_text: str, min_len: int = 20) -> str:
+    """Pick a substring of injected goal text that can only appear in
+    a tmux capture if the injection genuinely registered — used to
+    verify goal injection landed (see start_session's retry logic).
+
+    Prefers the ".agent-task/GOAL.md" file-based marker (present in
+    every non-slash_goal strategy) since it's the most stable across
+    line-wrapping; falls back to the first substantive line of the
+    text itself (e.g. for slash_goal, which has no file marker).
+    """
+    if ".agent-task/GOAL.md" in sent_text:
+        return ".agent-task/GOAL.md"
+    for line in sent_text.splitlines():
+        stripped = line.strip()
+        if len(stripped) >= min_len:
+            return stripped[:min_len]
+    return sent_text.strip()[:min_len]
+
+
 class HarnessDriver:
     """Driver layer between Composer dispatch and the tmux subprocess plane."""
 
@@ -168,30 +187,32 @@ class HarnessDriver:
                 # proceeds to inject blind. When that races with the
                 # TUI not actually being ready to receive input yet,
                 # the goal is silently dropped and the session sits on
-                # its pristine welcome screen forever (twice reproduced
-                # live, non-deterministically). Detect that specific
-                # signature — the pane looks completely unchanged after
-                # injection — and retry the injection once before
-                # accepting it; a genuinely-registered goal always
-                # produces SOME visible change (echoed input, at
-                # minimum) within a couple seconds.
-                pre_capture = ""
-                if not isinstance(self.tmux, FakeTmuxDriver):
-                    try:
-                        pre_capture = self.tmux.capture(self._ref(session), lines=50)
-                    except Exception:
-                        pre_capture = ""
-                self.inject_goal(session, goal_context,
-                                requested_strategy=goal_strategy)
+                # its pristine welcome screen forever (reproduced live,
+                # non-deterministically, more than once).
+                #
+                # The first fix (comparing full pre/post captures
+                # byte-for-byte) had a real gap: a TUI can re-render
+                # something — a spinner frame, a cursor blink — between
+                # the two captures with NO submission having actually
+                # happened, making pre != post even though the message
+                # never registered (reproduced live). Check for a
+                # distinctive substring of what was ACTUALLY sent
+                # instead — that can only appear in the capture if the
+                # injection genuinely landed, regardless of unrelated
+                # rendering churn.
+                result = self.inject_goal(session, goal_context,
+                                         requested_strategy=goal_strategy)
                 if not isinstance(self.tmux, FakeTmuxDriver):
                     import time as _time2
+                    marker = _distinctive_marker(result.sent_text)
                     _time2.sleep(2.0)
                     try:
-                        post_capture = self.tmux.capture(self._ref(session), lines=50)
+                        post_capture = self.tmux.capture(self._ref(session), lines=200)
                     except Exception:
                         post_capture = ""
-                    if post_capture and post_capture == pre_capture:
-                        self._emit(session, "goal.injection_unconfirmed_retrying", {})
+                    if not (marker and marker in post_capture):
+                        self._emit(session, "goal.injection_unconfirmed_retrying",
+                                   {"marker": marker})
                         self.inject_goal(session, goal_context,
                                         requested_strategy=goal_strategy)
             except Exception as e:

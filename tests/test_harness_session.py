@@ -87,8 +87,8 @@ class TestStartSession:
         real_tmux = MagicMock()
         real_tmux.create_session.return_value = TmuxSessionRef(session="agw_test")
         # Ready-wait loop's first capture() call sees content immediately
-        # (real TUI has rendered); then pre-injection and post-injection
-        # capture() both return the SAME unchanged text -> triggers retry.
+        # (real TUI has rendered); post-injection capture never contains
+        # the injected marker text -> triggers retry.
         real_tmux.capture.side_effect = ["welcome screen"] * 10
         emitted: list[tuple[str, dict]] = []
         driver = HarnessDriver(
@@ -109,6 +109,49 @@ class TestStartSession:
         # more on retry after the pane looked unchanged.
         assert real_tmux.send_text.call_count == 2
         assert any(e == "goal.injection_unconfirmed_retrying" for e, _ in emitted)
+
+    def test_does_not_retry_when_marker_present_even_if_pane_also_changed(
+        self, storage, worktree_path,
+    ):
+        """Regression test for a real false-positive the previous
+        version of this fix had: comparing pre- vs post-injection
+        captures byte-for-byte meant ANY unrelated re-render (a
+        spinner frame, a cursor blink) between the two reads made
+        post != pre and skipped the "did it register" check entirely
+        — even when the goal genuinely never registered (reproduced
+        live twice). Checking for a distinctive marker from what was
+        actually sent, instead of "did anything change", fixes this:
+        here the post-injection capture both differs from the earlier
+        screen AND contains the real marker text — the correct
+        outcome is no retry, proving the check is content-based, not
+        diff-based."""
+        from unittest.mock import MagicMock, patch
+        from agents_gateway.harness.tmux import TmuxSessionRef
+
+        real_tmux = MagicMock()
+        real_tmux.create_session.return_value = TmuxSessionRef(session="agw_test")
+        real_tmux.capture.side_effect = [
+            "welcome screen",  # ready-wait
+            "welcome screen\n/goal hello world\n(thinking...)",  # marker present
+        ]
+        emitted: list[tuple[str, dict]] = []
+        driver = HarnessDriver(
+            storage=storage, tmux_driver=real_tmux,
+            emit_event=lambda session, event, data: emitted.append((event, data)),
+        )
+
+        with patch("time.sleep"):
+            session = driver.start_session(
+                task_id="task_no_retry", agent_run_id="run_no_retry",
+                worktree_path=worktree_path,
+                profile=get_profile("fake-test"),
+                goal_context=GoalContext(goal_text="hello world"),
+            )
+
+        assert session.status == HarnessSessionStatus.running.value
+        # Only the initial send_text — no retry, since the marker was found.
+        assert real_tmux.send_text.call_count == 1
+        assert not any(e == "goal.injection_unconfirmed_retrying" for e, _ in emitted)
 
     def test_start_session_with_unknown_profile_uses_default(self, driver, worktree_path):
         session = driver.start_session(
