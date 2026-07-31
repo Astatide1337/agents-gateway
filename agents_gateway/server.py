@@ -681,9 +681,31 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
             task = storage.cancel_task(task_id)
             _registry.inc_counter("tasks_cancelled_total")
             log_event("task_cancelled", f"Task {task_id} cancelled", task_id=task_id)
-            return JSONResponse(task.model_dump())
         except TransitionError as e:
             return JSONResponse(status_code=409, content={"error": str(e)})
+
+        # A harness_session task also has a live tmux-backed session that
+        # the legacy task-status cancel above never touches. Left alone,
+        # that session stays in a non-terminal status (e.g.
+        # waiting_for_reply) and the SessionSupervisor keeps polling its
+        # (now abandoned) tmux pane forever.
+        session = harness_storage.get_session_by_task(task_id)
+        if session is not None and session.status not in (
+                HarnessSessionStatus.completed.value,
+                HarnessSessionStatus.failed.value,
+                HarnessSessionStatus.cancelled.value):
+            from agents_gateway.harness.driver import HarnessDriver
+            driver = HarnessDriver(storage=harness_storage,
+                                   tmux_driver=_shared_tmux_driver)
+            try:
+                driver.stop_session(session)
+            except Exception as e:
+                log_event("task_cancel_session_stop_failed",
+                          f"Failed to stop session {session.id} for "
+                          f"cancelled task {task_id}: {e}",
+                          task_id=task_id, level="WARNING")
+
+        return JSONResponse(task.model_dump())
 
     @mcp.custom_route("/tasks/{task_id}/run", methods=["POST"])
     async def run_task(request: Request):

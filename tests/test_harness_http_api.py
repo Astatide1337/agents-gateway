@@ -296,6 +296,74 @@ class TestSessionsAPI:
         assert resp.status_code == 404
 
 
+class TestTaskCancelStopsHarnessSession:
+    """POST /tasks/{id}/cancel must also stop the associated harness
+    session — otherwise a cancelled task leaves its session (and tmux
+    pane) alive and non-terminal forever, and the SessionSupervisor
+    keeps polling it indefinitely."""
+
+    def test_cancel_task_stops_running_harness_session(self, server):
+        cfg = server._config
+        ts = TaskStorage(cfg.storage.sqlite_path)
+        task = ts.create_harness_task(task_spec={"title": "t"})
+        hs = HarnessStorage(cfg.storage.sqlite_path)
+        session = HarnessSession(
+            id="session_cancel1", agent_run_id=task.id, task_id=task.id,
+            harness_profile="fake-test", harness="fake",
+            runtime="tmux-fake",
+            tmux_session="agw_cancel_test",
+            tmux_window="main", tmux_pane="0",
+            working_directory="/tmp/test",
+            status=HarnessSessionStatus.waiting_for_reply.value,
+            started_at="2026-01-01T00:00:00+00:00",
+            last_output_at="2026-01-01T00:00:01+00:00",
+            ended_at=None, metadata={},
+        )
+        hs.save_session(session)
+
+        resp = server.post(f"/tasks/{task.id}/cancel")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "cancelled"
+
+        fresh = hs.get_session(session.id)
+        assert fresh.status == HarnessSessionStatus.cancelled.value
+        assert fresh.ended_at is not None
+
+    def test_cancel_task_without_session_still_succeeds(self, server):
+        cfg = server._config
+        ts = TaskStorage(cfg.storage.sqlite_path)
+        task = ts.create_harness_task(task_spec={"title": "t"})
+        resp = server.post(f"/tasks/{task.id}/cancel")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "cancelled"
+
+    def test_cancel_task_leaves_already_terminal_session_untouched(self, server):
+        cfg = server._config
+        ts = TaskStorage(cfg.storage.sqlite_path)
+        task = ts.create_harness_task(task_spec={"title": "t"})
+        hs = HarnessStorage(cfg.storage.sqlite_path)
+        session = HarnessSession(
+            id="session_cancel2", agent_run_id=task.id, task_id=task.id,
+            harness_profile="fake-test", harness="fake",
+            runtime="tmux-fake",
+            tmux_session="agw_cancel_test2",
+            tmux_window="main", tmux_pane="0",
+            working_directory="/tmp/test",
+            status=HarnessSessionStatus.completed.value,
+            started_at="2026-01-01T00:00:00+00:00",
+            last_output_at="2026-01-01T00:00:01+00:00",
+            ended_at="2026-01-01T00:05:00+00:00", metadata={},
+        )
+        hs.save_session(session)
+
+        resp = server.post(f"/tasks/{task.id}/cancel")
+        assert resp.status_code == 200
+
+        fresh = hs.get_session(session.id)
+        assert fresh.status == HarnessSessionStatus.completed.value
+        assert fresh.ended_at == "2026-01-01T00:05:00+00:00"
+
+
 # ---------------------------------------------------------------------------
 # Interactions
 # ---------------------------------------------------------------------------
