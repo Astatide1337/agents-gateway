@@ -265,7 +265,8 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                         runtime_registry=runtime_registry,
                         runtime_config=config.runtime,
                         artifacts_dir=config.storage.artifacts_dir,
-                        harness_config=harness_runtime_cfg)
+                        harness_config=harness_runtime_cfg,
+                        pool_size=config.runtime.worker_pool_size)
     worker.start()
 
     # Reconcile any harness tmux sessions that survived a gateway

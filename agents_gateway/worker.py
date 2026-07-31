@@ -31,6 +31,7 @@ class TaskWorker:
         artifacts_dir: str,
         poll_interval_seconds: float = 0.5,
         harness_config: Any = None,
+        pool_size: int = 1,
     ) -> None:
         self._storage = storage
         self._catalog = catalog
@@ -39,27 +40,34 @@ class TaskWorker:
         self._artifacts_dir = artifacts_dir
         self._poll_interval = poll_interval_seconds
         self._harness_config = harness_config
+        self._pool_size = max(1, pool_size)
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self._threads and any(t.is_alive() for t in self._threads):
             return
         self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run_loop, name="agw-task-worker", daemon=True
-        )
-        self._thread.start()
-        log_event("worker_started", "Task worker started")
+        self._threads = [
+            threading.Thread(
+                target=self._run_loop, name=f"agw-task-worker-{i}", daemon=True,
+            )
+            for i in range(self._pool_size)
+        ]
+        for t in self._threads:
+            t.start()
+        log_event("worker_started",
+                   f"Task worker pool started (pool_size={self._pool_size})")
 
     def stop(self, timeout_seconds: float = 5.0) -> None:
         self._stop.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout_seconds)
-        log_event("worker_stopped", "Task worker stopped")
+        for t in self._threads:
+            if t.is_alive():
+                t.join(timeout=timeout_seconds)
+        log_event("worker_stopped", "Task worker pool stopped")
 
     def is_alive(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return any(t.is_alive() for t in self._threads)
 
     def _run_loop(self) -> None:
         while not self._stop.is_set():
