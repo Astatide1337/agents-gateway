@@ -146,6 +146,9 @@ class SessionSupervisor:
                         self.on_completed_claim(fresh)
                     except Exception:
                         pass
+        elif result.state == HarnessState.usage_limited:
+            if fresh.status != HarnessSessionStatus.usage_limited.value:
+                self.driver.mark_usage_limited(fresh, evidence=result.evidence)
         elif result.state == HarnessState.failed_claimed:
             # A dead harness or hard error: mark the session failed.
             # The runtime will surface final state.

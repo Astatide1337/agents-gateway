@@ -38,6 +38,7 @@ class HarnessState:
     completed_claimed = "completed_claimed"
     failed_claimed = "failed_claimed"
     stalled = "stalled"
+    usage_limited = "usage_limited"
     unknown = "unknown"
 
 
@@ -99,6 +100,45 @@ FAILURE_MARKERS: tuple[str, ...] = (
 )
 
 
+# Usage-limit markers for subscription-tier harnesses (claude-code,
+# codex — CLIs logged into a flat-rate subscription rather than a
+# metered API key; see agents_gateway/harness/profiles.py's
+# billing_mode). Keyed by HarnessProfile.name.
+#
+# BEST-EFFORT: these are conservative guesses at real CLI output for a
+# rate/quota limit, not yet validated against live captured output
+# from an actually-rate-limited session. Markers are deliberately
+# specific multi-word phrases, not single generic words like "limit"
+# — a false positive here would incorrectly abandon a healthy session
+# and route work away from a provider that's actually fine, which is
+# worse than a false negative (a missed usage-limit just falls through
+# to the existing stall-detection path instead, which is safe). Tighten
+# or correct these once real captured output is available.
+USAGE_LIMIT_MARKERS_BY_PROFILE: dict[str, tuple[str, ...]] = {
+    "claude-code": (
+        "usage limit reached",
+        "you've hit your usage limit",
+        "you have reached your usage limit",
+        "claude usage limit",
+        "limit resets at",
+        "upgrade to continue using claude",
+    ),
+    "codex": (
+        "usage limit reached",
+        "you've hit your usage limit",
+        "you have reached your usage limit",
+        "rate limit exceeded",
+        "try again after your limit resets",
+    ),
+}
+
+# Fallback for any subscription-tier profile not listed above.
+GENERIC_USAGE_LIMIT_MARKERS: tuple[str, ...] = (
+    "usage limit reached",
+    "quota exceeded",
+)
+
+
 def _lower(output: str) -> str:
     return output.lower()
 
@@ -124,7 +164,8 @@ def classify_state(output: str,
                    last_output_at: str | None = None,
                    now: str | None = None,
                    stall_seconds: int = 900,
-                   process_alive: bool = True) -> ClassifierResult:
+                   process_alive: bool = True,
+                   harness_profile: str = "") -> ClassifierResult:
     """Classify the current harness state from recent tmux output.
 
     Args:
@@ -133,15 +174,27 @@ def classify_state(output: str,
       now:              ISO timestamp of "now"; defaults to utcnow
       stall_seconds:    silence threshold for stalled classification
       process_alive:   whether the harness process is still alive
+      harness_profile: HarnessProfile.name (e.g. "claude-code"), used
+                       to select the right usage-limit marker set for
+                       subscription-tier profiles. Empty string checks
+                       the generic fallback markers only.
 
     Returns:
       ClassifierResult with one of HarnessState.* values.
     """
+    usage_markers = USAGE_LIMIT_MARKERS_BY_PROFILE.get(
+        harness_profile, GENERIC_USAGE_LIMIT_MARKERS,
+    )
+
     if not process_alive:
         # A dead process can be claimed_failed (if markers present) or
         # completed_claimed (if it printed DONE before exiting) or
         # otherwise failed_claimed as the safest choice.
         lower = _lower(output)
+        usage_evidence = _find_marker(lower, usage_markers)
+        if usage_evidence:
+            return ClassifierResult(HarnessState.usage_limited,
+                                    evidence=f"process exited + usage-limit marker: {usage_evidence!r}")
         if _find_marker(lower, COMPLETION_MARKERS):
             return ClassifierResult(HarnessState.completed_claimed,
                                     evidence="process exited + completion marker")
@@ -160,7 +213,17 @@ def classify_state(output: str,
     # chars to avoid matching stale markers from earlier in the session.
     tail_lower = lower[-1500:]
 
-    # Failure markers are highest priority: if the harness said "fatal
+    # Usage-limit markers are checked before everything else: a
+    # subscription-tier provider hitting its own cap is a distinct,
+    # actionable, recoverable-via-fallback condition, not a generic
+    # failure — it must not be shadowed by a coincidental failure/
+    # completion word match in the same message.
+    usage_evidence = _find_marker(tail_lower, usage_markers)
+    if usage_evidence:
+        return ClassifierResult(HarnessState.usage_limited,
+                                evidence=f"usage-limit marker: {usage_evidence!r}")
+
+    # Failure markers are next priority: if the harness said "fatal
     # error" we should classify as failed_claimed regardless of other
     # signals.
     fail_evidence = _find_marker(tail_lower, FAILURE_MARKERS)
@@ -209,4 +272,7 @@ def classify_state(output: str,
                             evidence="no decisive marker")
 
 
-__all__ = ["ClassifierResult", "HarnessState", "classify_state"]
+__all__ = [
+    "ClassifierResult", "HarnessState", "classify_state",
+    "USAGE_LIMIT_MARKERS_BY_PROFILE", "GENERIC_USAGE_LIMIT_MARKERS",
+]

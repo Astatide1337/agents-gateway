@@ -48,11 +48,12 @@ def harness_stack(tmp_path):
 
 def _session_in_storage(hs: HarnessStorage, *, status: str = "running",
                         tmux_session: str = "agw_test_1",
-                        last_output_at: str | None = None) -> HarnessSession:
+                        last_output_at: str | None = None,
+                        harness_profile: str = "fake-test") -> HarnessSession:
     s = HarnessSession(
         id="session_test1", agent_run_id="run_test1",
         task_id="task_test1",
-        harness_profile="fake-test", harness="fake",
+        harness_profile=harness_profile, harness="fake",
         runtime="tmux-fake",
         tmux_session=tmux_session, tmux_window="main", tmux_pane="0",
         working_directory="/tmp/test",
@@ -157,6 +158,54 @@ class TestTickOnce:
         sup.tick_once()
         fresh = hs.get_session(session.id)
         assert fresh.status == "failed"
+
+    def test_usage_limit_marker_marks_session_usage_limited(self, harness_stack):
+        hs, tmux, driver = harness_stack
+        session = _session_in_storage(hs, harness_profile="claude-code")
+        _mark_alive(tmux, session.tmux_session)
+        _push(tmux, session.tmux_session,
+              "You've hit your usage limit. Limit resets at 5pm.\n")
+        sup = SessionSupervisor(storage=hs, driver=driver,
+                                  verification_runner=None,
+                                  poll_interval_seconds=0.01,
+                                  stall_seconds=900)
+        sup.tick_once()
+        fresh = hs.get_session(session.id)
+        assert fresh.status == "usage_limited"
+        assert fresh.metadata.get("usage_limit_evidence")
+
+    def test_usage_limit_marker_preempts_failure_marker(self, harness_stack):
+        """A usage-limit message must not be shadowed by a coincidental
+        failure-marker match in the same output."""
+        hs, tmux, driver = harness_stack
+        session = _session_in_storage(hs, harness_profile="codex")
+        _mark_alive(tmux, session.tmux_session)
+        _push(tmux, session.tmux_session,
+              "Rate limit exceeded — panic: cannot continue this turn.\n")
+        sup = SessionSupervisor(storage=hs, driver=driver,
+                                  verification_runner=None,
+                                  poll_interval_seconds=0.01,
+                                  stall_seconds=900)
+        sup.tick_once()
+        fresh = hs.get_session(session.id)
+        assert fresh.status == "usage_limited"
+
+    def test_unrelated_profile_uses_generic_usage_markers_only(self, harness_stack):
+        """A profile with no dedicated marker set falls back to the
+        generic list — an unrelated word like "limit" alone must not
+        false-positive."""
+        hs, tmux, driver = harness_stack
+        session = _session_in_storage(hs)  # harness_profile="fake-test"
+        _mark_alive(tmux, session.tmux_session)
+        _push(tmux, session.tmux_session,
+              "Set the rate limit config value to 10 per minute.\n")
+        sup = SessionSupervisor(storage=hs, driver=driver,
+                                  verification_runner=None,
+                                  poll_interval_seconds=0.01,
+                                  stall_seconds=900)
+        sup.tick_once()
+        fresh = hs.get_session(session.id)
+        assert fresh.status != "usage_limited"
 
     def test_stalled_after_silence_threshold(self, harness_stack):
         hs, tmux, driver = harness_stack

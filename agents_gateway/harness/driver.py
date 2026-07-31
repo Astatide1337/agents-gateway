@@ -241,6 +241,7 @@ class HarnessDriver:
             last_output_at=session.last_output_at,
             now=now_override, stall_seconds=stall_seconds,
             process_alive=alive,
+            harness_profile=session.harness_profile,
         )
 
     def send_reply(self, session: HarnessSession, reply_text: str) -> None:
@@ -310,6 +311,25 @@ class HarnessDriver:
         self._emit(session, "composer.interaction.created",
                    {"interaction_id": interaction.id, "kind": interaction_type})
         return interaction
+
+    def mark_usage_limited(self, session: HarnessSession, evidence: str = "") -> None:
+        """Subscription-tier provider hit its own usage cap.
+
+        Distinct from mark_stalled/mark_failed: this is not silence or
+        a crash, it's the harness itself reporting a rate/quota limit
+        (see classifier.HarnessState.usage_limited). Sets session
+        status to "usage_limited" so /tasks/{id}'s runtime_status
+        surfaces it to Conductor, which maps it to a
+        restart-with-fallback (see conductor/composer/service.py's
+        reconcile loop + scheduler._resolve_provider_fallback) rather
+        than a terminal failure.
+        """
+        session.status = HarnessSessionStatus.usage_limited.value
+        session.metadata = dict(session.metadata)
+        session.metadata["usage_limit_evidence"] = evidence
+        self.storage.save_session(session)
+        self._emit(session, "agent.usage_limited",
+                   {"harness_profile": session.harness_profile, "evidence": evidence})
 
     def mark_completed(self, session: HarnessSession) -> None:
         session.status = HarnessSessionStatus.completed.value

@@ -155,6 +155,12 @@ class HarnessSessionStatus(str, enum.Enum):
     blocked_external = "blocked_external"
     cancelled = "cancelled"
     stalled = "stalled"
+    # A subscription-tier provider (claude-code/codex) hit its own
+    # usage cap — see classifier.HarnessState.usage_limited. Distinct
+    # from `stalled` (silence) and `failed` (hard error): the harness
+    # itself reported the limit. Conductor maps this to a
+    # restart-with-fallback, not a terminal failure.
+    usage_limited = "usage_limited"
 
 
 @dataclass

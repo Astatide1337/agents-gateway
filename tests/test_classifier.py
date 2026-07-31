@@ -26,6 +26,72 @@ def _iso(seconds_ago: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+class TestUsageLimited:
+    def test_claude_code_marker_detected(self):
+        r = classify_state(
+            output="You've hit your usage limit. Limit resets at 5pm.\n",
+            last_output_at=_now_iso(), process_alive=True,
+            harness_profile="claude-code",
+        )
+        assert r.state == HarnessState.usage_limited
+
+    def test_codex_marker_detected(self):
+        r = classify_state(
+            output="Rate limit exceeded, try again after your limit resets.\n",
+            last_output_at=_now_iso(), process_alive=True,
+            harness_profile="codex",
+        )
+        assert r.state == HarnessState.usage_limited
+
+    def test_no_profile_uses_generic_markers(self):
+        r = classify_state(
+            output="usage limit reached\n",
+            last_output_at=_now_iso(), process_alive=True,
+            harness_profile="",
+        )
+        assert r.state == HarnessState.usage_limited
+
+    def test_unrelated_profile_word_limit_alone_is_not_usage_limited(self):
+        r = classify_state(
+            output="Set the connection limit to 10.\n",
+            last_output_at=_now_iso(), process_alive=True,
+            harness_profile="pi-coding-agent",
+        )
+        assert r.state != HarnessState.usage_limited
+
+    def test_usage_limit_preempts_failure_marker(self):
+        r = classify_state(
+            output="Rate limit exceeded — panic: aborting.\n",
+            last_output_at=_now_iso(), process_alive=True,
+            harness_profile="codex",
+        )
+        assert r.state == HarnessState.usage_limited
+
+    def test_usage_limit_preempts_completion_marker(self):
+        r = classify_state(
+            output="task complete but you've hit your usage limit\n",
+            last_output_at=_now_iso(), process_alive=True,
+            harness_profile="claude-code",
+        )
+        assert r.state == HarnessState.usage_limited
+
+    def test_dead_process_with_usage_limit_marker(self):
+        r = classify_state(
+            output="You've hit your usage limit.\n",
+            last_output_at=_now_iso(), process_alive=False,
+            harness_profile="claude-code",
+        )
+        assert r.state == HarnessState.usage_limited
+
+    def test_evidence_names_the_marker(self):
+        r = classify_state(
+            output="claude usage limit\n",
+            last_output_at=_now_iso(), process_alive=True,
+            harness_profile="claude-code",
+        )
+        assert "usage-limit marker" in r.evidence
+
+
 class TestProcessDead:
     def test_dead_process_with_completion_marker_is_completed_claimed(self):
         r = classify_state(output="Done.\n",
