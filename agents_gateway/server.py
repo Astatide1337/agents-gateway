@@ -219,19 +219,22 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         completion_wait_seconds=config.harness.completion_wait_seconds,
         relay_max_time_seconds=config.harness.relay_max_time_seconds,
         max_verify_iterations=config.harness.max_verify_iterations,
+        backend=config.harness.backend,
+        docker_image=config.harness.docker_image,
+        docker_memory=config.harness.docker_memory,
+        docker_cpus=config.harness.docker_cpus,
+        docker_pids_limit=config.harness.docker_pids_limit,
+        docker_network=config.harness.docker_network,
     )
     runtime_registry = create_default_registry(
         config.runtime, harness_config=harness_runtime_cfg)
     harness_storage = HarnessStorage(config.storage.sqlite_path)
 
     # Single shared tmux driver so all session-level endpoints
-    # (send/capture/stop) honor the gateway ``use_fake_tmux`` flag
-    # instead of forcing a real TmuxDriver() instance.
-    from agents_gateway.harness.tmux import (FakeTmuxDriver,
-                                              TmuxDriver)
-    _shared_tmux_driver = (FakeTmuxDriver()
-                           if config.harness.use_fake_tmux
-                           else TmuxDriver())
+    # (send/capture/stop) honor the gateway's use_fake_tmux/backend
+    # config instead of forcing a real host TmuxDriver() instance.
+    from agents_gateway.harness.tmux import build_tmux_driver
+    _shared_tmux_driver = build_tmux_driver(harness_runtime_cfg)
 
     if config.observability.metrics_enabled:
         init_gateway_metrics(_registry)

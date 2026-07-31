@@ -121,6 +121,20 @@ class HarnessRuntimeConfig(BaseModel):
     worktree_retention_days: int = 7
     max_artifact_bytes: int = 1_073_741_824
     cleanup_dry_run: bool = True
+    # Session backend: "host-tmux" (default, unchanged behavior) or
+    # "docker" (tmux inside a long-lived hardened container — see
+    # harness/tmux.py's ContainerTmuxDriver). use_fake_tmux above
+    # still wins over this when True. Set via AGW_HARNESS__BACKEND.
+    backend: str = "host-tmux"
+    docker_image: str = ""
+    docker_memory: str = "2g"
+    docker_cpus: str = "2.0"
+    docker_pids_limit: int = 512
+    # None = default Docker network policy for the harness container.
+    # Unlike DockerRuntime's short trusted tasks, a harness session
+    # needs network access for its LLM provider, so this is not
+    # defaulted to "none" the way DockerRuntime's is.
+    docker_network: str | None = None
 
 
 class IntegrationsConfig(BaseModel):

@@ -13,9 +13,11 @@ from unittest.mock import patch
 import pytest
 
 from agents_gateway.harness.tmux import (
+    ContainerTmuxDriver,
     FakeTmuxDriver,
     TmuxDriver,
     TmuxSessionRef,
+    build_tmux_driver,
 )
 
 
@@ -174,6 +176,204 @@ class TestTmuxDriverCommandConstruction:
             ref = TmuxSessionRef(session="s")
             out = driver.capture(ref)
         assert out == "capture\nlines"
+
+
+# ---------------------------------------------------------------------------
+# ContainerTmuxDriver (mocked subprocess — no real Docker required)
+# ---------------------------------------------------------------------------
+
+
+class TestContainerTmuxDriverConstruction:
+    def test_requires_docker_image(self):
+        with pytest.raises(ValueError):
+            ContainerTmuxDriver(docker_image="")
+
+    def test_defaults(self):
+        driver = ContainerTmuxDriver(docker_image="my-image:latest")
+        assert driver.docker_bin == "docker"
+        assert driver.memory == "2g"
+        assert driver.cpus == "2.0"
+        assert driver.pids_limit == 512
+        assert driver.network is None
+
+
+class TestContainerTmuxDriverSandboxFlags:
+    def test_no_rm_flag(self):
+        """Unlike DockerRuntime's short tasks, the session container
+        must survive across many exec calls — no --rm."""
+        driver = ContainerTmuxDriver(docker_image="img")
+        assert "--rm" not in driver._sandbox_flags()
+
+    def test_no_read_only_flag(self):
+        """Harness CLIs write config/session state outside the
+        worktree (e.g. ~/.claude) — root FS must stay writable."""
+        driver = ContainerTmuxDriver(docker_image="img")
+        assert "--read-only" not in driver._sandbox_flags()
+
+    def test_cap_drop_and_no_new_privileges_present(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        flags = driver._sandbox_flags()
+        assert "--cap-drop" in flags and "ALL" in flags
+        assert "--security-opt" in flags and "no-new-privileges" in flags
+
+    def test_network_none_by_default_is_not_forced(self):
+        """Network is enabled by default (None = docker's default
+        policy) since harness sessions need LLM API access."""
+        driver = ContainerTmuxDriver(docker_image="img")
+        assert "--network" not in driver._sandbox_flags()
+
+    def test_network_explicit_none_disables(self):
+        driver = ContainerTmuxDriver(docker_image="img", network="none")
+        flags = driver._sandbox_flags()
+        assert "--network" in flags
+        assert flags[flags.index("--network") + 1] == "none"
+
+    def test_custom_resource_limits_applied(self):
+        driver = ContainerTmuxDriver(docker_image="img", memory="4g",
+                                     cpus="1.5", pids_limit=256)
+        flags = driver._sandbox_flags()
+        assert flags[flags.index("--memory") + 1] == "4g"
+        assert flags[flags.index("--cpus") + 1] == "1.5"
+        assert flags[flags.index("--pids-limit") + 1] == "256"
+
+
+class TestContainerTmuxDriverCommandConstruction:
+    def test_create_session_runs_container_then_execs_tmux(self):
+        driver = ContainerTmuxDriver(docker_image="my-image")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr="",
+            )
+            ref = driver.create_session("sess", "/work/dir", ["python3", "run.py"])
+        assert ref.session == "sess"
+        assert mock.call_count == 2
+        run_argv = mock.call_args_list[0][0][0]
+        assert run_argv[:2] == ["docker", "run"]
+        assert "--name" in run_argv and "sess" in run_argv
+        assert "my-image" in run_argv
+        assert "-v" in run_argv
+        assert "/work/dir:/work/dir" in run_argv
+        exec_argv = mock.call_args_list[1][0][0]
+        assert exec_argv[:3] == ["docker", "exec", "sess"]
+        assert "tmux" in exec_argv and "new-session" in exec_argv
+
+    def test_create_session_empty_command_raises(self):
+        driver = ContainerTmuxDriver(docker_image="my-image")
+        with pytest.raises(ValueError):
+            driver.create_session("sess", "/work", [])
+
+    def test_create_session_cleans_up_container_on_tmux_failure(self):
+        driver = ContainerTmuxDriver(docker_image="my-image")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.side_effect = [
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="tmux boom"),
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            ]
+            with pytest.raises(RuntimeError):
+                driver.create_session("sess", "/work", ["cmd"])
+        rm_argv = mock.call_args_list[2][0][0]
+        assert rm_argv == ["docker", "rm", "-f", "sess"]
+
+    def test_send_text_execs_into_container(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr="",
+            )
+            ref = TmuxSessionRef(session="sess")
+            driver.send_text(ref, "hello")
+        argv = mock.call_args_list[0][0][0]
+        assert argv[:3] == ["docker", "exec", "sess"]
+        assert "tmux" in argv and "send-keys" in argv
+
+    def test_capture_execs_into_container_and_returns_stdout(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="captured output", stderr="",
+            )
+            out = driver.capture(TmuxSessionRef(session="sess"))
+        assert out == "captured output"
+        argv = mock.call_args[0][0]
+        assert argv[:3] == ["docker", "exec", "sess"]
+
+    def test_is_alive_false_when_container_not_running(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="false\n", stderr="",
+            )
+            alive = driver.is_alive(TmuxSessionRef(session="sess"))
+        assert alive is False
+        # Only the inspect call is made; tmux has-session is skipped.
+        assert mock.call_count == 1
+
+    def test_is_alive_checks_tmux_when_container_running(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.side_effect = [
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="true\n", stderr=""),
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            ]
+            alive = driver.is_alive(TmuxSessionRef(session="sess"))
+        assert alive is True
+        assert mock.call_count == 2
+
+    def test_terminate_kills_tmux_then_removes_container(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            mock.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr="",
+            )
+            driver.terminate(TmuxSessionRef(session="sess"))
+        assert mock.call_count == 2
+        kill_argv = mock.call_args_list[0][0][0]
+        assert kill_argv[:3] == ["docker", "exec", "sess"]
+        assert "kill-session" in kill_argv
+        rm_argv = mock.call_args_list[1][0][0]
+        assert rm_argv == ["docker", "rm", "-f", "sess"]
+
+
+# ---------------------------------------------------------------------------
+# build_tmux_driver — backend selection
+# ---------------------------------------------------------------------------
+
+
+class _Cfg:
+    def __init__(self, **kw):
+        self.use_fake_tmux = kw.get("use_fake_tmux", False)
+        self.backend = kw.get("backend", "host-tmux")
+        self.docker_image = kw.get("docker_image", "")
+        self.docker_memory = kw.get("docker_memory", "2g")
+        self.docker_cpus = kw.get("docker_cpus", "2.0")
+        self.docker_pids_limit = kw.get("docker_pids_limit", 512)
+        self.docker_network = kw.get("docker_network", None)
+
+
+class TestBuildTmuxDriver:
+    def test_fake_tmux_wins_regardless_of_backend(self):
+        cfg = _Cfg(use_fake_tmux=True, backend="docker", docker_image="img")
+        assert isinstance(build_tmux_driver(cfg), FakeTmuxDriver)
+
+    def test_host_tmux_backend_default(self):
+        cfg = _Cfg()
+        assert isinstance(build_tmux_driver(cfg), TmuxDriver)
+
+    def test_docker_backend_returns_container_driver(self):
+        cfg = _Cfg(backend="docker", docker_image="my-image")
+        driver = build_tmux_driver(cfg)
+        assert isinstance(driver, ContainerTmuxDriver)
+        assert driver.docker_image == "my-image"
+
+    def test_docker_backend_passes_resource_limits(self):
+        cfg = _Cfg(backend="docker", docker_image="img", docker_memory="4g",
+                   docker_cpus="1.0", docker_pids_limit=100, docker_network="none")
+        driver = build_tmux_driver(cfg)
+        assert driver.memory == "4g"
+        assert driver.cpus == "1.0"
+        assert driver.pids_limit == 100
+        assert driver.network == "none"
 
     def test_is_alive_true_on_rc_zero(self):
         driver = TmuxDriver()

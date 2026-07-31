@@ -377,7 +377,17 @@ docker compose down
 - No task cancellation for in-flight Docker containers (docker rm is async best-effort)
 - `stub-runtime` only; real Docker/Process execution needs Docker daemon
 - No multi-replica coordination (SQLite single-writer; WAL mode helps but does not solve multi-process contention)
-- Harness sessions today run on host via tmux (long-term containerization is roadmap)
+- Harness sessions default to host tmux; an opt-in containerized
+  backend exists (`AGW_HARNESS__BACKEND=docker` +
+  `AGW_HARNESS__DOCKER_IMAGE=<image>`) — see
+  `agents_gateway/harness/tmux.py`'s `ContainerTmuxDriver`. Live-
+  validated against a real Docker daemon for the core mechanics and a
+  full `HarnessRuntime.execute_task()` run with the bundled
+  `fake-test` profile; **not yet** validated against a real harness
+  CLI (pi/opencode/claude/codex) running inside a container — that
+  image needs the CLI baked in (and any subscription login state it
+  needs) before the "docker" backend is production-ready for real
+  profiles. Host-tmux remains the default.
 - HTML review report redaction is regex-based and may miss novel token formats — report leaks at https://github.com/Astatide1337/agents-gateway/issues
 
 ## Documentation

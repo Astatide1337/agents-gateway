@@ -56,7 +56,9 @@ from agents_gateway.harness.profiles import (
 from agents_gateway.harness.reports import generate_review_report
 from agents_gateway.harness.storage import HarnessStorage
 from agents_gateway.harness.supervisor import SessionSupervisor
-from agents_gateway.harness.tmux import FakeTmuxDriver, TmuxDriver
+from agents_gateway.harness.tmux import (
+    ContainerTmuxDriver, FakeTmuxDriver, TmuxDriver, build_tmux_driver,
+)
 from agents_gateway.harness.verification import VerificationRunner
 from agents_gateway.harness.workspace import (
     RepoWorkspaceManager,
@@ -112,7 +114,19 @@ class HarnessRuntimeConfig:
                  max_verify_iterations: int = 50,
                  command_timeout_seconds: int = 1800,
                  completion_wait_seconds: float = 0.5,
-                 relay_max_time_seconds: float = 120.0
+                 relay_max_time_seconds: float = 120.0,
+                 # Session backend: "host-tmux" (default) runs tmux on
+                 # the bare host, exactly as before. "docker" runs it
+                 # inside a long-lived hardened container (see
+                 # ContainerTmuxDriver in harness/tmux.py) — set
+                 # AGW_HARNESS__BACKEND=docker to opt in. use_fake_tmux
+                 # still wins over both when True (tests / local E2E).
+                 backend: str = "host-tmux",
+                 docker_image: str = "",
+                 docker_memory: str = "2g",
+                 docker_cpus: str = "2.0",
+                 docker_pids_limit: int = 512,
+                 docker_network: str | None = None,
                  ) -> None:
         self.workspace_root = workspace_root
         self.worktree_root = worktree_root
@@ -127,6 +141,12 @@ class HarnessRuntimeConfig:
         self.command_timeout_seconds = command_timeout_seconds
         self.completion_wait_seconds = completion_wait_seconds
         self.relay_max_time_seconds = relay_max_time_seconds
+        self.backend = backend
+        self.docker_image = docker_image
+        self.docker_memory = docker_memory
+        self.docker_cpus = docker_cpus
+        self.docker_pids_limit = docker_pids_limit
+        self.docker_network = docker_network
 
 
 class HarnessRuntime:
@@ -142,7 +162,7 @@ class HarnessRuntime:
                  harness_storage: HarnessStorage,
                  task_storage_event_emitter: Any | None = None,
                  config: HarnessRuntimeConfig | None = None,
-                 tmux_driver: TmuxDriver | FakeTmuxDriver | None = None,
+                 tmux_driver: TmuxDriver | FakeTmuxDriver | ContainerTmuxDriver | None = None,
                  ) -> None:
         self.task_storage = task_storage
         self.harness_storage = harness_storage
@@ -163,9 +183,7 @@ class HarnessRuntime:
         )
         self.driver = HarnessDriver(
             storage=harness_storage,
-            tmux_driver=tmux_driver or (
-                FakeTmuxDriver() if self.config.use_fake_tmux else TmuxDriver()
-            ),
+            tmux_driver=tmux_driver or build_tmux_driver(self.config),
             emit_event=self._driver_event,
         )
         self.verification = VerificationRunner(

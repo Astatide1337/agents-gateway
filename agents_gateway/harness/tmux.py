@@ -1,19 +1,29 @@
 """Tmux driver layer used by HarnessDriver to control sessions.
 
-Two implementations:
+Three implementations:
 
-  * ``TmuxDriver``       - real tmux via ``subprocess.run([...])``
-  * ``FakeTmuxDriver``   - in-memory fake used by unit tests and by
-                            the local E2E script (when the harness is
-                            the bundled ``fake-test`` profile).
+  * ``TmuxDriver``          - real tmux via ``subprocess.run([...])``
+                              on the host.
+  * ``ContainerTmuxDriver`` - real tmux, but running inside a hardened,
+                              long-lived Docker container instead of
+                              the bare host — closes the "harness
+                              sessions today run on host via tmux
+                              (long-term containerization is roadmap)"
+                              gap noted in README.md's Known
+                              Limitations. See its docstring below.
+  * ``FakeTmuxDriver``      - in-memory fake used by unit tests and by
+                              the local E2E script (when the harness is
+                              the bundled ``fake-test`` profile).
 
-Both implement the same 6 methods so the harness driver can depend on
-either one without changing behaviour. Command arrays are passed
-verbatim to subprocess; we never shell-interpolate untrusted strings.
+All three implement the same 6 methods so the harness driver can
+depend on any of them without changing behaviour. Command arrays are
+passed verbatim to subprocess/docker; we never shell-interpolate
+untrusted strings.
 """
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import time
@@ -140,6 +150,230 @@ class TmuxDriver:
 
 
 # ---------------------------------------------------------------------------
+# ContainerTmuxDriver — tmux inside a long-lived, hardened container
+# ---------------------------------------------------------------------------
+
+
+class ContainerTmuxDriver:
+    """tmux driver that runs the session inside a Docker container
+    instead of on the bare host.
+
+    One container per harness session, kept alive for the session's
+    duration (unlike ``DockerRuntime`` in ``agents_gateway/runtime.py``,
+    which runs one short-lived, ``--rm``'d container per task — a
+    harness session is long-horizon and needs a persistent process to
+    attach tmux commands to). Lifecycle:
+
+      1. ``create_session`` starts the container detached, running
+         ``sleep infinity`` as PID 1 so it stays alive, then
+         ``docker exec``'s a ``tmux new-session`` inside it.
+      2. ``send_text``/``send_enter``/``capture``/``is_alive`` are the
+         same tmux commands as ``TmuxDriver``, each wrapped in
+         ``docker exec <container>`` instead of running bare.
+      3. ``terminate`` kills the tmux session then removes the
+         container (``docker rm -f``).
+
+    Sandbox flags mirror ``DockerRuntime._sandbox_flags()`` in
+    ``agents_gateway/runtime.py`` (cap-drop, no-new-privileges,
+    non-root user, memory/cpus/pids ceilings) with two deliberate
+    differences a long-lived coding-agent session requires:
+
+      * No ``--rm`` (the container must survive across many exec
+        calls, not exit after one command) — cleanup is explicit in
+        ``terminate()`` instead.
+      * Network is **enabled by default** (``network: str | None`` —
+        pass ``"none"`` to disable). Every harness profile calls out
+        to an LLM provider (OpenRouter, or the harness CLI's own
+        subscription backend for claude-code/codex) — unlike
+        ``DockerRuntime``'s short trusted-script tasks, a harness
+        session cannot function with no network at all. This is not a
+        regression versus the host-tmux backend: TmuxDriver already
+        runs with full host network access today, so a container with
+        *any* network policy is equal-or-stricter isolation, not
+        looser.
+      * Root filesystem is left writable (not ``--read-only``): coding
+        harness CLIs write their own config/session state outside the
+        worktree (e.g. ``~/.claude``, ``~/.pi``) which a read-only
+        root would break. The worktree bind mount is the only path
+        that needs to survive container removal; everything else is
+        disposable container-local state.
+
+    Live-validated (see ``tests/test_container_tmux_driver_live.py``,
+    run against a real local Docker daemon, not mocked) for the core
+    container/tmux/bind-mount mechanics: session create/alive/
+    terminate, send/capture round-trip, and — critically — that the
+    worktree bind mount is actually readable/writable from inside the
+    container. That last one caught a real bug during validation: on a
+    Docker daemon with user-namespace remapping (confirmed present in
+    this environment), container-"root" does NOT have access to a
+    host-owned bind mount by default, and tmux's ``-c cwd`` silently
+    falls back to $HOME instead of failing loudly. The fix is the
+    ``--user`` flag above, defaulted to the current process's own
+    uid:gid so it matches whatever host user actually owns the
+    worktree — this is why the default differs from
+    ``DockerRuntime``'s fixed ``65534:65534``.
+
+    NOT YET validated against a real harness CLI (pi/opencode/claude/
+    codex) inside a container — only against a plain shell (the live
+    test suite) and the bundled ``fake-test`` harness's mechanics. The
+    image supplied via ``docker_image`` must have ``tmux`` installed
+    and, for a real (non-fake-test) profile, that harness's CLI on
+    PATH and any subscription login state it needs already present
+    (e.g. baked into the image or mounted in) — validate that
+    end-to-end before trusting the "docker" backend with real harness
+    profiles in production.
+    """
+
+    def __init__(self, *,
+                 docker_image: str,
+                 docker_bin: str = "docker",
+                 memory: str = "2g",
+                 cpus: str = "2.0",
+                 pids_limit: int = 512,
+                 network: str | None = None,
+                 extra_env: dict[str, str] | None = None,
+                 command_timeout_seconds: int = 15,
+                 user: str | None = None) -> None:
+        if not docker_image:
+            raise ValueError("ContainerTmuxDriver requires docker_image")
+        self.docker_image = docker_image
+        self.docker_bin = docker_bin
+        self.memory = memory
+        self.cpus = cpus
+        self.pids_limit = pids_limit
+        self.network = network
+        self.extra_env = extra_env or {}
+        self.command_timeout_seconds = command_timeout_seconds
+        # Bind-mounted worktree/workspace directories are owned by
+        # whatever host UID runs this gateway process. On a Docker
+        # daemon with user-namespace remapping (the modern default —
+        # confirmed empirically: container-root mapped to a host UID
+        # other than the mount owner gets EACCES on the bind mount
+        # despite being "root" inside the container), the container
+        # process MUST run as the same UID:GID as the mount owner or
+        # it can't read/write the worktree at all. Default to the
+        # current process's own uid:gid rather than a fixed non-root
+        # id (unlike DockerRuntime's 65534:65534) because that fixed
+        # id has no reason to match this host's actual mount owner.
+        self.user = user or f"{os.getuid()}:{os.getgid()}"
+
+    # -- lifecycle ------------------------------------------------
+
+    def _sandbox_flags(self) -> list[str]:
+        flags = [
+            "-d",
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
+            "--user", self.user,
+            "--memory", self.memory,
+            "--cpus", self.cpus,
+            "--pids-limit", str(self.pids_limit),
+        ]
+        if self.network:
+            flags += ["--network", self.network]
+        for key, value in self.extra_env.items():
+            flags += ["-e", f"{key}={value}"]
+        return flags
+
+    def create_session(self, session_name: str, cwd: str,
+                       command: list[str]) -> TmuxSessionRef:
+        if not command:
+            raise ValueError("ContainerTmuxDriver create_session requires a non-empty command")
+
+        run_argv = (
+            [self.docker_bin, "run", "--name", session_name]
+            + self._sandbox_flags()
+            + ["-v", f"{cwd}:{cwd}", "-w", cwd, self.docker_image,
+               "sleep", "infinity"]
+        )
+        proc = subprocess.run(run_argv, capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"container create_session failed to start container "
+                f"(rc={proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}"
+            )
+
+        cmd_str = " ".join(shlex.quote(c) for c in command)
+        tmux_argv = self._exec(session_name, [
+            "tmux", "new-session", "-d", "-s", session_name,
+            "-c", cwd, "-n", "main", cmd_str,
+        ])
+        proc = subprocess.run(tmux_argv, capture_output=True, text=True, timeout=10)
+        if proc.returncode != 0:
+            # Best-effort cleanup of the container we just started.
+            subprocess.run([self.docker_bin, "rm", "-f", session_name],
+                           capture_output=True, text=True, timeout=15)
+            raise RuntimeError(
+                f"container create_session failed to start tmux "
+                f"(rc={proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}"
+            )
+        return TmuxSessionRef(session=session_name, window="main", pane="0")
+
+    def send_text(self, ref: TmuxSessionRef, text: str) -> None:
+        target = self._target(ref)
+        for line in text.split("\n"):
+            if line:
+                argv = self._exec(ref.session, ["tmux", "send-keys", "-t", target, "--", line])
+                proc = subprocess.run(argv, capture_output=True, text=True,
+                                      timeout=self.command_timeout_seconds)
+                if proc.returncode != 0:
+                    raise RuntimeError(f"container send_text failed: {proc.stderr.strip()}")
+            argv = self._exec(ref.session, ["tmux", "send-keys", "-t", target, "-l", "\n"])
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  timeout=self.command_timeout_seconds)
+            if proc.returncode != 0:
+                raise RuntimeError(f"container send_text failed: {proc.stderr.strip()}")
+
+    def send_enter(self, ref: TmuxSessionRef) -> None:
+        target = self._target(ref)
+        argv = self._exec(ref.session, ["tmux", "send-keys", "-t", target, "Enter"])
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=self.command_timeout_seconds)
+        if proc.returncode != 0:
+            raise RuntimeError(f"container send_enter failed: {proc.stderr.strip()}")
+
+    def capture(self, ref: TmuxSessionRef, lines: int = 2000) -> str:
+        target = self._target(ref)
+        argv = self._exec(ref.session, [
+            "tmux", "capture-pane", "-t", target, "-p",
+            "-S", str(-max(1, lines)), "-E", "-",
+        ])
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=self.command_timeout_seconds)
+        if proc.returncode != 0:
+            return ""
+        return proc.stdout
+
+    def is_alive(self, ref: TmuxSessionRef) -> bool:
+        # Container gone entirely -> definitely not alive. Checked
+        # first since `docker exec` into a missing container also
+        # returns nonzero but with a less specific error.
+        inspect = subprocess.run(
+            [self.docker_bin, "inspect", "-f", "{{.State.Running}}", ref.session],
+            capture_output=True, text=True, timeout=10,
+        )
+        if inspect.returncode != 0 or inspect.stdout.strip() != "true":
+            return False
+        argv = self._exec(ref.session, ["tmux", "has-session", "-t", ref.session])
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        return proc.returncode == 0
+
+    def terminate(self, ref: TmuxSessionRef) -> None:
+        argv = self._exec(ref.session, ["tmux", "kill-session", "-t", ref.session])
+        subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        subprocess.run([self.docker_bin, "rm", "-f", ref.session],
+                       capture_output=True, text=True, timeout=15)
+
+    # -- helpers ----------------------------------------------------
+
+    def _exec(self, container: str, argv: list[str]) -> list[str]:
+        return [self.docker_bin, "exec", container] + argv
+
+    def _target(self, ref: TmuxSessionRef) -> str:
+        return f"{ref.session}:{ref.window}.{ref.pane}"
+
+
+# ---------------------------------------------------------------------------
 # FakeTmuxDriver — used by tests and the local E2E script
 # ---------------------------------------------------------------------------
 
@@ -242,4 +476,27 @@ class FakeTmuxDriver:
         self._closed.add(ref.session)
 
 
-__all__ = ["FakeTmuxDriver", "TmuxDriver", "TmuxSessionRef"]
+def build_tmux_driver(config: Any) -> "TmuxDriver | FakeTmuxDriver | ContainerTmuxDriver":
+    """Select a tmux driver from a HarnessRuntimeConfig-shaped object.
+
+    Single source of truth for backend selection so
+    ``HarnessRuntime.__init__`` and ``server.py``'s shared
+    session-endpoint driver never disagree. ``use_fake_tmux=True``
+    always wins (tests / local E2E), regardless of ``backend``.
+    """
+    if getattr(config, "use_fake_tmux", False):
+        return FakeTmuxDriver()
+    backend = getattr(config, "backend", "host-tmux")
+    if backend == "docker":
+        return ContainerTmuxDriver(
+            docker_image=getattr(config, "docker_image", ""),
+            memory=getattr(config, "docker_memory", "2g"),
+            cpus=getattr(config, "docker_cpus", "2.0"),
+            pids_limit=getattr(config, "docker_pids_limit", 512),
+            network=getattr(config, "docker_network", None),
+        )
+    return TmuxDriver()
+
+
+__all__ = ["FakeTmuxDriver", "TmuxDriver", "ContainerTmuxDriver", "TmuxSessionRef",
+           "build_tmux_driver"]
