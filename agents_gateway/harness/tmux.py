@@ -78,45 +78,45 @@ class TmuxDriver:
         return TmuxSessionRef(session=session_name, window="main", pane="0")
 
     def send_text(self, ref: TmuxSessionRef, text: str) -> None:
-        """Send text into the pane without pressing Enter.
+        """Send (possibly multi-line) text into the pane as one paste,
+        without pressing Enter.
 
-        We use plain ``send-keys`` (no ``-l``) because full-screen TUI
-        harnesses (opencode, claude-code) use raw terminal mode and
-        don't process literal bytes the same way a shell prompt does.
-        Plain send-keys translates spaces and printable characters into
-        key events which the TUI picks up correctly.
+        Live-found: the previous implementation sent each line via a
+        separate ``send-keys`` call followed by a literal ``\\n`` key
+        press, meaning a goal of even modest length (a couple dozen
+        lines) became dozens of separate subprocess calls trickled in
+        over real wall-clock time. Chat-style TUI input boxes (opencode
+        included) commonly treat a bare Enter/newline as "submit" —
+        only bracketed paste is trusted to carry literal newlines. That
+        race intermittently caused the harness to submit an empty or
+        partial message and land back on its blank welcome screen,
+        with the rest of the goal typed into nowhere: reproduced twice
+        across live E2E runs (once on an implementation task, once on
+        integration), non-deterministically.
 
-        For multi-line text, we send each line separately (without
-        pressing Enter) so the receiving application can gather the
-        complete text before the caller invokes ``send_enter``.
-
-        Special characters that tmux interprets as key names (e.g.
-        ``Enter``, ``Escape``, ``Space``) are sent via the ``-l`` flag
-        to preserve their literal meaning.
+        ``tmux load-buffer`` + ``paste-buffer`` sends the whole text as
+        a single bracketed-paste sequence in one shot instead — TUI
+        frameworks that support bracketed paste (virtually all modern
+        ones) then correctly treat every embedded newline as literal
+        content, never as a submit keypress.
         """
+        if not text:
+            return
         target = self._target(ref)
-        # Split on newlines and send each line separately. We use the
-        # ``--`` separator so leading dashes (e.g. markdown list items
-        # like "- " or argument flags) are not interpreted by tmux as
-        # send-keys flags. Plain send-keys (no ``-l``) is preserved
-        # because full-screen TUI harnesses (pi, opencode, claude-code)
-        # use raw terminal mode and need key events, not literal text.
-        for line in text.split("\n"):
-            if line:
-                argv = [self.tmux_bin, "send-keys", "-t", target, "--", line]
-                proc = subprocess.run(
-                    argv, capture_output=True, text=True, timeout=10)
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        f"tmux send_text failed: {proc.stderr.strip()}")
-            # Send a literal newline via -l to avoid tmux interpreting "Enter"
-            # as a key name.
-            argv = [self.tmux_bin, "send-keys", "-t", target, "-l", "\n"]
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=10)
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"tmux send_text failed: {proc.stderr.strip()}")
+        load = subprocess.run(
+            [self.tmux_bin, "load-buffer", "-"],
+            input=text, capture_output=True, text=True, timeout=10,
+        )
+        if load.returncode != 0:
+            raise RuntimeError(
+                f"tmux load-buffer failed: {load.stderr.strip()}")
+        paste = subprocess.run(
+            [self.tmux_bin, "paste-buffer", "-t", target],
+            capture_output=True, text=True, timeout=10,
+        )
+        if paste.returncode != 0:
+            raise RuntimeError(
+                f"tmux paste-buffer failed: {paste.stderr.strip()}")
 
     def send_enter(self, ref: TmuxSessionRef) -> None:
         target = self._target(ref)
@@ -320,19 +320,27 @@ class ContainerTmuxDriver:
         return TmuxSessionRef(session=session_name, window="main", pane="0")
 
     def send_text(self, ref: TmuxSessionRef, text: str) -> None:
+        """Same paste-buffer approach as TmuxDriver.send_text (see its
+        docstring) — one bracketed paste instead of many per-line
+        send-keys + literal-newline-key calls. ``docker exec -i`` is
+        required here (unlike the host TmuxDriver's plain
+        ``subprocess.run``) so the load-buffer step's stdin actually
+        reaches the containerized tmux process."""
+        if not text:
+            return
         target = self._target(ref)
-        for line in text.split("\n"):
-            if line:
-                argv = self._exec(ref.session, ["tmux", "send-keys", "-t", target, "--", line])
-                proc = subprocess.run(argv, capture_output=True, text=True,
-                                      timeout=self.command_timeout_seconds)
-                if proc.returncode != 0:
-                    raise RuntimeError(f"container send_text failed: {proc.stderr.strip()}")
-            argv = self._exec(ref.session, ["tmux", "send-keys", "-t", target, "-l", "\n"])
-            proc = subprocess.run(argv, capture_output=True, text=True,
-                                  timeout=self.command_timeout_seconds)
-            if proc.returncode != 0:
-                raise RuntimeError(f"container send_text failed: {proc.stderr.strip()}")
+        load = subprocess.run(
+            [self.docker_bin, "exec", "-i", ref.session, "tmux", "load-buffer", "-"],
+            input=text, capture_output=True, text=True,
+            timeout=self.command_timeout_seconds,
+        )
+        if load.returncode != 0:
+            raise RuntimeError(f"container load-buffer failed: {load.stderr.strip()}")
+        paste_argv = self._exec(ref.session, ["tmux", "paste-buffer", "-t", target])
+        paste = subprocess.run(paste_argv, capture_output=True, text=True,
+                               timeout=self.command_timeout_seconds)
+        if paste.returncode != 0:
+            raise RuntimeError(f"container paste-buffer failed: {paste.stderr.strip()}")
 
     def send_enter(self, ref: TmuxSessionRef) -> None:
         target = self._target(ref)

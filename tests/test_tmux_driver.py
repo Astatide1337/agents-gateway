@@ -143,18 +143,37 @@ class TestTmuxDriverCommandConstruction:
         # The command string is shell-quoted and merged into one arg.
         assert any("python3" in (a or "") for a in argv)
 
-    def test_send_text_uses_send_keys_literal(self):
+    def test_send_text_pastes_via_load_and_paste_buffer(self):
+        """Regression test for a real bug caught by live-running
+        Composer's live E2E twice: the old per-line send-keys +
+        literal-newline-key approach intermittently caused opencode's
+        chat-style input box to submit a partial/empty message,
+        landing back on its blank welcome screen with the rest of the
+        goal typed into nowhere. load-buffer + paste-buffer sends the
+        whole multi-line text as one bracketed-paste sequence instead —
+        no embedded newline is ever a discrete Enter keypress."""
         driver = TmuxDriver()
         with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
             mock.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr="",
             )
             ref = TmuxSessionRef(session="s", window="main", pane="0")
-            driver.send_text(ref, "some text with spaces")
-        argv = mock.call_args[0][0]
-        assert argv[0] == "tmux"
-        assert argv[1] == "send-keys"
-        assert "-l" in argv  # literal mode
+            driver.send_text(ref, "line one\nline two with spaces")
+        assert mock.call_count == 2
+        load_argv, load_kwargs = mock.call_args_list[0]
+        assert load_argv[0][:2] == ["tmux", "load-buffer"]
+        assert load_kwargs.get("input") == "line one\nline two with spaces"
+        paste_argv = mock.call_args_list[1][0][0]
+        assert paste_argv[0] == "tmux"
+        assert paste_argv[1] == "paste-buffer"
+        assert "s:main.0" in paste_argv
+
+    def test_send_text_no_op_on_empty_string(self):
+        driver = TmuxDriver()
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            ref = TmuxSessionRef(session="s", window="main", pane="0")
+            driver.send_text(ref, "")
+        mock.assert_not_called()
 
     def test_send_enter_sends_the_seq_Enter(self):
         driver = TmuxDriver()
@@ -275,17 +294,29 @@ class TestContainerTmuxDriverCommandConstruction:
         rm_argv = mock.call_args_list[2][0][0]
         assert rm_argv == ["docker", "rm", "-f", "sess"]
 
-    def test_send_text_execs_into_container(self):
+    def test_send_text_pastes_via_load_and_paste_buffer(self):
         driver = ContainerTmuxDriver(docker_image="img")
         with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
             mock.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr="",
             )
             ref = TmuxSessionRef(session="sess")
-            driver.send_text(ref, "hello")
-        argv = mock.call_args_list[0][0][0]
-        assert argv[:3] == ["docker", "exec", "sess"]
-        assert "tmux" in argv and "send-keys" in argv
+            driver.send_text(ref, "line one\nline two")
+        assert mock.call_count == 2
+        load_argv, load_kwargs = mock.call_args_list[0]
+        assert load_argv[0][:4] == ["docker", "exec", "-i", "sess"]
+        assert load_argv[0][4:] == ["tmux", "load-buffer", "-"]
+        assert load_kwargs.get("input") == "line one\nline two"
+        paste_argv = mock.call_args_list[1][0][0]
+        assert paste_argv[:3] == ["docker", "exec", "sess"]
+        assert "paste-buffer" in paste_argv
+
+    def test_send_text_no_op_on_empty_string(self):
+        driver = ContainerTmuxDriver(docker_image="img")
+        with patch("agents_gateway.harness.tmux.subprocess.run") as mock:
+            ref = TmuxSessionRef(session="sess")
+            driver.send_text(ref, "")
+        mock.assert_not_called()
 
     def test_capture_execs_into_container_and_returns_stdout(self):
         driver = ContainerTmuxDriver(docker_image="img")
