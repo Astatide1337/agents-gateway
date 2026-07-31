@@ -255,7 +255,17 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         name="opencode",
         harness="opencode",
         command="opencode",
-        args=(),
+        # --auto: harness sessions run fully unattended (tmux_stdin, no
+        # human ever watching) — without it, opencode's own permission
+        # TUI ("Allow once / Allow always / Reject") blocks forever the
+        # first time the agent touches anything outside its immediate
+        # cwd (e.g. writing an artifact under agents-gateway's own
+        # artifacts dir). Live-found: an integration task hung for the
+        # composer-live-e2e script's entire 500s budget on exactly this
+        # prompt, with zero way to ever resolve it. Safe here because
+        # the session is already isolated to its own worktree (and,
+        # under the docker backend, a hardened sandboxed container).
+        args=("--auto",),
         supports_slash_goal=True,
         goal_command="/goal",
         input_mode="tmux_stdin",

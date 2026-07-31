@@ -43,6 +43,17 @@ class TestBuiltinProfiles:
         assert p is not None
         assert p.harness == harness
 
+    def test_opencode_passes_auto_flag(self):
+        """Regression test for a real bug caught by live-running
+        Conductor's scripts/e2e-composer-live.sh: without --auto,
+        opencode's own permission TUI ("Allow once / Allow always /
+        Reject") blocks forever the first time the agent touches
+        anything outside its immediate cwd — harness sessions run
+        fully unattended, so nothing can ever answer that prompt."""
+        p = get_profile("opencode")
+        assert p is not None
+        assert "--auto" in p.args
+
     def test_unknown_profile_returns_none(self):
         assert get_profile("nonexistent-xyz") is None
 
