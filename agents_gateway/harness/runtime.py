@@ -595,6 +595,7 @@ class HarnessRuntime:
                 "commands": [],
                 "agent_run_id": agent_run_id, "task_id": task_id,
                 "all_required_passed": True, "any_blocked": False,
+                "metadata": {},
             })()
             return sock  # type: ignore[return-value]
         return self.verification.run(

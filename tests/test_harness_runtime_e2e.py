@@ -225,6 +225,62 @@ class TestEasyComplete:
         assert any(a["kind"] == "html_report" for a in artifacts)
 
 
+class TestNoVerificationConfigured:
+    def test_completes_without_crashing_when_no_verification_commands(
+        self, tmp_path,
+    ):
+        """Regression test for a real bug caught by dispatching a raw
+        task with no verification block (no test harness beyond
+        Composer's own always-populated one had ever exercised this):
+        _run_verification's "no verification configured" branch builds
+        a fake stand-in VerificationRun via `type("VR", (), {...})()`
+        missing the `metadata` attribute real VerificationRun always
+        has. generate_review_report unconditionally reads
+        `verification.metadata`, so ANY task with an empty verification
+        list crashed at the finalize-success step with
+        AttributeError: 'VR' object has no attribute 'metadata' —
+        every single time, deterministically, with zero prior test
+        coverage of this path at all."""
+        scratch = _make_scratch_repo(tmp_path)
+        ts_db = str(tmp_path / "task-storage.db")
+        task_storage = TaskStorage(ts_db)
+        runtime, _ = _runtime(tmp_path, task_storage)
+        spec = _make_task_spec(
+            scratch, goal_text="/goal Say hello.",
+            verification_commands=[],
+        )
+        task = task_storage.create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"},
+        )
+        task_storage.update_task_status(task.id, "queued")
+        task_storage.update_task_status(task.id, "running")
+
+        class NoVerificationRelay(BufferedRelay):
+            def __init__(self):
+                super().__init__()
+                self.completed = False
+
+            def on_submit(self, driver, session_name, text):
+                if "/goal" not in text.lower():
+                    return
+                driver.push_output(session_name, "Hello!\n")
+                driver.push_output(session_name, "DONE.\n")
+                driver.mark_closed(session_name)
+                self.completed = True
+
+        relay_instance = NoVerificationRelay()
+        result = runtime.execute_task(
+            agent_run_id=task.id, task_id=task.id, task_spec=spec,
+            relay_handler=relay_instance,
+        )
+
+        assert relay_instance.completed
+        assert result.status == HarnessSessionStatus.completed.value
+        artifacts = result.artifacts
+        assert any(a["kind"] == "html_report" for a in artifacts)
+
+
 # ---------------------------------------------------------------------------
 # Flow 2: ask-question + reply
 # ---------------------------------------------------------------------------
