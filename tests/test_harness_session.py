@@ -69,6 +69,47 @@ class TestStartSession:
         inputs = driver.tmux.inputs.get(session.tmux_session, [])  # type: ignore[attr-defined]
         assert any("hello world" in i or "/goal" in i for i in inputs)
 
+    def test_retries_goal_injection_once_if_pane_looks_unchanged(
+        self, storage, worktree_path,
+    ):
+        """Regression test for a real bug caught by live-running
+        Composer's live E2E: the ready-wait loop is best-effort (a
+        15s deadline, not a confirmed-ready signal) — under host load
+        it can time out without ever seeing real content and still
+        inject the goal blind. When that races with the TUI not
+        actually being ready yet, the goal is silently dropped and the
+        session sits on its untouched welcome screen forever, with no
+        retry and no detectable failure signal. Reproduced live twice,
+        non-deterministically."""
+        from unittest.mock import MagicMock, patch
+        from agents_gateway.harness.tmux import TmuxSessionRef
+
+        real_tmux = MagicMock()
+        real_tmux.create_session.return_value = TmuxSessionRef(session="agw_test")
+        # Ready-wait loop's first capture() call sees content immediately
+        # (real TUI has rendered); then pre-injection and post-injection
+        # capture() both return the SAME unchanged text -> triggers retry.
+        real_tmux.capture.side_effect = ["welcome screen"] * 10
+        emitted: list[tuple[str, dict]] = []
+        driver = HarnessDriver(
+            storage=storage, tmux_driver=real_tmux,
+            emit_event=lambda session, event, data: emitted.append((event, data)),
+        )
+
+        with patch("time.sleep"):
+            session = driver.start_session(
+                task_id="task_retry", agent_run_id="run_retry",
+                worktree_path=worktree_path,
+                profile=get_profile("fake-test"),
+                goal_context=GoalContext(goal_text="hello world"),
+            )
+
+        assert session.status == HarnessSessionStatus.running.value
+        # send_text (part of inject_goal) called twice: once, then once
+        # more on retry after the pane looked unchanged.
+        assert real_tmux.send_text.call_count == 2
+        assert any(e == "goal.injection_unconfirmed_retrying" for e, _ in emitted)
+
     def test_start_session_with_unknown_profile_uses_default(self, driver, worktree_path):
         session = driver.start_session(
             task_id="task_2", agent_run_id="run_2",

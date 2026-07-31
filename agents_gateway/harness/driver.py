@@ -162,8 +162,38 @@ class HarnessDriver:
         # Inject goal if provided.
         if goal_context is not None:
             try:
+                # Live-found: the 15s ready-wait above is best-effort —
+                # under host load it can exhaust its deadline without
+                # ever having confirmed real readiness, and still
+                # proceeds to inject blind. When that races with the
+                # TUI not actually being ready to receive input yet,
+                # the goal is silently dropped and the session sits on
+                # its pristine welcome screen forever (twice reproduced
+                # live, non-deterministically). Detect that specific
+                # signature — the pane looks completely unchanged after
+                # injection — and retry the injection once before
+                # accepting it; a genuinely-registered goal always
+                # produces SOME visible change (echoed input, at
+                # minimum) within a couple seconds.
+                pre_capture = ""
+                if not isinstance(self.tmux, FakeTmuxDriver):
+                    try:
+                        pre_capture = self.tmux.capture(self._ref(session), lines=50)
+                    except Exception:
+                        pre_capture = ""
                 self.inject_goal(session, goal_context,
                                 requested_strategy=goal_strategy)
+                if not isinstance(self.tmux, FakeTmuxDriver):
+                    import time as _time2
+                    _time2.sleep(2.0)
+                    try:
+                        post_capture = self.tmux.capture(self._ref(session), lines=50)
+                    except Exception:
+                        post_capture = ""
+                    if post_capture and post_capture == pre_capture:
+                        self._emit(session, "goal.injection_unconfirmed_retrying", {})
+                        self.inject_goal(session, goal_context,
+                                        requested_strategy=goal_strategy)
             except Exception as e:
                 import traceback as _tb
                 self._emit(session, "session.goal_injection_failed",
