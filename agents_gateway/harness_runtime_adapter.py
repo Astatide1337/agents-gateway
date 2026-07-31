@@ -145,14 +145,6 @@ class HarnessSessionRuntimeAdapter(RuntimeAdapter):
             self.storage.append_event(task_id, "runtime_error",
                                       {"error": str(e), "kind": "harness"})
             self._finalize(task_id, "failed")
-            # The legacy task-status column above is now "failed", but
-            # that alone isn't enough: callers like Conductor prefer the
-            # richer harness-session `runtime_status` over the legacy
-            # status whenever a session exists (see _enrich_task in
-            # server.py), and that session's own status column is a
-            # separate row this crash never touched. Left unsynced, it
-            # stays "running" forever and permanently masks the failure
-            # from anyone reading /tasks/{id}.runtime_status.
             self._sync_session_failed(task_id)
             return {"agent_run_id": task_id, "task_id": task_id,
                     "status": "failed", "error": str(e)}

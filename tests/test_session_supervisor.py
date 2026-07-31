@@ -232,11 +232,8 @@ class TestTickOnce:
         assert fresh.status == "stalled"
 
     def test_one_session_raising_does_not_abort_others(self, harness_stack):
-        """A stale/hung session (e.g. capture-pane timing out on a dead
-        tmux pane from an unrelated task) must not stop tick_once from
-        processing the other sessions, and must not propagate out of
-        tick_once — a synchronous caller (HarnessRuntime.execute_task)
-        would otherwise misattribute the failure as its own task's."""
+        """One session raising during classify_state must not abort
+        processing of the others, or propagate out of tick_once."""
         hs, tmux, driver = harness_stack
         poison = _session_in_storage(hs, tmux_session="agw_poison")
         good = HarnessSession(

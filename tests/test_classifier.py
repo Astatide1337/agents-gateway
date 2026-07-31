@@ -69,7 +69,7 @@ class TestUsageLimited:
 
     def test_usage_limit_preempts_completion_marker(self):
         r = classify_state(
-            output="task complete but you've hit your usage limit\n",
+            output="verification passed but you've hit your usage limit\n",
             last_output_at=_now_iso(), process_alive=True,
             harness_profile="claude-code",
         )
@@ -184,7 +184,7 @@ class TestCompletionClaim:
         "Done.\n",
         "All tests passed.\n",
         "Verification passed.\n",
-        "Task complete.\n",
+        "The task is complete.\n",
     ])
     def test_completion_markers(self, text):
         r = classify_state(output=text, last_output_at=_now_iso(),
@@ -192,6 +192,30 @@ class TestCompletionClaim:
         assert r.state == HarnessState.completed_claimed
         # Completion never marks task completed directly — only claimed.
         assert r.state != "completed"
+
+
+class TestSystemBoilerplateDoesNotSelfTrigger:
+    """System-injected boilerplate must not self-classify as completion."""
+
+    def test_plain_prompt_goal_text_not_completion_claimed(self):
+        from agents_gateway.harness.goal import _plain_prompt
+        text = _plain_prompt("Add a divide function with tests.")
+        r = classify_state(output=text, last_output_at=_now_iso(),
+                          process_alive=True)
+        assert r.state != HarnessState.completed_claimed
+
+    def test_verification_failure_feedback_not_completion_claimed(self):
+        feedback = (
+            "VERIFICATION FEEDBACK (from Agents Gateway):\n"
+            "1 required verification command(s) failed:\n\n"
+            "- divide unit tests: exit_code=5\n"
+            "  command: uvx pytest -q -k divide\n\n"
+            "Continue fixing until all required verification commands pass.\n"
+            "Do not mark this task complete until they do."
+        )
+        r = classify_state(output=feedback, last_output_at=_now_iso(),
+                          process_alive=True)
+        assert r.state != HarnessState.completed_claimed
 
 
 class TestFailureClaim:

@@ -71,13 +71,11 @@ COMPLETION_MARKERS: tuple[str, ...] = (
     "done.\n",
     "done. ",
     "completed.\n",
-    "task complete",
     "all tests passed",
     "verification passed",
-    "all required verification",
-    # Opencode / Claude Code natural language completion patterns.
-    # These match phrases that appear when the agent finishes its task
-    # and reports the result to the user.
+    # Do not add "task complete" or "all required verification" —
+    # both are substrings of goal.py/verification.py's own injected
+    # boilerplate and caused a self-triggering completion loop.
     "both tests pass",
     "tests pass (",
     "tests passed",

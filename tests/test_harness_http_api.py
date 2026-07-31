@@ -297,10 +297,7 @@ class TestSessionsAPI:
 
 
 class TestTaskCancelStopsHarnessSession:
-    """POST /tasks/{id}/cancel must also stop the associated harness
-    session — otherwise a cancelled task leaves its session (and tmux
-    pane) alive and non-terminal forever, and the SessionSupervisor
-    keeps polling it indefinitely."""
+    """POST /tasks/{id}/cancel must also stop the associated session."""
 
     def test_cancel_task_stops_running_harness_session(self, server):
         cfg = server._config

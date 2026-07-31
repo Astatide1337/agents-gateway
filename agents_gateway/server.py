@@ -684,11 +684,6 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
         except TransitionError as e:
             return JSONResponse(status_code=409, content={"error": str(e)})
 
-        # A harness_session task also has a live tmux-backed session that
-        # the legacy task-status cancel above never touches. Left alone,
-        # that session stays in a non-terminal status (e.g.
-        # waiting_for_reply) and the SessionSupervisor keeps polling its
-        # (now abandoned) tmux pane forever.
         session = harness_storage.get_session_by_task(task_id)
         if session is not None and session.status not in (
                 HarnessSessionStatus.completed.value,

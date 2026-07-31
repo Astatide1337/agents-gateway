@@ -293,12 +293,7 @@ class TestAdapterDispatches:
 
     def test_execute_crash_syncs_harness_session_to_failed(
             self, adapter_env, monkeypatch):
-        """A crash inside HarnessRuntime.execute_task must not just fail
-        the legacy task-status column — it must also mark the
-        associated HarnessSession terminal. Conductor's status mapper
-        prefers `runtime_status` (session.status) over the legacy
-        `status` whenever a session exists, so an unsynced session left
-        "running" would permanently mask the failure from Composer."""
+        """A crash must also mark the associated HarnessSession failed."""
         env = adapter_env
         spec = {
             "objective_id": "obj_4",
