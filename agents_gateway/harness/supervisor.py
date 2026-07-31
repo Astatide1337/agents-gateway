@@ -92,7 +92,15 @@ class SessionSupervisor:
     # -------------------------------------------------------------------
 
     def tick_once(self) -> int:
-        """Process all active sessions once. Returns number classified."""
+        """Process all active sessions once. Returns number classified.
+
+        A failure classifying one session (e.g. a hung/stale tmux pane
+        from an unrelated task timing out on capture-pane) must not
+        abort the tick for every other session — this method is called
+        synchronously from HarnessRuntime.execute_task's own loop, so
+        an uncaught exception here would misattribute an unrelated
+        session's failure as the calling task's own failure.
+        """
         sessions = self.storage.list_active_sessions()
         processed = 0
         for session in sessions:
@@ -103,6 +111,9 @@ class SessionSupervisor:
             try:
                 self._process_session(session)
                 processed += 1
+            except Exception as exc:
+                self.emit_event(session, "supervisor.process_session_error",
+                                {"error": str(exc)})
             finally:
                 with self._lock:
                     self._busy.discard(session.id)

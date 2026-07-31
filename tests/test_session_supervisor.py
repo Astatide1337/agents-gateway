@@ -231,6 +231,51 @@ class TestTickOnce:
         fresh = hs.get_session(session.id)
         assert fresh.status == "stalled"
 
+    def test_one_session_raising_does_not_abort_others(self, harness_stack):
+        """A stale/hung session (e.g. capture-pane timing out on a dead
+        tmux pane from an unrelated task) must not stop tick_once from
+        processing the other sessions, and must not propagate out of
+        tick_once — a synchronous caller (HarnessRuntime.execute_task)
+        would otherwise misattribute the failure as its own task's."""
+        hs, tmux, driver = harness_stack
+        poison = _session_in_storage(hs, tmux_session="agw_poison")
+        good = HarnessSession(
+            id="session_test2", agent_run_id="run_test2",
+            task_id="task_test2",
+            harness_profile="fake-test", harness="fake",
+            runtime="tmux-fake",
+            tmux_session="agw_good", tmux_window="main", tmux_pane="0",
+            working_directory="/tmp/test",
+            status="running",
+            started_at="2026-01-01T00:00:00+00:00",
+            last_output_at=_iso_now(),
+            ended_at=None, metadata={},
+        )
+        hs.save_session(good)
+        _mark_alive(tmux, "agw_good")
+        _push(tmux, "agw_good", "Some random harness output.\n")
+
+        orig_classify = driver.classify_state
+
+        def flaky_classify(session, **kwargs):
+            if session.id == poison.id:
+                raise RuntimeError("tmux capture-pane timed out after 10 seconds")
+            return orig_classify(session, **kwargs)
+        driver.classify_state = flaky_classify
+
+        events = []
+        sup = SessionSupervisor(storage=hs, driver=driver,
+                                  verification_runner=None,
+                                  poll_interval_seconds=0.01,
+                                  stall_seconds=900,
+                                  emit_event=lambda s, e, d: events.append((s.id, e, d)))
+        n = sup.tick_once()  # must not raise
+        assert n == 1  # only the good session counted as processed
+        assert hs.get_session(good.id).status == "running"
+        assert hs.get_session(poison.id).status == "running"  # unchanged
+        assert any(e == "supervisor.process_session_error"
+                   for _, e, _ in events)
+
     def test_busy_session_skipped_on_tick(self, harness_stack):
         """If a session is already in the _busy set (e.g. verification
         in flight), tick_once should skip it."""
