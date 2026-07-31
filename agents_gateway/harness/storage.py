@@ -54,9 +54,14 @@ class HarnessStorage:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # See agents_gateway/storage.py's _connect docstring — Python's
+        # own sqlite3.connect() default timeout (5.0s) was not enough
+        # for the contention observed live once TaskWorker started
+        # running a real thread pool; extend well past it.
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def _init_db(self) -> None:

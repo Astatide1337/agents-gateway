@@ -151,3 +151,79 @@ class TestTaskWorkerPool:
         finally:
             worker.stop(timeout_seconds=0.5)
         assert fine_completed, "second task never completed — stuck task blocked the pool"
+
+
+class TestConcurrentSqliteWrites:
+    def test_many_threads_writing_same_db_never_raises_database_locked(
+        self, tmp_path,
+    ):
+        """Best-effort concurrent-load smoke: many threads hammering
+        append_event on the same TaskStorage db should never raise.
+        Doesn't reliably reproduce the exact race on a fast local
+        disk (see the deterministic version below for that) but
+        catches gross regressions."""
+        storage = TaskStorage(str(tmp_path / "agw.db"))
+        task = storage.create_task(agent_id="whatever")
+        errors: list[Exception] = []
+        start_barrier = threading.Barrier(16)
+
+        def hammer(n: int) -> None:
+            try:
+                start_barrier.wait(timeout=5)
+                for i in range(50):
+                    storage.append_event(task.id, f"event_{n}_{i}", {"i": i})
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=hammer, args=(n,)) for n in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert not errors, f"concurrent writes raised: {errors}"
+
+    def test_busy_timeout_waits_past_pythons_own_default(self, tmp_path):
+        """Deterministic regression test for a real bug caught live:
+        TaskWorker's own pool fix (above) makes concurrent writers to
+        the same SQLite file possible for the first time ever, and a
+        real harness task crashed mid-run with "database is locked"
+        (worker_harness_task_crash) — contention that outlasted even
+        Python's own sqlite3.connect() default `timeout=5.0`. This
+        test holds an explicit write lock for 6s (deliberately past
+        that 5s default) and confirms a second, independent
+        TaskStorage connection still waits for (and successfully
+        completes after) the lock is released, rather than failing —
+        proving _connect()'s explicit timeout=30.0 actually extends
+        the window rather than just restating Python's default."""
+        import sqlite3
+
+        db_path = str(tmp_path / "agw.db")
+        storage = TaskStorage(db_path)
+        task = storage.create_task(agent_id="whatever")
+
+        holder = sqlite3.connect(db_path, timeout=0)
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute(
+            "UPDATE tasks SET output=? WHERE id=?", ("holding lock", task.id),
+        )
+
+        result: dict[str, object] = {}
+
+        def writer() -> None:
+            try:
+                storage.append_event(task.id, "waited_for_lock", {})
+                result["ok"] = True
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=writer)
+        t.start()
+        time.sleep(6.0)  # past Python's own 5.0s connect() default
+        holder.commit()  # release the lock
+        holder.close()
+        t.join(timeout=30)
+
+        assert result.get("ok") is True, (
+            f"concurrent write did not wait for the lock and succeed: {result}"
+        )

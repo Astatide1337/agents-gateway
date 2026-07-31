@@ -96,8 +96,9 @@ class TaskWorker:
         a given row at a time, so concurrent workers cannot both claim the
         same task.
         """
-        conn = sqlite3.connect(self._storage.db_path)
+        conn = sqlite3.connect(self._storage.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
