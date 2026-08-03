@@ -22,6 +22,8 @@ the bundled fake-test harness running against an in-tree scratch repo.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import os
 import shutil
 import subprocess
@@ -69,23 +71,47 @@ class RepoWorkspaceManager:
     def get_or_create(self, repo_url: str, owner: str, repo: str,
                       default_branch: str = "master",
                       force_clone: bool = False) -> RepoWorkspace:
-        """Get existing or create a fresh workspace cached on disk."""
+        """Get existing or create a fresh workspace cached on disk.
+
+        Concurrent dispatches for the same (owner, repo, branch) — e.g.
+        two tasks in the same objective, each with its own manager
+        instance — race on find-then-create without a lock. Serialize
+        via an flock on a per-key lockfile so only one caller ever
+        clones; everyone else observes the winner's saved workspace.
+        """
         existing = self.storage.find_workspace(repo_url, owner, repo, default_branch)
         if existing and not force_clone:
             return existing
-        ws_id = f"repo_ws_{uuid.uuid4().hex[:12]}"
-        base_path = str(self.workspace_root / owner / repo / ws_id)
-        worktrees_path = str(self.worktree_root / owner / repo / ws_id)
-        Path(base_path).mkdir(parents=True, exist_ok=True)
-        Path(worktrees_path).mkdir(parents=True, exist_ok=True)
-        ws = RepoWorkspace(
-            id=ws_id, repo_url=repo_url, owner=owner, repo=repo,
-            default_branch=default_branch, base_path=base_path,
-            worktrees_path=worktrees_path,
-        )
-        self._bootstrap_clone(ws)
-        self.storage.save_workspace(ws)
-        return ws
+        with self._workspace_lock(owner, repo, default_branch):
+            existing = self.storage.find_workspace(repo_url, owner, repo, default_branch)
+            if existing and not force_clone:
+                return existing
+            ws_id = f"repo_ws_{uuid.uuid4().hex[:12]}"
+            base_path = str(self.workspace_root / owner / repo / ws_id)
+            worktrees_path = str(self.worktree_root / owner / repo / ws_id)
+            Path(base_path).mkdir(parents=True, exist_ok=True)
+            Path(worktrees_path).mkdir(parents=True, exist_ok=True)
+            ws = RepoWorkspace(
+                id=ws_id, repo_url=repo_url, owner=owner, repo=repo,
+                default_branch=default_branch, base_path=base_path,
+                worktrees_path=worktrees_path,
+            )
+            self._bootstrap_clone(ws)
+            self.storage.save_workspace(ws)
+            return ws
+
+    @contextlib.contextmanager
+    def _workspace_lock(self, owner: str, repo: str, branch: str):
+        lock_dir = self.workspace_root / owner / repo
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = lock_dir / f".ws_lock_{_slugify(branch)}"
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def get_or_create_local(self, local_path: str, owner: str,
                             repo: str,

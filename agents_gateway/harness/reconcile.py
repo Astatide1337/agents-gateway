@@ -24,6 +24,7 @@ dead we surface it as a Composer interaction rather than auto-restart.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,7 +33,7 @@ from agents_gateway.harness.models import (
     HarnessSessionStatus,
 )
 from agents_gateway.harness.storage import HarnessStorage
-from agents_gateway.harness.tmux import FakeTmuxDriver, TmuxDriver, TmuxSessionRef
+from agents_gateway.harness.tmux import FakeTmuxDriver, TmuxDriver
 from agents_gateway.harness.driver import HarnessDriver
 
 
@@ -79,15 +80,31 @@ def reconcile_harness_sessions(
                             HarnessSessionStatus.cancelled.value):
             result.skipped.append(fresh.id)
             continue
-        # Use the underlying tmux driver's is_alive to check liveness.
+        # Route to whichever driver actually owns this session — a
+        # JSON-mode session was never a real tmux session, so checking
+        # driver.tmux directly always reports it as missing/dead.
         try:
-            alive = driver.tmux.is_alive(
-                TmuxSessionRef(session=fresh.tmux_session,
-                                window=fresh.tmux_window,
-                                pane=fresh.tmux_pane))
+            owning_driver = driver._driver_for(fresh)
+            try:
+                alive = owning_driver.is_alive(driver._ref(fresh))
+            except Exception:
+                # OpencodeJsonDriver's session state is pure
+                # in-process memory — a fresh instance (this AGW
+                # process just (re)started) knows nothing about
+                # sessions spawned before the restart. Reattach via
+                # the PID persisted at spawn time (see
+                # HarnessDriver._persist_json_pid) and retry once
+                # before concluding the session is actually dead.
+                pid = (fresh.metadata or {}).get("json_pid")
+                reattach = getattr(owning_driver, "reattach", None)
+                if pid is not None and reattach is not None:
+                    reattach(fresh.tmux_session, fresh.working_directory, int(pid))
+                    alive = owning_driver.is_alive(driver._ref(fresh))
+                else:
+                    raise
         except Exception:
-            # If tmux call itself crashed (no binary, etc.), treat
-            # as missing — safer than silently assuming alive.
+            # If the underlying call itself crashed (no binary, etc.),
+            # treat as missing — safer than silently assuming alive.
             alive = False
         if alive:
             _mark_recovered(harness_storage, fresh, emit)
@@ -158,4 +175,59 @@ def _default_emitter(harness_storage: HarnessStorage):
     return emit
 
 
-__all__ = ["ReconcileResult", "reconcile_harness_sessions"]
+def resume_orphaned_harness_tasks(
+    task_storage: Any,
+    *,
+    harness_config: Any = None,
+    artifacts_dir: str = "",
+) -> list[str]:
+    """Resume harness_session tasks whose driving thread was lost.
+
+    ``HarnessSessionRuntimeAdapter.execute()`` drives one task via a
+    single long blocking call on a worker thread. An AGW process
+    restart destroys that thread — and unlike a freshly queued task,
+    the ``TaskWorker`` only ever claims ``status='queued'`` rows, so a
+    task already ``status='running'`` when the process died is never
+    picked up again on its own. It just sits frozen: reconcile_harness_
+    sessions() (see above) keeps ``is_alive()`` answers accurate, but
+    nothing re-drives the task toward verification/completion.
+
+    Called once at boot, after reconcile_harness_sessions(). Each
+    resume runs in its own background thread since HarnessRuntime.
+    resume_task() blocks until the task reaches a terminal state.
+    Returns the list of task_ids a resume thread was started for.
+
+    Checks both "running" and "waiting" tasks — a task mid-interaction
+    (waiting on a Composer reply) when the process died is exactly as
+    orphaned as one in "running": reconcile_harness_sessions() above
+    only refreshes is_alive() bookkeeping for it, nothing re-drives it.
+    Confirmed live: a real integration task sat in "waiting" at restart
+    and never resumed, even though the underlying harness session had
+    already produced a genuine, verifiable completion.
+    """
+    from agents_gateway.harness_runtime_adapter import HarnessSessionRuntimeAdapter
+
+    resumed: list[str] = []
+    seen: set[str] = set()
+    for status in ("running", "waiting"):
+        for task in task_storage.list_tasks(limit=500, status=status):
+            if task.id in seen:
+                continue
+            if (task.metadata or {}).get("runtime_type") != "harness_session":
+                continue
+            seen.add(task.id)
+            adapter = HarnessSessionRuntimeAdapter(
+                storage=task_storage, artifacts_dir=artifacts_dir,
+                harness_config=harness_config,
+            )
+            t = threading.Thread(
+                target=adapter.resume, args=(task.id,),
+                name=f"harness-resume-{task.id[:8]}", daemon=True,
+            )
+            t.start()
+            resumed.append(task.id)
+    return resumed
+
+
+__all__ = ["ReconcileResult", "reconcile_harness_sessions",
+          "resume_orphaned_harness_tasks"]

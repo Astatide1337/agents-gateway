@@ -17,8 +17,14 @@ from typing import Any
 
 from agents_gateway.catalog import AgentCatalog
 from agents_gateway.logging import log_event
+from agents_gateway.resource_guard import is_memory_critical
 from agents_gateway.runtime import RuntimeAdapter, RuntimeRegistry
 from agents_gateway.storage import TaskStorage, TransitionError
+
+# How often to log the "waiting for memory to free up" state while
+# blocked — every iteration would flood the log at poll_interval
+# granularity (as often as every 0.5s).
+_MEMORY_PRESSURE_LOG_INTERVAL_SECONDS = 30.0
 
 
 class TaskWorker:
@@ -43,6 +49,7 @@ class TaskWorker:
         self._pool_size = max(1, pool_size)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._last_memory_pressure_log = 0.0
 
     def start(self) -> None:
         if self._threads and any(t.is_alive() for t in self._threads):
@@ -71,6 +78,22 @@ class TaskWorker:
 
     def _run_loop(self) -> None:
         while not self._stop.is_set():
+            if is_memory_critical():
+                # Leave the task queued rather than claim-then-spawn
+                # into a host that's already critically low — see
+                # resource_guard.py's docstring for the incident this
+                # prevents. Rate-limited logging: this can hold for
+                # minutes at a time and would otherwise flood the log
+                # at poll_interval granularity.
+                now = time.monotonic()
+                if now - self._last_memory_pressure_log > _MEMORY_PRESSURE_LOG_INTERVAL_SECONDS:
+                    log_event("worker_memory_pressure_wait",
+                              "Host memory/swap critically low — "
+                              "deferring task claim until it recovers",
+                              level="WARNING")
+                    self._last_memory_pressure_log = now
+                time.sleep(self._poll_interval)
+                continue
             claimed = self._claim_next_queued_task()
             if claimed is None:
                 time.sleep(self._poll_interval)

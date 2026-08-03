@@ -166,6 +166,83 @@ class HarnessSessionRuntimeAdapter(RuntimeAdapter):
 
         return result.to_dict()
 
+    def resume(self, task_id: str) -> dict[str, Any] | None:
+        """Resume a harness_session task whose driving thread was lost
+        (AGW process restart mid-execution). The TaskWorker only ever
+        claims ``status='queued'`` tasks, so a task already
+        ``status='running'`` when the process died is never picked up
+        again on its own — this is the explicit recovery path, called
+        from startup reconciliation for exactly those orphaned tasks.
+
+        Returns None when there was nothing to resume (no harness
+        session ever existed for this task — safe to leave to normal
+        dispatch/retry handling instead).
+        """
+        from agents_gateway.harness.runtime import (
+            HarnessRuntime,
+            HarnessRuntimeConfig,
+        )
+        from agents_gateway.harness.storage import HarnessStorage
+
+        task = self.storage.get_task(task_id)
+        if task is None:
+            return None
+        try:
+            spec = json.loads(task.input) if task.input else {}
+        except (ValueError, TypeError):
+            spec = {}
+
+        hcfg = self.harness_config
+        if hcfg is None:
+            hcfg = HarnessRuntimeConfig(
+                use_fake_tmux=True,
+                auto_commit=False,
+                workspace_root=str(self.artifacts_dir.parent / "repos"),
+                worktree_root=str(self.artifacts_dir.parent / "worktrees"),
+                artifacts_root=str(self.artifacts_dir),
+            )
+
+        hstorage = HarnessStorage(self.storage.db_path)
+        runtime = HarnessRuntime(
+            task_storage=self.storage,
+            harness_storage=hstorage,
+            task_storage_event_emitter=self.storage,
+            config=hcfg,
+        )
+
+        log_event("worker_harness_task_resume",
+                  f"Resuming orphaned harness_session task {task_id}",
+                  task_id=task_id, agent_id=task.agent_id,
+                  runtime_type="harness_session")
+
+        try:
+            result = runtime.resume_task(task_id=task_id, task_spec=spec)
+        except Exception as e:
+            log_event("worker_harness_task_crash",
+                      f"Harness task {task_id} crashed on resume: {e}",
+                      task_id=task_id, level="ERROR")
+            self.storage.append_event(task_id, "runtime_error",
+                                      {"error": str(e), "kind": "harness_resume"})
+            self._finalize(task_id, "failed")
+            self._sync_session_failed(task_id)
+            return {"agent_run_id": task_id, "task_id": task_id,
+                    "status": "failed", "error": str(e)}
+
+        if result is None:
+            return None
+
+        final = self._translate_status(result.status)
+        self._finalize(task_id, final)
+        try:
+            for a in result.artifacts:
+                self.storage.add_artifact(
+                    task_id, a.get("name", "artifact"),
+                    a.get("path", ""), a.get("size_bytes", 0) or 0,
+                )
+        except Exception:
+            pass
+        return result.to_dict()
+
     def fail(self, task_id: str, error: str = "Simulated failure") -> dict[str, Any]:
         log_event("harness_runtime_failed",
                   f"task {task_id} failed: {error}",

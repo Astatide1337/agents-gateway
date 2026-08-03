@@ -10,6 +10,7 @@ These tests use the FakeTmuxDriver so they're deterministic.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -286,3 +287,223 @@ def _register_alive_helper(self, session_name):
 
 if not hasattr(FakeTmuxDriver, "register_alive"):
     setattr(FakeTmuxDriver, "register_alive", _register_alive_helper)
+
+
+class TestReconcileRoutesToOwningDriver:
+    """A JSON-mode session was never a real tmux session — checking
+    driver.tmux directly always reports it missing, even when the real
+    process is still running."""
+
+    def test_alive_json_mode_session_marked_recovered_not_missing(self, harness_storage, tmp_path):
+        import os
+        from agents_gateway.harness.process_json import OpencodeJsonDriver
+        from agents_gateway.harness.tmux import TmuxSessionRef
+
+        fixture = os.path.join(os.path.dirname(__file__), "fixtures", "fake_opencode_run.py")
+        json_driver = OpencodeJsonDriver(binary=fixture, log_dir=str(tmp_path / "logs"))
+        driver = HarnessDriver(storage=harness_storage, json_driver=json_driver)
+
+        ref = json_driver.create_session("agw_json_1", cwd=str(tmp_path), command=["opencode", "--auto"])
+        json_driver.send_text(ref, "trigger_waiting please")  # long-running-ish: waits, doesn't exit fast
+        json_driver.send_enter(ref)
+
+        s = HarnessSession.new(
+            agent_run_id="run_json_1", task_id="task_json_1",
+            harness_profile="opencode", harness="opencode",
+            tmux_session="agw_json_1", working_directory=str(tmp_path),
+            runtime="process-json",
+        )
+        s.id = "sess_json_1"
+        s.status = HarnessSessionStatus.running.value
+        then = datetime.now(timezone.utc) - timedelta(minutes=30)
+        s.started_at = then.isoformat()
+        harness_storage.save_session(s)
+
+        # Whatever driver.tmux (a real/fake tmux driver, unused for this
+        # session) reports must not matter — only the owning driver's
+        # view counts.
+        reconcile_harness_sessions(harness_storage, driver=driver)
+
+        recovered = harness_storage.get_session("sess_json_1")
+        assert recovered is not None
+        assert recovered.status == HarnessSessionStatus.running.value
+        assert recovered.metadata.get("recovered_after_restart") is True
+
+    def test_restart_simulation_reattaches_via_persisted_pid(self, harness_storage, tmp_path):
+        """Live-found (2026-08-01): a real AGW restart during an
+        actively-running Spotify-clone build marked two genuinely
+        running JSON-mode sessions as missing, and the resulting
+        retry duplicated real work — two orphaned processes kept
+        running, untracked, while two brand new ones started on the
+        same tasks. reattach() must find the ORIGINAL process still
+        alive via its persisted PID."""
+        import os
+        from agents_gateway.harness.process_json import OpencodeJsonDriver, _pid_alive
+
+        fixture = os.path.join(os.path.dirname(__file__), "fixtures", "fake_opencode_run.py")
+
+        # "Before restart": a driver spawns a real (fake-binary-backed
+        # but genuinely long-ish-lived) session and its PID gets
+        # persisted, exactly as HarnessDriver._persist_json_pid does.
+        json_driver_before = OpencodeJsonDriver(binary=fixture, log_dir=str(tmp_path / "logs"))
+        ref = json_driver_before.create_session(
+            "agw_restart_1", cwd=str(tmp_path), command=["opencode", "--auto"],
+        )
+        json_driver_before.send_text(ref, "trigger_waiting please")  # doesn't exit immediately
+        json_driver_before.send_enter(ref)
+        pid = json_driver_before.get_pid(ref)
+        assert pid is not None and _pid_alive(pid)
+
+        s = HarnessSession.new(
+            agent_run_id="run_restart_1", task_id="task_restart_1",
+            harness_profile="opencode", harness="opencode",
+            tmux_session="agw_restart_1", working_directory=str(tmp_path),
+            runtime="process-json",
+        )
+        s.id = "sess_restart_1"
+        s.status = HarnessSessionStatus.running.value
+        s.metadata = {"json_pid": pid}
+        then = datetime.now(timezone.utc) - timedelta(minutes=30)
+        s.started_at = then.isoformat()
+        harness_storage.save_session(s)
+
+        # "After restart": a BRAND NEW driver instance (and therefore
+        # a brand new, empty-state OpencodeJsonDriver) — nothing
+        # shared with json_driver_before at all.
+        driver_after = HarnessDriver(
+            storage=harness_storage,
+            json_driver=OpencodeJsonDriver(binary=fixture, log_dir=str(tmp_path / "logs")),
+        )
+        reconcile_harness_sessions(harness_storage, driver=driver_after)
+
+        recovered = harness_storage.get_session("sess_restart_1")
+        assert recovered.status == HarnessSessionStatus.running.value, (
+            "a genuinely still-running session must not be marked missing "
+            "just because a fresh driver instance never spawned it"
+        )
+        assert recovered.metadata.get("recovered_after_restart") is True
+
+        # Clean up the real background process this test spawned.
+        import signal as _signal
+        try:
+            os.kill(pid, _signal.SIGKILL)
+        except OSError:
+            pass
+
+
+class TestResumeOrphanedHarnessTasks:
+    """resume_orphaned_harness_tasks() covers the gap
+    reconcile_harness_sessions() (above) does NOT: session-level
+    reconcile only fixes is_alive() answers for existing in-memory
+    driver state. The actual TASK orchestration (harness_runtime_
+    adapter.execute -> HarnessRuntime.execute_task) runs on one
+    long-blocked worker thread that a process restart destroys
+    entirely — and TaskWorker only ever claims status='queued' tasks,
+    so a task already status='running' when the process died is never
+    picked up again by anything, ever, without this explicit resume."""
+
+    def test_finds_and_resumes_running_harness_session_tasks(self, tmp_path):
+        from agents_gateway.harness.reconcile import resume_orphaned_harness_tasks
+        from agents_gateway.storage import TaskStorage
+
+        db = str(tmp_path / "agw.db")
+        task_storage = TaskStorage(db)
+
+        spec = {"execution": {"mode": "harness_session",
+                              "harness_profile": "fake-test"},
+                "goal": {"strategy": "auto", "text": "/goal x"}}
+        orphaned = task_storage.create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"},
+        )
+        task_storage.update_task_status(orphaned.id, "queued")
+        task_storage.update_task_status(orphaned.id, "running")
+
+        # A non-harness running task must be left alone (no adapter to
+        # resume it through).
+        other = task_storage.create_task(agent_id="some-other-agent", input_data="{}")
+        task_storage.update_task_status(other.id, "queued")
+        task_storage.update_task_status(other.id, "running")
+
+        # A queued (not yet claimed) harness task must be left alone —
+        # the normal worker claim path already covers it.
+        queued = task_storage.create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"},
+        )
+        task_storage.update_task_status(queued.id, "queued")
+
+        calls: list[str] = []
+        import agents_gateway.harness_runtime_adapter as adapter_mod
+
+        def fake_resume(self, task_id):
+            calls.append(task_id)
+            return {"status": "completed"}
+        adapter_mod.HarnessSessionRuntimeAdapter.resume = fake_resume
+
+        try:
+            resumed_ids = resume_orphaned_harness_tasks(
+                task_storage, artifacts_dir=str(tmp_path / "artifacts"),
+            )
+            assert resumed_ids == [orphaned.id]
+
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=5)
+            while not calls and datetime.now(timezone.utc) < deadline:
+                time.sleep(0.01)
+            assert calls == [orphaned.id]
+        finally:
+            del adapter_mod.HarnessSessionRuntimeAdapter.resume
+
+    def test_finds_and_resumes_waiting_harness_session_tasks(self, tmp_path):
+        """Real incident: a harness task mid-interaction (waiting on a
+        Composer reply) when the process died is exactly as orphaned
+        as one still 'running' — a genuine, already-verifiable
+        completion sat unresumed forever because this only checked
+        status='running'."""
+        from agents_gateway.harness.reconcile import resume_orphaned_harness_tasks
+        from agents_gateway.storage import TaskStorage
+
+        db = str(tmp_path / "agw.db")
+        task_storage = TaskStorage(db)
+
+        spec = {"execution": {"mode": "harness_session",
+                              "harness_profile": "fake-test"},
+                "goal": {"strategy": "auto", "text": "/goal x"}}
+        waiting = task_storage.create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"},
+        )
+        task_storage.update_task_status(waiting.id, "queued")
+        task_storage.update_task_status(waiting.id, "running")
+        task_storage.update_task_status(waiting.id, "waiting")
+
+        calls: list[str] = []
+        import agents_gateway.harness_runtime_adapter as adapter_mod
+
+        def fake_resume(self, task_id):
+            calls.append(task_id)
+            return {"status": "completed"}
+        adapter_mod.HarnessSessionRuntimeAdapter.resume = fake_resume
+
+        try:
+            resumed_ids = resume_orphaned_harness_tasks(
+                task_storage, artifacts_dir=str(tmp_path / "artifacts"),
+            )
+            assert resumed_ids == [waiting.id]
+
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=5)
+            while not calls and datetime.now(timezone.utc) < deadline:
+                time.sleep(0.01)
+            assert calls == [waiting.id]
+        finally:
+            del adapter_mod.HarnessSessionRuntimeAdapter.resume
+
+    def test_returns_empty_list_when_nothing_orphaned(self, tmp_path):
+        from agents_gateway.harness.reconcile import resume_orphaned_harness_tasks
+        from agents_gateway.storage import TaskStorage
+
+        task_storage = TaskStorage(str(tmp_path / "agw.db"))
+        resumed_ids = resume_orphaned_harness_tasks(
+            task_storage, artifacts_dir=str(tmp_path / "artifacts"),
+        )
+        assert resumed_ids == []

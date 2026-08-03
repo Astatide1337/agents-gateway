@@ -17,14 +17,18 @@ The supervisor (separate module) calls these on a poll interval.
 
 from __future__ import annotations
 
+import os
+import shlex
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agents_gateway.harness.anthropic_compat_proxy import ensure_proxy_running
 from agents_gateway.harness.classifier import (
     ClassifierResult,
     HarnessState,
+    classify_json_transcript,
     classify_state,
 )
 from agents_gateway.harness.goal import (
@@ -37,12 +41,14 @@ from agents_gateway.harness.models import (
     ComposerInteractionType,
     HarnessSession,
     HarnessSessionStatus,
+    WireProtocol,
 )
 from agents_gateway.harness.profiles import (
     HarnessProfile,
     get_default_profile,
     get_profile,
 )
+from agents_gateway.harness.process_json import OpencodeJsonDriver, get_default_json_driver
 from agents_gateway.harness.storage import HarnessStorage
 from agents_gateway.harness.tmux import (
     FakeTmuxDriver,
@@ -50,9 +56,30 @@ from agents_gateway.harness.tmux import (
     TmuxSessionRef,
 )
 
+# session.runtime value for sessions running under OpencodeJsonDriver
+# (see profiles.py's input_mode="process_json" and _driver_for below).
+_JSON_RUNTIME = "process-json"
+
 
 class HarnessDriverError(Exception):
     pass
+
+
+_ANTHROPIC_COMPAT_PROXY_PORT_ENV = "AGW_ANTHROPIC_COMPAT_PROXY_PORT"
+_DEFAULT_ANTHROPIC_COMPAT_PROXY_PORT = 8199
+
+
+def _wire_protocol_env_prefix(profile: HarnessProfile, effective_model: str | None) -> list[str]:
+    """Shell-quoted KEY=value tokens to prepend to argv so a harness CLI
+    locked to one wire protocol can reach a provider outside its native
+    ecosystem through the matching adapter. Empty when no adapter
+    applies (bare launch, or the profile needs none)."""
+    if profile.wire_protocol != WireProtocol.anthropic_messages or not effective_model:
+        return []
+    port = int(os.environ.get(_ANTHROPIC_COMPAT_PROXY_PORT_ENV, _DEFAULT_ANTHROPIC_COMPAT_PROXY_PORT))
+    ensure_proxy_running(port)
+    env = {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}", "ANTHROPIC_API_KEY": "proxy-managed"}
+    return [f"{k}={shlex.quote(v)}" for k, v in env.items()]
 
 
 def _distinctive_marker(sent_text: str, min_len: int = 20) -> str:
@@ -79,11 +106,16 @@ class HarnessDriver:
 
     def __init__(self, storage: HarnessStorage,
                  tmux_driver: TmuxDriver | FakeTmuxDriver | None = None,
+                 json_driver: OpencodeJsonDriver | None = None,
                  session_prefix: str = "agw_",
                  capture_lines: int = 2000,
                  emit_event: Any | None = None) -> None:
         self.storage = storage
         self.tmux = tmux_driver or TmuxDriver()
+        # Profiles with input_mode="process_json" use this instead of
+        # self.tmux (see _driver_for). Defaults to the process-wide
+        # singleton, not a fresh instance — see get_default_json_driver.
+        self.json_driver = json_driver or get_default_json_driver()
         self.session_prefix = session_prefix
         self.capture_lines = capture_lines
         # Track the last captured output signature per session to
@@ -118,6 +150,9 @@ class HarnessDriver:
         elif profile is None:
             profile = get_default_profile()
 
+        use_json = profile.input_mode == "process_json"
+        driver = self.json_driver if use_json else self.tmux
+
         # Compose the spawn command: profile.command + effective_args
         # (effective_args injects the model override flag via the
         # profile's model_arg_name if the override or a default_model
@@ -125,6 +160,12 @@ class HarnessDriver:
         cmd_parts = [profile.command] + list(
             profile.effective_args(model_override=model_override)
         )
+        # A wire-protocol adapter (see _wire_protocol_env_prefix) is
+        # env-var driven and only meaningful for real-shell tmux
+        # launches, not the JSON driver's direct subprocess.Popen argv.
+        if not use_json:
+            effective_model = model_override or profile.default_model
+            cmd_parts = _wire_protocol_env_prefix(profile, effective_model) + cmd_parts
         # Sanitize against empty argv (would break tmux).
         cmd_parts = [p for p in cmd_parts if p]
         if not cmd_parts:
@@ -135,15 +176,21 @@ class HarnessDriver:
         # Construct an idempotent-ish tmux session name based on task
         # id (truncated). This is safe because task ids are random UUIDs.
         tmux_session = self._tmux_session_name(task_id)
-        ref = self.tmux.create_session(
+        ref = driver.create_session(
             session_name=tmux_session, cwd=worktree_path, command=cmd_parts,
         )
 
+        if use_json:
+            runtime = _JSON_RUNTIME
+        elif not isinstance(self.tmux, FakeTmuxDriver):
+            runtime = "tmux"
+        else:
+            runtime = "tmux-fake"
         session = HarnessSession(
             id=self._new_session_id(),
             agent_run_id=agent_run_id, task_id=task_id,
             harness_profile=profile.name, harness=profile.harness,
-            runtime="tmux" if not isinstance(self.tmux, FakeTmuxDriver) else "tmux-fake",
+            runtime=runtime,
             tmux_session=ref.session, tmux_window=ref.window, tmux_pane=ref.pane,
             working_directory=worktree_path,
             status=HarnessSessionStatus.starting.value,
@@ -160,13 +207,10 @@ class HarnessDriver:
         self.storage.save_session(session)
         self._emit(session, "session.created", {"profile": profile.name})
 
-        # Wait for the harness process to be ready before injecting the
-        # goal. Full-screen TUI harnesses (opencode, claude-code) need
-        # time to render their UI after spawning; if we send text too
-        # early the keystrokes are lost. We poll the tmux pane until it
-        # has content (indicating the TUI has rendered) or a short
-        # timeout expires. The FakeTmuxDriver doesn't need this.
-        if not isinstance(self.tmux, FakeTmuxDriver):
+        # Wait for the TUI to render before injecting the goal, or
+        # early keystrokes are lost. Not needed for FakeTmuxDriver or
+        # JSON-mode sessions (goal is a process argv, not typed input).
+        if not isinstance(self.tmux, FakeTmuxDriver) and not use_json:
             import time as _time
             _ready_deadadline = _time.time() + 15.0
             while _time.time() < _ready_deadadline:
@@ -181,28 +225,15 @@ class HarnessDriver:
         # Inject goal if provided.
         if goal_context is not None:
             try:
-                # Live-found: the 15s ready-wait above is best-effort —
-                # under host load it can exhaust its deadline without
-                # ever having confirmed real readiness, and still
-                # proceeds to inject blind. When that races with the
-                # TUI not actually being ready to receive input yet,
-                # the goal is silently dropped and the session sits on
-                # its pristine welcome screen forever (reproduced live,
-                # non-deterministically, more than once).
-                #
-                # The first fix (comparing full pre/post captures
-                # byte-for-byte) had a real gap: a TUI can re-render
-                # something — a spinner frame, a cursor blink — between
-                # the two captures with NO submission having actually
-                # happened, making pre != post even though the message
-                # never registered (reproduced live). Check for a
-                # distinctive substring of what was ACTUALLY sent
-                # instead — that can only appear in the capture if the
-                # injection genuinely landed, regardless of unrelated
-                # rendering churn.
+                # The ready-wait above is best-effort and can proceed
+                # blind under host load, silently dropping the goal.
+                # Confirm by checking for a distinctive substring of
+                # what was actually sent (not a pre/post byte-compare,
+                # which false-positives on unrelated TUI re-renders).
                 result = self.inject_goal(session, goal_context,
                                          requested_strategy=goal_strategy)
-                if not isinstance(self.tmux, FakeTmuxDriver):
+                # JSON-mode: goal is a process argv, delivered synchronously.
+                if not isinstance(self.tmux, FakeTmuxDriver) and not use_json:
                     import time as _time2
                     marker = _distinctive_marker(result.sent_text)
                     _time2.sleep(2.0)
@@ -213,16 +244,8 @@ class HarnessDriver:
                     if not (marker and marker in post_capture):
                         self._emit(session, "goal.injection_unconfirmed_retrying",
                                    {"marker": marker})
-                        # Deliberately NOT a repeat of self.inject_goal
-                        # (which would just retry the same paste-buffer
-                        # mechanism that already failed once — retrying
-                        # an identical delivery path predictably fails
-                        # again if the problem is structural rather
-                        # than a one-off timing race, which live
-                        # testing showed it sometimes is). Fall back to
-                        # a genuinely different delivery mechanism —
-                        # the original per-line send-keys approach —
-                        # for this second attempt.
+                        # Use a different delivery mechanism, not a
+                        # repeat of the one that already failed.
                         ref = self._ref(session)
                         send_literal = getattr(self.tmux, "send_text_literal", None)
                         if send_literal is not None:
@@ -243,6 +266,9 @@ class HarnessDriver:
                 self.storage.save_session(session)
                 return session
 
+        if use_json:
+            self._persist_json_pid(session)
+
         # Mark the session running even before the harness has spoken —
         # the supervisor will adjust state via classify_state.
         session.status = HarnessSessionStatus.running.value
@@ -254,19 +280,18 @@ class HarnessDriver:
     def inject_goal(self, session: HarnessSession,
                     ctx: GoalContext,
                     requested_strategy: str | None = None) -> GoalInjectionResult:
-        """Write .agent-task/* files and send the directive into tmux."""
+        """Write .agent-task/* files and send the directive to the driver."""
         ref = self._ref(session)
+        driver = self._driver_for(session)
         result = inject_goal(
             worktree_path=session.working_directory,
             profile=self._profile_for(session),
             ctx=ctx, requested_strategy=requested_strategy,
         )
-        # Send the directive text in two parts: the file-based directive
-        # + the actual goal text (so harnesses that don't read files
-        # still get the goal). We send it as two chunks rather than one
-        # long block to keep tmux send-keys line lengths reasonable.
-        self.tmux.send_text(ref, result.sent_text)
-        self.tmux.send_enter(ref)
+        # For JSON-mode sessions this send_text+send_enter pair is what
+        # spawns `opencode run <sent_text> ...`.
+        driver.send_text(ref, result.sent_text)
+        driver.send_enter(ref)
         self._emit(session, "goal.injected",
                    {"strategy": result.strategy,
                     "files_written": result.files_written})
@@ -274,7 +299,7 @@ class HarnessDriver:
 
     def capture_output(self, session: HarnessSession,
                        lines: int | None = None) -> str:
-        """Return recent tmux capture; update last_output_at.
+        """Return recent driver capture; update last_output_at.
 
         The session's ``last_output_at`` field is only updated when the
         captured output is non-empty AND differs from the last captured
@@ -284,7 +309,7 @@ class HarnessDriver:
         time of our latest poll.
         """
         ref = self._ref(session)
-        capture = self.tmux.capture(ref, lines=lines or self.capture_lines)
+        capture = self._driver_for(session).capture(ref, lines=lines or self.capture_lines)
         if not capture:
             return capture
         # Track previous capture per session to detect real churn.
@@ -302,7 +327,15 @@ class HarnessDriver:
                        now_override: str | None = None) -> ClassifierResult:
         """Helper wrapper around the classifier using session storage."""
         output = self.capture_output(session)
-        alive = self.tmux.is_alive(self._ref(session))
+        ref = self._ref(session)
+        if session.runtime == _JSON_RUNTIME:
+            alive = self.json_driver.is_alive(ref)
+            return classify_json_transcript(
+                text=output, process_alive=alive,
+                exit_code=self.json_driver.exit_code(ref),
+                harness_profile=session.harness_profile,
+            )
+        alive = self.tmux.is_alive(ref)
         return classify_state(
             output=output,
             last_output_at=session.last_output_at,
@@ -318,10 +351,19 @@ class HarnessDriver:
         so the agent can distinguish them from its own echoed input.
         """
         ref = self._ref(session)
+        driver = self._driver_for(session)
         header = "ASSISTANT REPLY (from Composer):"
-        for line in (header + "\n" + reply_text).splitlines() or [""]:
-            self.tmux.send_text(ref, line)
-            self.tmux.send_enter(ref)
+        full_text = header + "\n" + reply_text
+        if session.runtime == _JSON_RUNTIME:
+            # One-shot process model: send_enter spawns a new process,
+            # so the reply goes as ONE message, not one per line.
+            driver.send_text(ref, full_text)
+            driver.send_enter(ref)
+            self._persist_json_pid(session)
+        else:
+            for line in full_text.splitlines() or [""]:
+                driver.send_text(ref, line)
+                driver.send_enter(ref)
         # Set status back to running; the supervisor will adjust.
         session.status = HarnessSessionStatus.running.value
         session.last_output_at = datetime.now(timezone.utc).isoformat()
@@ -431,7 +473,7 @@ class HarnessDriver:
         """Forcibly stop the harness session."""
         ref = self._ref(session)
         try:
-            self.tmux.terminate(ref)
+            self._driver_for(session).terminate(ref)
         except Exception:
             pass
         if session.status not in (HarnessSessionStatus.completed.value,
@@ -450,8 +492,36 @@ class HarnessDriver:
                               window=session.tmux_window,
                               pane=session.tmux_pane)
 
+    def _driver_for(self, session: HarnessSession):
+        """Route a session to the driver that created it. Sessions are
+        pinned to whichever driver started them (see start_session's
+        ``use_json``) — a profile's input_mode only matters at spawn
+        time, not on every subsequent call."""
+        if session.runtime == _JSON_RUNTIME:
+            return self.json_driver
+        return self.tmux
+
     def _profile_for(self, session: HarnessSession) -> HarnessProfile:
         return get_profile(session.harness_profile) or get_default_profile()
+
+    def _persist_json_pid(self, session: HarnessSession) -> None:
+        """Record the just-spawned process's PID on the session so a
+        later HarnessDriver instance (e.g. after an AGW restart, which
+        loses all in-memory OpencodeJsonDriver state) can reattach
+        instead of wrongly concluding the session is dead. Called
+        after every JSON-mode spawn, not just the first — replies spawn
+        a brand new process each time."""
+        if session.runtime != _JSON_RUNTIME:
+            return
+        try:
+            pid = self.json_driver.get_pid(self._ref(session))
+        except Exception:
+            return
+        if pid is None:
+            return
+        session.metadata = dict(session.metadata or {})
+        session.metadata["json_pid"] = pid
+        self.storage.save_session(session)
 
     def _tmux_session_name(self, task_id: str) -> str:
         return f"{self.session_prefix}{task_id[:18]}"

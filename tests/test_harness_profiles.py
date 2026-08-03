@@ -44,12 +44,8 @@ class TestBuiltinProfiles:
         assert p.harness == harness
 
     def test_opencode_passes_auto_flag(self):
-        """Regression test for a real bug caught by live-running
-        Conductor's scripts/e2e-composer-live.sh: without --auto,
-        opencode's own permission TUI ("Allow once / Allow always /
-        Reject") blocks forever the first time the agent touches
-        anything outside its immediate cwd — harness sessions run
-        fully unattended, so nothing can ever answer that prompt."""
+        """Without --auto, opencode's permission TUI blocks forever on
+        unattended sessions — nothing can ever answer the prompt."""
         p = get_profile("opencode")
         assert p is not None
         assert "--auto" in p.args
@@ -107,13 +103,8 @@ class TestBuiltinProfiles:
 
 class TestProfileProperties:
     def test_opencode_does_not_use_slash_goal(self):
-        """Regression test for a real bug caught by live-running
-        Composer's live E2E twice: slash_goal ("/goal <text>") was
-        unreliable for opencode — the goal was silently dropped even
-        after a confirmed-fast ready-wait and a verified-registering
-        retry, while plain_prompt registered cleanly every time in the
-        same environment. supports_slash_goal=False makes "auto"
-        resolve to plain_prompt instead (see goal.py resolve_strategy)."""
+        """slash_goal was unreliable for opencode; plain_prompt
+        registers cleanly (see goal.py resolve_strategy)."""
         assert BUILTIN_PROFILES["opencode"].supports_slash_goal is False
 
     def test_fake_test_supports_slash_goal(self):
@@ -125,8 +116,15 @@ class TestProfileProperties:
         assert BUILTIN_PROFILES["pi-coding-agent"].supports_slash_goal is False
 
     def test_profiles_use_tmux_stdin_input_mode(self):
+        # opencode is the one deliberate exception: it runs in
+        # process_json mode (see process_json.OpencodeJsonDriver) to
+        # avoid the alt-screen scrollback loss that caused genuinely
+        # successful tasks to be misclassified as stuck `running`.
         for p in BUILTIN_PROFILES.values():
-            assert p.input_mode == "tmux_stdin"
+            if p.name == "opencode":
+                assert p.input_mode == "process_json"
+            else:
+                assert p.input_mode == "tmux_stdin"
 
     def test_fake_test_points_at_run_py(self):
         p = get_profile("fake-test")
@@ -159,10 +157,15 @@ class TestModelOverride:
         p = get_profile("opencode")
         assert p.model_arg_name == "-m"
 
-    def test_claude_codex_fake_do_not_support_model_override(self):
-        for name in ("claude-code", "codex", "fake-test"):
+    def test_codex_fake_do_not_support_model_override(self):
+        for name in ("codex", "fake-test"):
             p = get_profile(name)
             assert p.model_arg_name is None
+
+    def test_claude_code_supports_optional_model_override(self):
+        p = get_profile("claude-code")
+        assert p.model_arg_name == "--model"
+        assert p.model_optional is True
 
     def test_effective_args_injects_model_when_override_given(self):
         p = get_profile("pi-coding-agent")
@@ -257,14 +260,29 @@ class TestModelPolicy:
         assert validated == "nvidia/nemotron-3-ultra-550b-a55b:free"
 
     def test_profiles_without_model_arg_name_skip_validation(self):
-        """claude-code, codex, fake-test ignore model override entirely."""
+        """codex, fake-test ignore model override entirely."""
         from agents_gateway.harness.profiles import validate_model_for_profile
-        for name in ("claude-code", "codex", "fake-test"):
+        for name in ("codex", "fake-test"):
             p = get_profile(name)
             # Should return the model (or empty string) without validation
             assert validate_model_for_profile("any-model-id", p) == "any-model-id"
             assert validate_model_for_profile("", p) == ""
             assert validate_model_for_profile(None, p) == ""
+
+    def test_claude_code_bare_launch_needs_no_model(self):
+        from agents_gateway.harness.profiles import validate_model_for_profile
+        p = get_profile("claude-code")
+        assert validate_model_for_profile("", p) == ""
+        assert validate_model_for_profile(None, p) == ""
+
+    def test_claude_code_override_still_validated_against_allowlist(self):
+        from agents_gateway.harness.profiles import (
+            DisapprovedModelError,
+            validate_model_for_profile,
+        )
+        p = get_profile("claude-code")
+        with pytest.raises(DisapprovedModelError):
+            validate_model_for_profile("some-random-model", p)
 
     def test_custom_allowlist_via_env(self, monkeypatch):
         from agents_gateway.harness.profiles import (

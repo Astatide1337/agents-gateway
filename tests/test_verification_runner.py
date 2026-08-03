@@ -270,3 +270,42 @@ class TestFeedFailureBack:
                        session=session)
         runner.feed_failure_back(vr, session, driver)
         assert fake_tmux.inputs.get("t11", []) == []
+
+
+class TestQAScriptStaging:
+    """VerificationRunner must always stage the bundled interactive QA
+    crawler into the worktree before commands run — a verification
+    command referencing .agent-task/qa/qa_crawl.sh must never fail with
+    'file not found' regardless of what the agent's own repo changes did
+    to that path."""
+
+    def test_run_stages_qa_scripts_into_worktree(self, runner, worktree_path):
+        cmds = [VerificationCommand(name="noop", command="true", required=True)]
+        runner.run("run_qa1", "task_qa1", worktree_path, cmds)
+        dest = Path(worktree_path) / ".agent-task" / "qa"
+        assert (dest / "qa_crawl.py").exists()
+        assert (dest / "qa_crawl.sh").exists()
+        assert os.access(dest / "qa_crawl.sh", os.X_OK)
+
+    def test_staged_script_matches_bundled_source(self, runner, worktree_path):
+        cmds = [VerificationCommand(name="noop", command="true", required=True)]
+        runner.run("run_qa2", "task_qa2", worktree_path, cmds)
+        bundled = (Path(__file__).parent.parent
+                  / "agents_gateway" / "harness" / "qa" / "qa_crawl.py")
+        staged = Path(worktree_path) / ".agent-task" / "qa" / "qa_crawl.py"
+        assert staged.read_text() == bundled.read_text()
+
+    def test_missing_worktree_does_not_break_verification(self, runner, tmp_path):
+        """Staging is best-effort — a nonexistent worktree path must
+        not prevent verification from reporting a real result, and must
+        not silently create the worktree (which would mask _run_one's
+        own 'worktree_path does not exist' detection)."""
+        missing = str(tmp_path / "does-not-exist")
+        cmds = [VerificationCommand(name="noop", command="true", required=True)]
+        vr = runner.run("run_qa3", "task_qa3", missing, cmds)
+        assert vr is not None
+        assert not Path(missing).exists(), (
+            "staging must never create the worktree directory itself"
+        )
+        assert vr.commands[0].blocked_reason
+        assert "does not exist" in vr.commands[0].blocked_reason

@@ -336,6 +336,119 @@ class TestAdapterDispatches:
         assert fresh_session.ended_at is not None
 
 
+class TestAdapterResume:
+    """HarnessSessionRuntimeAdapter.resume() — the recovery path for a
+    task orphaned by an AGW restart mid-execution (TaskWorker only
+    ever claims status='queued' rows, so a task already 'running' is
+    otherwise stuck forever)."""
+
+    def test_resume_returns_none_for_unknown_task(self, adapter_env):
+        assert adapter_env["adapter"].resume("no-such-task") is None
+
+    def test_resume_finalizes_completed_result(self, adapter_env, monkeypatch):
+        env = adapter_env
+        spec = {
+            "objective_id": "obj_resume_1",
+            "execution": {"mode": "harness_session",
+                           "harness_profile": "fake-test"},
+            "goal": {"strategy": "auto", "text": "/goal do nothing"},
+        }
+        from agents_gateway.harness.runtime import HarnessRuntime
+
+        class FakeResult:
+            status = "completed"
+            artifacts = []
+            def to_dict(self):
+                return {"agent_run_id": "test", "task_id": "test",
+                        "status": "completed"}
+        captured = {}
+        def fake_resume(self, **kwargs):
+            captured.update(kwargs)
+            return FakeResult()
+        monkeypatch.setattr(HarnessRuntime, "resume_task", fake_resume)
+
+        task = env["storage"].create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"},
+        )
+        env["storage"].update_task_status(task.id, "queued")
+        env["storage"].update_task_status(task.id, "running")
+
+        result = env["adapter"].resume(task.id)
+        assert result["status"] == "completed"
+        assert env["storage"].get_task(task.id).status == "completed"
+        assert captured["task_id"] == task.id
+
+    def test_resume_returns_none_when_runtime_finds_nothing_to_resume(
+            self, adapter_env, monkeypatch):
+        """resume_task() itself returns None when no session ever
+        existed for the task — the adapter must pass that through
+        without finalizing anything (a genuinely never-started task
+        should go through normal dispatch, not be force-finalized)."""
+        env = adapter_env
+        spec = {
+            "objective_id": "obj_resume_2",
+            "execution": {"mode": "harness_session",
+                           "harness_profile": "fake-test"},
+            "goal": {"strategy": "auto", "text": "/goal do nothing"},
+        }
+        from agents_gateway.harness.runtime import HarnessRuntime
+        monkeypatch.setattr(HarnessRuntime, "resume_task",
+                            lambda self, **kw: None)
+
+        task = env["storage"].create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"},
+        )
+        env["storage"].update_task_status(task.id, "queued")
+        env["storage"].update_task_status(task.id, "running")
+
+        result = env["adapter"].resume(task.id)
+        assert result is None
+        assert env["storage"].get_task(task.id).status == "running"
+
+    def test_resume_crash_finalizes_failed_and_syncs_session(
+            self, adapter_env, monkeypatch):
+        env = adapter_env
+        spec = {
+            "objective_id": "obj_resume_3",
+            "execution": {"mode": "harness_session",
+                           "harness_profile": "fake-test"},
+            "goal": {"strategy": "auto", "text": "/goal do nothing"},
+        }
+        from agents_gateway.harness.runtime import HarnessRuntime
+
+        def boom(self, **kwargs):
+            raise RuntimeError("simulated crash mid-resume")
+        monkeypatch.setattr(HarnessRuntime, "resume_task", boom)
+
+        task = env["storage"].create_harness_task(
+            agent_id="harness_session", task_spec=spec,
+            metadata={"runtime_type": "harness_session"},
+        )
+        env["storage"].update_task_status(task.id, "queued")
+        env["storage"].update_task_status(task.id, "running")
+
+        session = HarnessSession(
+            id="session_resume_crash", agent_run_id=task.id, task_id=task.id,
+            harness_profile="fake-test", harness="fake",
+            runtime="tmux-fake",
+            tmux_session="agw_resume_crash", tmux_window="main", tmux_pane="0",
+            working_directory="/tmp/test",
+            status=HarnessSessionStatus.running.value,
+            started_at="2026-01-01T00:00:00+00:00",
+            last_output_at="2026-01-01T00:00:01+00:00",
+            ended_at=None, metadata={},
+        )
+        env["harness_storage"].save_session(session)
+
+        result = env["adapter"].resume(task.id)
+        assert result["status"] == "failed"
+        assert env["storage"].get_task(task.id).status == "failed"
+        fresh_session = env["harness_storage"].get_session(session.id)
+        assert fresh_session.status == HarnessSessionStatus.failed.value
+
+
 # ---------------------------------------------------------------------------
 # Tests: Status translation
 # ---------------------------------------------------------------------------

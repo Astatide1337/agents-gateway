@@ -287,6 +287,82 @@ class HarnessRuntime:
                                     "session.start_failed",
                                     session=session, worktree=worktree)
 
+        return self._drive_session(
+            agent_run_id=agent_run_id, task_id=task_id, task_spec=task_spec,
+            workspace=workspace, worktree=worktree, session=session,
+        )
+
+    def resume_task(self, *, task_id: str,
+                    task_spec: dict[str, Any]) -> HarnessRunResult | None:
+        """Resume driving a harness_session task whose original
+        ``execute_task`` call was abandoned mid-flight (e.g. the AGW
+        process restarted). The workspace, worktree, and harness
+        session already exist on disk/in storage — re-running
+        ``execute_task`` from scratch would fail at worktree creation
+        (the path already exists) or duplicate the goal injection.
+
+        Returns None when there is nothing to resume (no existing
+        session for this task — it never actually started).
+        """
+        session = self.harness_storage.get_session_by_task(task_id)
+        if session is None:
+            return None
+        worktree = self.harness_storage.get_worktree_by_task(task_id)
+        if worktree is None:
+            return None
+        workspace = self.harness_storage.get_workspace(worktree.repo_workspace_id)
+        if workspace is None:
+            return None
+
+        # JSON-mode sessions live entirely in the driver's in-process
+        # memory (see OpencodeJsonDriver's own docstring) — this
+        # HarnessRuntime (and its HarnessDriver/json_driver) is a fresh
+        # instance that never spawned this session, so classify_state
+        # would raise "unknown session" on every tick and the drive
+        # loop below would spin until relay_max_time_seconds gives up
+        # and wrongly marks a genuinely-finished session stalled.
+        # Reattach via the PID persisted at spawn time first — the
+        # same recovery reconcile_harness_sessions() uses at boot.
+        pid = (session.metadata or {}).get("json_pid")
+        reattach = getattr(self.driver.json_driver, "reattach", None)
+        if pid is not None and reattach is not None:
+            try:
+                reattach(session.tmux_session, session.working_directory, int(pid))
+            except Exception:
+                pass
+
+        if session.status in (
+            HarnessSessionStatus.completed.value,
+            HarnessSessionStatus.failed.value,
+            HarnessSessionStatus.cancelled.value,
+            HarnessSessionStatus.blocked_external.value,
+        ):
+            # Already reached a terminal state (e.g. the harness
+            # finished before the restart) — nothing to drive, just
+            # report it so the caller can finalize the legacy task.
+            return self._build_final_result(
+                agent_run_id=task_id, task_id=task_id, task_spec=task_spec,
+                workspace=workspace, worktree=worktree, session=session,
+                verification_run=None,
+            )
+
+        self._emit_task_event(task_id, "task.resumed",
+                              {"session_id": session.id,
+                               "previous_status": session.status})
+        return self._drive_session(
+            agent_run_id=task_id, task_id=task_id, task_spec=task_spec,
+            workspace=workspace, worktree=worktree, session=session,
+        )
+
+    def _drive_session(self, *, agent_run_id: str, task_id: str,
+                       task_spec: dict[str, Any], workspace: Any,
+                       worktree: Worktree, session: HarnessSession,
+                       relay_handler: Any | None = None) -> HarnessRunResult:
+        """Poll ``session`` via the supervisor until it reaches a
+        terminal state, running verification when the harness claims
+        completion. Shared by a fresh ``execute_task`` run (session
+        just started) and ``resume_task`` (session already existed
+        before this process started)."""
         # 6. Run the supervisor loop with verification hook
         deadline = time.time() + self.config.relay_max_time_seconds
         verification_run: VerificationRun | None = None
@@ -514,7 +590,31 @@ class HarnessRuntime:
             "If the Skills Gateway is unavailable, proceed using the "
             "(textual) skill summary above as guidance.",
         ])
+        frontend_quality = self._frontend_design_quality_text(skills)
+        if frontend_quality:
+            lines.extend(["", frontend_quality])
         return "\n".join(lines)
+
+    # Any of these in required_skills means the task touches UI the user
+    # will actually look at — bundle the anti-slop design-quality
+    # standard directly into the goal text. This does not depend on the
+    # dispatched agent ever calling out to the Skills Gateway itself
+    # (observed: it never does in practice) — it is proven to reach the
+    # agent because goal injection is the one channel confirmed working.
+    _FRONTEND_SKILL_MARKERS = frozenset({
+        "javascript", "typescript", "html", "css", "spa-routing",
+        "react", "vue", "svelte", "frontend", "html5-audio", "ui", "ux",
+    })
+
+    def _frontend_design_quality_text(self, skills: list[str]) -> str:
+        if not any(s.lower() in self._FRONTEND_SKILL_MARKERS for s in skills):
+            return ""
+        try:
+            path = (Path(__file__).parent / "skills"
+                   / "frontend_design_quality.md")
+            return path.read_text()
+        except OSError:
+            return ""
 
     def _compose_tools_text(self, tools: list[str]) -> str:
         if not tools:

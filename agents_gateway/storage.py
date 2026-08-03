@@ -88,16 +88,8 @@ class TaskStorage:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        # Live-found: TaskWorker used to run exactly one thread, so
-        # concurrent writers were never possible. Once fixed to a real
-        # pool (worker_pool_size, default 4), two threads writing at
-        # overlapping moments crashed a real harness task mid-run with
-        # "database is locked" (worker_harness_task_crash). Python's
-        # own sqlite3.connect() already defaults `timeout=5.0`
-        # (equivalent to PRAGMA busy_timeout=5000) — that default was
-        # NOT enough for the contention actually observed live, so
-        # this explicitly extends it well past Python's default rather
-        # than just restating it.
+        # Concurrent pool workers can contend on writes; extend well
+        # past sqlite3's default 5s busy_timeout.
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")

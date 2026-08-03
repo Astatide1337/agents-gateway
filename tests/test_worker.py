@@ -153,6 +153,68 @@ class TestTaskWorkerPool:
         assert fine_completed, "second task never completed — stuck task blocked the pool"
 
 
+class TestMemoryPressureAdmissionControl:
+    """Live incident: orphaned processes pushed host swap to 100% full,
+    which made fork()/exec() fail across the whole host — the worker
+    had no way to know and kept claiming + spawning more. See
+    resource_guard.py's docstring."""
+
+    def test_leaves_tasks_queued_while_memory_is_critical(self, tmp_path, monkeypatch):
+        import agents_gateway.worker as worker_module
+        monkeypatch.setattr(worker_module, "is_memory_critical", lambda: True)
+
+        worker, storage = _make_worker(tmp_path, pool_size=2)
+        ids = _enqueue_n_tasks(storage, 2)
+        try:
+            worker.start()
+            time.sleep(0.3)
+            statuses = [storage.get_task(i).status for i in ids]
+        finally:
+            worker.stop(timeout_seconds=0.5)
+        assert all(s == "queued" for s in statuses), statuses
+
+    def test_processes_tasks_once_memory_pressure_clears(self, tmp_path, monkeypatch):
+        import agents_gateway.worker as worker_module
+        critical = {"value": True}
+        monkeypatch.setattr(worker_module, "is_memory_critical", lambda: critical["value"])
+
+        worker, storage = _make_worker(tmp_path, pool_size=2)
+        ids = _enqueue_n_tasks(storage, 2)
+        try:
+            worker.start()
+            time.sleep(0.2)
+            assert all(storage.get_task(i).status == "queued" for i in ids)
+
+            critical["value"] = False
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if all(storage.get_task(i).status == "completed" for i in ids):
+                    break
+                time.sleep(0.05)
+        finally:
+            worker.stop(timeout_seconds=0.5)
+        statuses = [storage.get_task(i).status for i in ids]
+        assert all(s == "completed" for s in statuses), statuses
+
+    def test_healthy_memory_never_blocks_dispatch(self, tmp_path, monkeypatch):
+        """Sanity check the gate is not accidentally always-on."""
+        import agents_gateway.worker as worker_module
+        monkeypatch.setattr(worker_module, "is_memory_critical", lambda: False)
+
+        worker, storage = _make_worker(tmp_path, pool_size=1)
+        ids = _enqueue_n_tasks(storage, 1)
+        try:
+            worker.start()
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if storage.get_task(ids[0]).status == "completed":
+                    break
+                time.sleep(0.05)
+        finally:
+            worker.stop(timeout_seconds=0.5)
+        assert storage.get_task(ids[0]).status == "completed"
+
+
 class TestConcurrentSqliteWrites:
     def test_many_threads_writing_same_db_never_raises_database_locked(
         self, tmp_path,

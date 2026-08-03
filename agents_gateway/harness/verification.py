@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -83,6 +84,8 @@ class VerificationRunner:
         run_artifact_root = self._run_artifact_root(agent_run_id)
         logs_dir = run_artifact_root / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
+
+        self._stage_qa_scripts(worktree_path)
 
         any_blocked = False
         any_required_failed = False
@@ -339,6 +342,33 @@ class VerificationRunner:
         d = self.artifacts_root / agent_run_id
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def _stage_qa_scripts(self, worktree_path: str) -> None:
+        """Copy the bundled interactive QA crawler into the worktree's
+        .agent-task/qa/ so a verification command referencing it (see
+        conductor/composer/scheduler.py's mandatory QA-command
+        injection for integration tasks) can always find it, regardless
+        of whether the agent's own repo changes touched that path.
+        Best-effort — a missing bundle must never break verification
+        for tasks that don't reference it."""
+        try:
+            wt = Path(worktree_path)
+            if not wt.exists():
+                # Never create the worktree itself — that would mask
+                # _run_one's own "worktree_path does not exist" check.
+                return
+            bundled_dir = Path(__file__).parent / "qa"
+            dest_dir = wt / ".agent-task" / "qa"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("qa_crawl.py", "qa_crawl.sh"):
+                src = bundled_dir / name
+                if src.exists():
+                    shutil.copy2(src, dest_dir / name)
+            sh_path = dest_dir / "qa_crawl.sh"
+            if sh_path.exists():
+                sh_path.chmod(0o755)
+        except OSError:
+            pass
 
     def _safe_env(self) -> dict[str, str]:
         """Minimal env for verification subprocesses.

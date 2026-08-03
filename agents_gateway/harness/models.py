@@ -53,6 +53,13 @@ class GoalStrategy(str, enum.Enum):
     file_based = "file_based"
 
 
+class WireProtocol(str, enum.Enum):
+    """LLM API wire format a harness CLI natively speaks, when it needs
+    adapting to reach a provider outside its native ecosystem."""
+
+    anthropic_messages = "anthropic-messages"
+
+
 # ---------------------------------------------------------------------------
 # Repo workspace + worktree
 # ---------------------------------------------------------------------------

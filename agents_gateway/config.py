@@ -40,12 +40,9 @@ class RuntimeConfig(BaseModel):
     docker_pids_limit: int = 128
     docker_tmpfs_size: str = "64m"
     task_timeout_seconds: int = 300
-    # Live-found: TaskWorker ran exactly one thread server-wide, and
-    # execute_task blocks for a harness session's entire lifecycle —
-    # so a single stuck/slow task blocked ALL other queued tasks
-    # indefinitely, and Composer's own max_parallel_tasks (default 3)
-    # had no effect at this layer at all. Each pool worker claims
-    # tasks via the same atomic per-row UPDATE, so this is safe.
+    # A single-threaded worker blocks all other queued tasks for the
+    # duration of one harness session. Pool workers claim tasks via
+    # the same atomic per-row UPDATE, so this is safe to parallelize.
     worker_pool_size: int = 4
 
 

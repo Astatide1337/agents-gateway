@@ -103,6 +103,67 @@ class TestGetOrCreateLocal:
 
 
 # ---------------------------------------------------------------------------
+# get_or_create (real clone path) — concurrency
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentGetOrCreate:
+    """get_or_create() is the real dispatch-time path (clones from
+    repo_url, unlike the test-only get_or_create_local). Two tasks in
+    the same objective each build their own RepoWorkspaceManager and
+    call get_or_create() for the same (owner, repo, branch) at close
+    to the same time — a check-then-act gap between find_workspace()
+    and save_workspace() let both see "no existing workspace" and
+    both clone, producing two divergent base clones on disk (this is
+    exactly what happened live for the spotify-clone build)."""
+
+    def test_concurrent_calls_converge_on_one_workspace_and_one_clone(
+        self, storage, tmp_path, scratch_repo,
+    ):
+        import threading
+
+        repo_url = f"file://{scratch_repo}"
+        n = 8
+        results: list = [None] * n
+
+        def _get(i: int) -> None:
+            # Separate manager instance per call — mirrors production,
+            # where each dispatch builds its own RepoWorkspaceManager
+            # rather than sharing one in-process object.
+            mgr = RepoWorkspaceManager(
+                storage=storage,
+                workspace_root=str(tmp_path / "repos"),
+                worktree_root=str(tmp_path / "worktrees"),
+            )
+            try:
+                results[i] = mgr.get_or_create(
+                    repo_url, owner="acme", repo="widget", default_branch="master",
+                )
+            except Exception as exc:
+                results[i] = exc
+
+        threads = [threading.Thread(target=_get, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        failures = [r for r in results if isinstance(r, Exception)]
+        assert not failures, f"concurrent get_or_create failed: {failures}"
+
+        ws_ids = {r.id for r in results}
+        assert len(ws_ids) == 1, f"expected one shared workspace, got {ws_ids}"
+
+        base_clones = [
+            p for p in (tmp_path / "repos" / "acme" / "widget").iterdir()
+            if p.is_dir() and (p / ".git").exists()
+        ]
+        assert len(base_clones) == 1, (
+            f"expected exactly one base clone on disk, found {base_clones}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # create_worktree
 # ---------------------------------------------------------------------------
 
@@ -286,3 +347,102 @@ class TestStorageHydration:
             storage.save_workspace(ws)
         listed = storage.list_workspaces()
         assert len(listed) >= 3
+
+
+class TestConcurrentObjectivesShareOneWorkspace:
+    """Multiple objectives targeting the same repo share one base
+    clone (get_or_create_local is idempotent per owner/repo/branch);
+    per-task isolation only happens at the worktree level. Real
+    threads + real git, since git's own locking under concurrent
+    `git branch`/`git worktree add` against one .git dir is what's
+    actually being tested."""
+
+    def test_many_concurrent_worktree_creations_against_shared_base_all_succeed(
+        self, manager, scratch_repo,
+    ):
+        import threading
+        import uuid as _uuid
+
+        ws = manager.get_or_create_local(str(scratch_repo), owner="acme", repo="widget")
+
+        n = 12  # simulates ~6 concurrent objectives x 2 tasks each
+        results: list[Worktree | Exception] = [None] * n  # type: ignore[list-item]
+        # Real production task_ids are str(uuid.uuid4()) — genuinely
+        # random, unlike workspace.py's task_id[:18] truncation would
+        # tolerate for a non-UUID-shaped id.
+        task_ids = [str(_uuid.uuid4()) for _ in range(n)]
+
+        def _create(i: int) -> None:
+            try:
+                results[i] = manager.create_worktree(
+                    ws, task_id=task_ids[i],
+                    agent_run_id=f"run-{i:03d}", slug=f"work-{i}",
+                )
+            except Exception as exc:
+                results[i] = exc
+
+        threads = [threading.Thread(target=_create, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        failures = [r for r in results if isinstance(r, Exception)]
+        assert not failures, f"concurrent worktree creation failed: {failures}"
+
+        # Every worktree must actually exist on disk, with a distinct
+        # path and branch — a git-level race could plausibly succeed
+        # at the process level while silently corrupting/aliasing refs.
+        paths = {r.path for r in results}
+        branches = {r.branch for r in results}
+        assert len(paths) == n, "duplicate/missing worktree paths under concurrency"
+        assert len(branches) == n, "duplicate/missing branch names under concurrency"
+        for r in results:
+            assert Path(r.path).is_dir(), f"worktree dir missing on disk: {r.path}"
+
+        # The shared base repo's own branch list must have exactly one
+        # branch per task — no lost updates, no phantom extras.
+        proc = _git(str(scratch_repo), "branch", "--list")
+        # git prefixes the currently-checked-out-here branch with "* "
+        # and branches checked out in OTHER worktrees with "+ ".
+        branch_lines = [l.strip().lstrip("*+ ") for l in proc.stdout.splitlines() if l.strip()]
+        for r in results:
+            assert r.branch in branch_lines
+
+    def test_concurrent_worktrees_are_independently_writable(self, manager, scratch_repo):
+        """Not just "creation didn't crash" — prove real file isolation:
+        writing distinct content in each concurrently-created worktree
+        and committing must never leak across worktrees."""
+        import threading
+
+        ws = manager.get_or_create_local(str(scratch_repo), owner="acme", repo="widget")
+        n = 6
+        worktrees: list[Worktree] = [None] * n  # type: ignore[list-item]
+
+        def _create(i: int) -> None:
+            worktrees[i] = manager.create_worktree(
+                ws, task_id=f"iso-task-{i:03d}", agent_run_id=f"iso-run-{i:03d}", slug=f"iso-{i}",
+            )
+
+        threads = [threading.Thread(target=_create, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        for i, wt in enumerate(worktrees):
+            marker = Path(wt.path) / f"marker-{i}.txt"
+            marker.write_text(f"task {i} was here\n")
+            _git(wt.path, "add", f"marker-{i}.txt")
+            proc = _git(wt.path, "commit", "-m", f"marker {i}")
+            assert proc.returncode == 0, proc.stderr
+
+        for i, wt in enumerate(worktrees):
+            for j in range(n):
+                other_marker = Path(wt.path) / f"marker-{j}.txt"
+                if i == j:
+                    assert other_marker.exists()
+                else:
+                    assert not other_marker.exists(), (
+                        f"worktree {i} sees task {j}'s file — isolation broken"
+                    )

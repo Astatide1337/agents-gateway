@@ -64,7 +64,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from agents_gateway.harness.models import GoalStrategy
+from agents_gateway.harness.models import GoalStrategy, WireProtocol
 
 
 @dataclass(frozen=True)
@@ -103,6 +103,18 @@ class HarnessProfile:
     # "subscription" (flat-rate CLI login, no per-token cost signal —
     # usage limits are detected via classifier markers instead).
     billing_mode: str = "metered"
+    # If True, a model override is optional even though model_arg_name
+    # is set: no override -> launch bare (subscription default); an
+    # override -> validated against the allowlist like any other
+    # metered profile. Lets one profile (e.g. claude-code) serve both
+    # a flat-rate CLI login and a metered API-key override.
+    model_optional: bool = False
+    # Wire protocol this harness's CLI speaks, when it needs adapting
+    # to reach a provider outside its native ecosystem (e.g. claude-code
+    # only speaks Anthropic's Messages API). None means no adapter is
+    # needed — model_arg_name plus the provider's own base URL is
+    # enough (pi-coding-agent, opencode).
+    wire_protocol: WireProtocol | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -120,6 +132,8 @@ class HarnessProfile:
             "model_arg_name": self.model_arg_name,
             "default_model": self.default_model,
             "billing_mode": self.billing_mode,
+            "model_optional": self.model_optional,
+            "wire_protocol": self.wire_protocol.value if self.wire_protocol else None,
         }
 
     def effective_args(self, model_override: str | None = None
@@ -197,10 +211,12 @@ def validate_model_for_profile(model: str | None, profile: "HarnessProfile") -> 
         DisapprovedModelError: If model is not on the approved allowlist.
     """
     if profile.model_arg_name is None:
-        # Profile doesn't support model override (claude-code, codex, fake-test)
+        # Profile doesn't support model override (codex, fake-test)
         return model or ""
 
     if not model or not model.strip():
+        if profile.model_optional:
+            return ""
         raise MissingModelError(
             f"Profile '{profile.name}' requires a model override "
             f"(flag: {profile.model_arg_name}) but task_spec.execution.model "
@@ -255,33 +271,19 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         name="opencode",
         harness="opencode",
         command="opencode",
-        # --auto: harness sessions run fully unattended (tmux_stdin, no
-        # human ever watching) — without it, opencode's own permission
-        # TUI ("Allow once / Allow always / Reject") blocks forever the
-        # first time the agent touches anything outside its immediate
-        # cwd (e.g. writing an artifact under agents-gateway's own
-        # artifacts dir). Live-found: an integration task hung for the
-        # composer-live-e2e script's entire 500s budget on exactly this
-        # prompt, with zero way to ever resolve it. Safe here because
-        # the session is already isolated to its own worktree (and,
-        # under the docker backend, a hardened sandboxed container).
+        # --auto: sessions run fully unattended; without it opencode's
+        # permission TUI blocks forever on the first out-of-cwd write.
+        # Safe here since the session is isolated to its own worktree.
         args=("--auto",),
-        # Live-found: slash_goal ("/goal <text>") was unreliable —
-        # reproduced twice across live E2E runs, goal silently dropped
-        # (session left on its blank welcome screen) even after a
-        # confirmed-fast ready-wait and a verified-registering retry.
-        # A leading "/" very likely opens opencode's own command-
-        # autocomplete popup, which can intercept the Enter keypress
-        # that's meant to submit the message. plain_prompt (no leading
-        # "/", a normal chat message) registered cleanly and
-        # immediately in the same environment/config every time it was
-        # tried. Disabling slash_goal support makes "auto" resolve to
-        # plain_prompt instead (see goal.py's resolve_strategy) — the
-        # agent still reads the full task from the .agent-task/*.md
-        # files either way, so nothing else changes.
+        # slash_goal ("/goal <text>") was unreliable — a leading "/"
+        # opens opencode's autocomplete popup and can eat the Enter
+        # keypress. plain_prompt registers cleanly; "auto" resolves to
+        # it with slash_goal disabled (see goal.py's resolve_strategy).
         supports_slash_goal=False,
         goal_command="/goal",
-        input_mode="tmux_stdin",
+        # Avoids the default TUI's alt-screen scrollback loss — see
+        # process_json.OpencodeJsonDriver and classifier.classify_json_transcript.
+        input_mode="process_json",
         completion_strategy="output_classifier",
         goal_strategy=GoalStrategy.auto.value,
         description=(
@@ -295,17 +297,24 @@ BUILTIN_PROFILES: dict[str, HarnessProfile] = {
         name="claude-code",
         harness="claude",
         command="claude",
-        args=(),
+        # Same rationale as opencode's --auto: without it, claude's
+        # permission TUI blocks forever on the first file write. Safe
+        # here since the session is isolated to its own worktree.
+        args=("--dangerously-skip-permissions",),
         supports_slash_goal=False,
         input_mode="tmux_stdin",
         completion_strategy="output_classifier",
         goal_strategy=GoalStrategy.plain_prompt.value,
         description=(
             "Anthropic Claude Code CLI; plain-text prompt input only. "
-            "Runs against the operator's Claude subscription login, not "
-            "a metered API key — no per-token allowlist applies."
+            "Runs against the operator's Claude subscription login by "
+            "default; a model override routes through the Anthropic "
+            "wire-protocol adapter to any configured provider."
         ),
         billing_mode="subscription",
+        model_arg_name="--model",
+        model_optional=True,
+        wire_protocol=WireProtocol.anthropic_messages,
     ),
     "codex": HarnessProfile(
         name="codex",

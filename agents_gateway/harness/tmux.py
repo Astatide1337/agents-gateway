@@ -81,24 +81,11 @@ class TmuxDriver:
         """Send (possibly multi-line) text into the pane as one paste,
         without pressing Enter.
 
-        Live-found: the previous implementation sent each line via a
-        separate ``send-keys`` call followed by a literal ``\\n`` key
-        press, meaning a goal of even modest length (a couple dozen
-        lines) became dozens of separate subprocess calls trickled in
-        over real wall-clock time. Chat-style TUI input boxes (opencode
-        included) commonly treat a bare Enter/newline as "submit" —
-        only bracketed paste is trusted to carry literal newlines. That
-        race intermittently caused the harness to submit an empty or
-        partial message and land back on its blank welcome screen,
-        with the rest of the goal typed into nowhere: reproduced twice
-        across live E2E runs (once on an implementation task, once on
-        integration), non-deterministically.
-
-        ``tmux load-buffer`` + ``paste-buffer`` sends the whole text as
-        a single bracketed-paste sequence in one shot instead — TUI
-        frameworks that support bracketed paste (virtually all modern
-        ones) then correctly treat every embedded newline as literal
-        content, never as a submit keypress.
+        Uses `tmux load-buffer` + `paste-buffer` (bracketed paste) so
+        every embedded newline is treated as literal content, not a
+        submit keypress — sending line-by-line via separate send-keys
+        calls races chat-style TUI input boxes that treat a bare
+        Enter/newline as "submit", intermittently truncating the goal.
         """
         if not text:
             return
@@ -170,13 +157,8 @@ class TmuxDriver:
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
         except subprocess.TimeoutExpired:
-            # Live-found: a transient timeout here (host under load —
-            # e.g. concurrent tmux/docker/pytest activity) used to
-            # propagate uncaught through classify_state's polling loop
-            # and permanently crash the whole task. `has-session` being
-            # slow says nothing about whether the session itself died,
-            # so assume still-alive (checked again next poll) rather
-            # than treat a monitoring hiccup as worse than an unknown.
+            # A slow has-session says nothing about whether the session
+            # died — assume still-alive rather than crash the poll loop.
             return True
         return proc.returncode == 0
 

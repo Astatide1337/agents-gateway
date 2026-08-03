@@ -243,9 +243,11 @@ def create_mcp_server(config: GatewayConfig) -> FastMCP:
             return json.dumps({"error": f"Session '{session_id}' not found"})
         driver = HarnessDriver(storage=harness_storage)
         try:
-            driver.tmux.send_text(driver._ref(session), text)
+            target_driver = driver._driver_for(session)
+            target_driver.send_text(driver._ref(session), text)
             if submit:
-                driver.tmux.send_enter(driver._ref(session))
+                target_driver.send_enter(driver._ref(session))
+                driver._persist_json_pid(session)
         except Exception as e:
             return json.dumps({"error": f"send_text failed: {e}"})
         return json.dumps({"session_id": session_id, "status": "sent"})
@@ -421,9 +423,11 @@ def create_mcp_server(config: GatewayConfig) -> FastMCP:
             return json.dumps({"error": f"Session '{session_id}' not found"})
         driver = HarnessDriver(storage=harness_storage)
         try:
-            driver.tmux.send_text(driver._ref(session), text)
+            target_driver = driver._driver_for(session)
+            target_driver.send_text(driver._ref(session), text)
             if submit:
-                driver.tmux.send_enter(driver._ref(session))
+                target_driver.send_enter(driver._ref(session))
+                driver._persist_json_pid(session)
         except Exception as e:
             return json.dumps({"error": f"send_text failed: {e}"})
         if session.task_id:

@@ -185,6 +185,7 @@ class TestCompletionClaim:
         "All tests passed.\n",
         "Verification passed.\n",
         "The task is complete.\n",
+        "uvx pytest -q -k multiply -> 1 passed (required)",
     ])
     def test_completion_markers(self, text):
         r = classify_state(output=text, last_output_at=_now_iso(),
@@ -192,6 +193,50 @@ class TestCompletionClaim:
         assert r.state == HarnessState.completed_claimed
         # Completion never marks task completed directly — only claimed.
         assert r.state != "completed"
+
+    def test_claude_code_closing_phrasing_recognized(self):
+        """Real incident: claude-code declared genuine, verified work
+        done ("No further action needed — the task is done and
+        verified.") but this phrasing matched none of the existing
+        completion markers, so the session sat idle indefinitely
+        instead of transitioning to verifying."""
+        text = ("No further action needed — the task is done and verified.")
+        r = classify_state(output=text, last_output_at=_now_iso(), process_alive=True)
+        assert r.state == HarnessState.completed_claimed
+
+    def test_claude_code_qa_crawl_pass_summary_recognized(self):
+        """Real incident: a second real integration task declared
+        completion via a genuine, verified QA crawl summary
+        ("qa_crawl ... PASS — 11 views, 0 console errors, 0 page
+        errors, 0 slop violations. ... Working tree is committed and
+        clean.") that also matched none of the existing markers."""
+        text = (
+            "- qa_crawl (bash .agent-task/qa/qa_crawl.sh .): PASS — 11 views, "
+            "0 console errors, 0 page errors, 0 slop violations\n"
+            "Working tree is committed and clean."
+        )
+        r = classify_state(output=text, last_output_at=_now_iso(), process_alive=True)
+        assert r.state == HarnessState.completed_claimed
+
+    def test_marker_split_across_a_wrapped_terminal_line(self):
+        """Real incident: a genuine completion phrase was missed
+        because the terminal wrapped it across two lines
+        ("Working tree\\n  is committed and clean.") — the literal
+        substring never appeared in the raw captured text at all."""
+        text = "Working tree\n  is committed and clean."
+        r = classify_state(output=text, last_output_at=_now_iso(), process_alive=True)
+        assert r.state == HarnessState.completed_claimed
+
+    def test_opencode_style_verification_summary_not_missed(self):
+        """opencode echoes Composer's (required)/(optional) tags rather
+        than pytest's raw summary line."""
+        text = (
+            "Verification:\n\n"
+            "- uvx pytest -q -k multiply -> 1 passed (required)\n"
+            "- Lint: skipped (ruff not available)\n"
+        )
+        r = classify_state(output=text, last_output_at=_now_iso(), process_alive=True)
+        assert r.state == HarnessState.completed_claimed
 
 
 class TestSystemBoilerplateDoesNotSelfTrigger:

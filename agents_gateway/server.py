@@ -285,6 +285,45 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                   f"reconciliation failed: {e}",
                   level="WARNING")
 
+    # Resume harness_session tasks orphaned by the restart itself —
+    # session-level reconcile above only fixes is_alive() answers; a
+    # task already status='running' is invisible to TaskWorker's
+    # queued-only claim query and needs an explicit resume.
+    try:
+        from agents_gateway.harness.reconcile import resume_orphaned_harness_tasks
+        resumed = resume_orphaned_harness_tasks(
+            storage, harness_config=harness_runtime_cfg,
+            artifacts_dir=config.storage.artifacts_dir,
+        )
+        if resumed:
+            log_event("harness_tasks_resumed",
+                      f"resumed {len(resumed)} orphaned harness_session task(s): "
+                      f"{resumed}")
+    except Exception as e:
+        log_event("harness_tasks_resume_error",
+                  f"resume-orphaned-tasks failed: {e}",
+                  level="WARNING")
+
+    # Kill any process still running behind a session already marked
+    # terminal (completed/failed/cancelled/blocked_external) — distinct
+    # from the reconcile/resume calls above, which recover sessions that
+    # are still legitimately running. A live incident had eight of
+    # these accumulate over one night (each restart's in-memory driver
+    # state loses the ability to gracefully terminate them — see
+    # reaper.py's docstring) and push the host into full swap
+    # exhaustion. Runs synchronously at boot, same as the calls above.
+    try:
+        from agents_gateway.harness.reaper import reap_orphaned_processes
+        reaped = reap_orphaned_processes(harness_storage)
+        if reaped:
+            log_event("harness_orphans_reaped",
+                      f"killed {len(reaped)} orphaned process(es): "
+                      f"{[r['pid'] for r in reaped]}")
+    except Exception as e:
+        log_event("harness_reap_error",
+                  f"reap-orphaned-processes failed: {e}",
+                  level="WARNING")
+
     # Auth middleware that runs for every Starlette route (including
     # custom_route handlers and /mcp). We attach it to the FastMCP instance
     # and pass it to mcp.http_app(middleware=[...]) when building the ASGI
@@ -934,9 +973,11 @@ def create_app(config: GatewayConfig, reg: MetricsRegistry | None = None) -> Fas
                                 content={"error": f"Session '{session_id}' not found"})
         driver = HarnessDriver(storage=harness_storage, tmux_driver=_shared_tmux_driver)
         try:
-            driver.tmux.send_text(driver._ref(session), text)
+            target_driver = driver._driver_for(session)
+            target_driver.send_text(driver._ref(session), text)
             if submit:
-                driver.tmux.send_enter(driver._ref(session))
+                target_driver.send_enter(driver._ref(session))
+                driver._persist_json_pid(session)
         except Exception as e:
             return JSONResponse(status_code=500,
                                 content={"error": f"send_text failed: {e}"})
@@ -1307,6 +1348,13 @@ def run_with_config(config: GatewayConfig):
     log_event("service_start", "Agents Gateway starting",
               host=config.service.host, port=config.service.port,
               auth_mode=config.auth.mode, environment=config.environment)
+
+    if os.environ.get("API_KEY") and os.environ.get("API_URL"):
+        from agents_gateway.harness.provider_config import write_opencode_config
+        providers = write_opencode_config(os.environ["API_KEY"], os.environ["API_URL"])
+        log_event("harness_providers_configured",
+                  "Generated opencode provider config from API_KEY/API_URL",
+                  providers=[p["id"] for p in providers])
 
     # Production boot assertions
     if config.environment == "production":
