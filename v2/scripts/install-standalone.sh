@@ -508,7 +508,14 @@ else
     "AGW_RUNNER_SOCKET_DIR=$runtime_dir" \
     "AGW_RUNNER_SOCKET=$runtime_dir/runner.sock" \
     "AGW_BROKER_ROOT=$broker_root" \
-    "AGW_ARTIFACT_HOST_ROOT=$artifact_host_root" >"$env_tmp"
+    "AGW_ARTIFACT_HOST_ROOT=$artifact_host_root" \
+    'AGW_SKILLS_GATEWAY_URL=' \
+    'SKILLS_GATEWAY_AUTH_TOKEN=' \
+    'MCP_GATEWAY_AUTH_TOKEN=' \
+    'OPENAI_API_KEY=' \
+    'AGW_OPENAI_RESPONSES_URL=' \
+    'OPENROUTER_API_KEY=' \
+    'AGW_OPENROUTER_RESPONSES_URL=' >"$env_tmp"
   install -o root -g root -m 0600 "$env_tmp" "$env_file"
 fi
 

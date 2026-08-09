@@ -139,9 +139,13 @@ services:
       AGW_OPENROUTER_RESPONSES_URL: ${AGW_OPENROUTER_RESPONSES_URL:-}
       AGW_TELEMETRY_DISABLED: ${AGW_TELEMETRY_DISABLED:-true}
     volumes:
-      - ${AGW_RUNNER_SOCKET_DIR:?set AGW_RUNNER_SOCKET_DIR from the host installer}:/run/agw-runner:ro
-      - ${AGW_BROKER_ROOT:?set AGW_BROKER_ROOT from the host installer}:/run/agw-broker:rw
-      - ${AGW_ARTIFACT_HOST_ROOT:?set AGW_ARTIFACT_HOST_ROOT from the host installer}:/var/lib/agw/artifacts:rw
+      # Coolify deliberately rejects variable substitution in bind sources.
+      # These are the stable paths created by install-standalone.sh on the
+      # owner-operated host; keeping them literal also makes parser review and
+      # deployment authorization unambiguous.
+      - /run/agw-runner:/run/agw-runner:ro
+      - /run/agw-broker:/run/agw-broker:rw
+      - /var/lib/agents-gateway/artifacts:/var/lib/agw/artifacts:rw
     depends_on:
       postgres:
         condition: service_healthy
