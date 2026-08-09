@@ -522,11 +522,11 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diagnostics io.
 	if codexOutput.err != nil {
 		return emitRunFailure(e, "codex_output_invalid", codexOutput.err, diagnostics)
 	}
-	if processErr != nil {
-		return emitRunFailure(e, "codex_failed", processErr, diagnostics)
-	}
 	if codexOutput.upstreamError != "" {
 		return emitRunFailure(e, "codex_failed", errors.New(codexOutput.upstreamError), diagnostics)
+	}
+	if processErr != nil {
+		return emitRunFailure(e, "codex_failed", processErr, diagnostics)
 	}
 	result := map[string]any{"status": "completed"}
 	if codexOutput.lastMessage != "" {

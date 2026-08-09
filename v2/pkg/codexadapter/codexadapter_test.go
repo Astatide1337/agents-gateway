@@ -265,6 +265,23 @@ func TestRunRejectsProtocolMismatchBeforeLaunchingCodex(t *testing.T) {
 	}
 }
 
+func TestRunPreservesStructuredCodexErrorWhenProcessExitsNonZero(t *testing.T) {
+	fake := fakeCodex(t, `
+printf '%s\n' '{"type":"error","error":{"message":"MCP startup rejected"}}'
+exit 1
+`)
+	cfg := Config{CodexBinary: fake, ResponsesURL: "http://127.0.0.1:8787/v1", Workspace: t.TempDir(), Model: "gpt-test", MaxRuntime: time.Minute, TerminationGrace: time.Second}
+	var output bytes.Buffer
+	err := Run(context.Background(), strings.NewReader(runStartLine(t, "run-codex-error", "work")), &output, io.Discard, cfg)
+	if err == nil || !strings.Contains(err.Error(), "MCP startup rejected") || strings.Contains(err.Error(), "exit status") {
+		t.Fatalf("structured Codex error was hidden by process exit: %v", err)
+	}
+	frames := decodeEvents(t, output.Bytes())
+	if frames[len(frames)-1].Type != proto.EventRunFailed {
+		t.Fatalf("expected terminal failure: %#v", frames)
+	}
+}
+
 func TestRunRejectsReplayedControlSequence(t *testing.T) {
 	fake := fakeCodex(t, `
 trap 'exit 143' TERM INT
