@@ -26,8 +26,15 @@ func TestCodexRuntimeContainerEndToEnd(t *testing.T) {
 	if os.Getenv("AGW_CODEX_CONTAINER_LIVE") != "1" {
 		t.Skip("set AGW_CODEX_CONTAINER_LIVE=1 after building the runtime image")
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is unavailable")
+	engine := strings.TrimSpace(os.Getenv("AGW_CODEX_CONTAINER_ENGINE"))
+	if engine == "" {
+		engine = "docker"
+	}
+	if engine != "docker" && engine != "podman" {
+		t.Fatalf("unsupported container engine %q", engine)
+	}
+	if _, err := exec.LookPath(engine); err != nil {
+		t.Fatalf("%s is unavailable", engine)
 	}
 	image := os.Getenv("AGW_CODEX_RUNTIME_IMAGE")
 	if image == "" {
@@ -120,11 +127,16 @@ func TestCodexRuntimeContainerEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	uidGID := strconv.Itoa(os.Geteuid()) + ":" + strconv.Itoa(os.Getegid())
-	command := exec.CommandContext(ctx, "docker", "run", "--rm", "--interactive", "--network=none", "--read-only",
-		"--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", uidGID,
+	args := []string{"run", "--rm", "--interactive", "--network=none", "--read-only",
+		"--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", uidGID}
+	if engine == "podman" {
+		args = append(args, "--userns=keep-id")
+	}
+	args = append(args,
 		"--workdir", "/workspace", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
 		"--mount", "type=bind,src="+sessionDirectory+",dst=/run/agw,readonly",
 		"--mount", "type=bind,src="+workspace+",dst=/workspace", image)
+	command := exec.CommandContext(ctx, engine, args...)
 	command.Stdin = strings.NewReader(runStartLine(t, "run-container", "Reply with exactly container-e2e-ok and do not use tools."))
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr

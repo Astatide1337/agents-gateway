@@ -44,6 +44,7 @@ type fakeHandle struct {
 	stdout   string
 	commands bytes.Buffer
 	status   runner.ExitStatus
+	waitErr  error
 	stops    atomic.Int32
 }
 
@@ -53,7 +54,7 @@ func (f *fakeHandle) Wait(context.Context) (runner.ExitStatus, error) {
 	if f.status.FinishedAt.IsZero() {
 		return runner.ExitStatus{Code: 0, StartedAt: time.Now(), FinishedAt: time.Now()}, nil
 	}
-	return f.status, nil
+	return f.status, f.waitErr
 }
 func (f *fakeHandle) Send(ctx context.Context, payload []byte) error {
 	if err := ctx.Err(); err != nil {
@@ -181,6 +182,34 @@ func TestDaemonEnforcesExitCodeAndTerminalEventState(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDaemonPreservesFailedTerminalEventWhenProcessExitsNonZero(t *testing.T) {
+	lease := validRunLease()
+	handle := &fakeHandle{
+		stdout: strings.Join([]string{
+			`{"protocol":"agw.runtime.v1","kind":"event","type":"run.started","run_id":"run-1","seq":1,"terminal":false,"data":{"agent_id":"a","sandbox_id":"s"}}`,
+			`{"protocol":"agw.runtime.v1","kind":"event","type":"run.failed","run_id":"run-1","seq":2,"terminal":true,"data":{"error":{"code":"adapter_failed","message":"bounded failure"}}}`,
+			"",
+		}, "\n"),
+		status:  runner.ExitStatus{Code: 1, StartedAt: time.Now(), FinishedAt: time.Now()},
+		waitErr: errors.New("exit status 1"),
+	}
+	var seen int
+	_, err := (Daemon{
+		Backend: &fakeBackend{handle: handle}, Leases: StaticLeaseSource{Lease: lease},
+		Sink: func(context.Context, proto.Envelope) error { seen++; return nil },
+	}).Run(context.Background(), RunRequest{RunID: lease.RunID, Lease: lease, Spec: validRuntimeSpec(), Contract: validRunContract()})
+	var terminalErr *TerminalOutcomeError
+	if !errors.As(err, &terminalErr) || terminalErr.Type != proto.EventRunFailed {
+		t.Fatalf("failed terminal event was hidden by process exit: %v", err)
+	}
+	if errors.Is(err, ErrRuntimeWait) {
+		t.Fatalf("expected failed terminal exit was misclassified as runtime wait failure: %v", err)
+	}
+	if seen != 2 {
+		t.Fatalf("sink observed %d events, want 2", seen)
 	}
 }
 

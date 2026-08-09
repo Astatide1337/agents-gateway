@@ -453,28 +453,14 @@ func (d Daemon) Run(ctx context.Context, request RunRequest) (result RunResult, 
 		}
 		return RunResult{}, ctx.Err()
 	case result := <-waitDone:
-		if result.err != nil {
-			cleanupErr := d.cleanup(ctx, request, handle)
-			if cleanupErr != nil {
-				return RunResult{}, errors.Join(ErrRuntimeWait, result.err, ErrRuntimeCleanup, cleanupErr)
-			}
-			return RunResult{}, errors.Join(ErrRuntimeWait, result.err)
-		}
 		select {
 		case events = <-supervisorDone:
 		case <-time.After(d.CleanupWait):
 			cleanupErr := d.cleanup(ctx, request, handle)
-			return RunResult{ExitStatus: result.status}, errors.Join(ErrRuntimeStreamIncomplete, cleanupErr)
+			return finalizeRuntime(result, supervisionResult{}, cleanupErr)
 		}
 		cleanupErr := d.cleanup(ctx, request, handle)
-		if events.err != nil || !events.terminal {
-			if !events.terminal {
-				events.err = errors.Join(events.err, ErrRuntimeStreamIncomplete)
-			}
-			return RunResult{ExitStatus: result.status, Events: events.count, TerminalType: events.terminalType}, errors.Join(events.err, cleanupErr)
-		}
-		outcomeErr := validateTerminalOutcome(events, result.status)
-		return RunResult{ExitStatus: result.status, Events: events.count, TerminalType: events.terminalType}, errors.Join(outcomeErr, cleanupErr)
+		return finalizeRuntime(result, events, cleanupErr)
 	}
 
 	// A valid stream that is still running must eventually be collected. A
@@ -482,15 +468,41 @@ func (d Daemon) Run(ctx context.Context, request RunRequest) (result RunResult, 
 	select {
 	case result := <-waitDone:
 		cleanupErr := d.cleanup(ctx, request, handle)
-		if !events.terminal {
-			return RunResult{ExitStatus: result.status, Events: events.count, TerminalType: events.terminalType}, errors.Join(ErrRuntimeStreamIncomplete, cleanupErr)
-		}
-		outcomeErr := validateTerminalOutcome(events, result.status)
-		return RunResult{ExitStatus: result.status, Events: events.count, TerminalType: events.terminalType}, errors.Join(outcomeErr, cleanupErr)
+		return finalizeRuntime(result, events, cleanupErr)
 	case <-ctx.Done():
 		cleanupErr := d.cleanup(ctx, request, handle)
 		return RunResult{Events: events.count}, errors.Join(ctx.Err(), cleanupErr)
 	}
+}
+
+// finalizeRuntime always drains the protocol stream before interpreting a
+// process exit. Adapters intentionally exit non-zero after emitting
+// run.failed; treating that exit as a transport failure would discard the
+// durable terminal event and hide the actual bounded failure code.
+func finalizeRuntime(wait waitResult, events supervisionResult, cleanupErr error) (RunResult, error) {
+	result := RunResult{ExitStatus: wait.status, Events: events.count, TerminalType: events.terminalType}
+	if events.err != nil {
+		return result, errors.Join(ErrRuntimeStream, events.err, classifyWait(wait.err), classifyCleanup(cleanupErr))
+	}
+	if !events.terminal {
+		return result, errors.Join(ErrRuntimeStreamIncomplete, classifyWait(wait.err), classifyCleanup(cleanupErr))
+	}
+	if outcomeErr := validateTerminalOutcome(events, wait.status); outcomeErr != nil {
+		var terminalErr *TerminalOutcomeError
+		if errors.As(outcomeErr, &terminalErr) {
+			// A non-zero process exit is the expected companion to run.failed.
+			return result, errors.Join(outcomeErr, classifyCleanup(cleanupErr))
+		}
+		return result, errors.Join(outcomeErr, classifyWait(wait.err), classifyCleanup(cleanupErr))
+	}
+	return result, errors.Join(classifyWait(wait.err), classifyCleanup(cleanupErr))
+}
+
+func classifyWait(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.Join(ErrRuntimeWait, err)
 }
 
 func classifyCleanup(err error) error {
