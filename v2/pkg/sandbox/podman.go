@@ -357,6 +357,10 @@ func runtimeProcessError(exitCode int, stderr string) error {
 	if startup := runtimeStartupError(stderr); startup != nil {
 		return startup
 	}
+	lower := strings.ToLower(stderr)
+	if strings.Contains(lower, "permission denied") || strings.Contains(lower, "operation not permitted") {
+		return ErrPodmanPermission
+	}
 	if exitCode != 125 {
 		switch exitCode {
 		case 1:
@@ -370,10 +374,6 @@ func runtimeProcessError(exitCode int, stderr string) error {
 		default:
 			return nil
 		}
-	}
-	lower := strings.ToLower(stderr)
-	if strings.Contains(lower, "permission denied") || strings.Contains(lower, "operation not permitted") {
-		return ErrPodmanPermission
 	}
 	if strings.Contains(lower, "mount") || strings.Contains(lower, "statfs") {
 		return ErrPodmanMount
