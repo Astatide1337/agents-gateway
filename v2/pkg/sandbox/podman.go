@@ -24,6 +24,14 @@ const (
 	podmanCommandOutputLimit  = 16 << 10
 )
 
+var (
+	ErrPodmanWorkspace = errors.New("podman sandbox workspace preparation failed")
+	ErrPodmanPlan      = errors.New("podman hardened plan failed")
+	ErrPodmanMounts    = errors.New("podman mount preparation failed")
+	ErrPodmanArguments = errors.New("podman argument construction failed")
+	ErrPodmanStart     = errors.New("podman sandbox start failed")
+)
+
 type PodmanConfig struct {
 	Binary         string
 	WorkspaceRoot  string
@@ -127,7 +135,7 @@ func (b *RootlessPodmanBackend) Start(ctx context.Context, spec runner.SandboxSp
 		UID: int64(uid), GID: int64(gid),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("provision workspace quota: %w", err)
+		return nil, errors.Join(ErrPodmanWorkspace, fmt.Errorf("provision workspace quota: %w", err))
 	}
 	workspace := allocation.Path()
 	cleanupWorkspace := true
@@ -138,14 +146,14 @@ func (b *RootlessPodmanBackend) Start(ctx context.Context, spec runner.SandboxSp
 	}()
 	plan, err := buildHardenedSpec(spec, workspace, "podman", b.brokerRoot)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(ErrPodmanPlan, err)
 	}
 	if err := createMountDirectories(workspace, plan.RunAsUser, plan.Mounts); err != nil {
-		return nil, err
+		return nil, errors.Join(ErrPodmanMounts, err)
 	}
 	args, err := podmanArgsWithQuota(id, plan, allocation.Mount())
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(ErrPodmanArguments, err)
 	}
 	stdoutReader, stdoutWriter := io.Pipe()
 	stdinReader, stdinWriter, err := os.Pipe()
@@ -161,7 +169,7 @@ func (b *RootlessPodmanBackend) Start(ctx context.Context, spec runner.SandboxSp
 		_ = stdinWriter.Close()
 		_ = stdoutReader.Close()
 		_ = stdoutWriter.Close()
-		return nil, commandError("start podman sandbox", err, stderr.String())
+		return nil, errors.Join(ErrPodmanStart, commandError("start podman sandbox", err, stderr.String()))
 	}
 	cleanupWorkspace = false
 	return &podmanHandle{

@@ -428,7 +428,7 @@ func (d *InMemoryDispatch) finish(taskID string, runErr error, active *activeTas
 	} else if errors.Is(runErr, context.DeadlineExceeded) {
 		task.State, task.Error = "failed", "execution_timeout"
 	} else if runErr != nil {
-		task.State, task.Error = "failed", "execution_failed"
+		task.State, task.Error = "failed", executionFailureCode(runErr)
 	} else {
 		task.State, task.Error = "succeeded", ""
 	}
@@ -443,6 +443,23 @@ func (d *InMemoryDispatch) finish(taskID string, runErr error, active *activeTas
 	task.State, task.Result.Status, task.Error = "lost", "lost", "terminal_persistence_failed"
 	task.UpdatedAt = d.now()
 	_ = d.persistLocked(task)
+}
+
+func executionFailureCode(err error) string {
+	switch {
+	case errors.Is(err, sandbox.ErrPodmanWorkspace):
+		return "podman_workspace_failed"
+	case errors.Is(err, sandbox.ErrPodmanPlan):
+		return "podman_plan_failed"
+	case errors.Is(err, sandbox.ErrPodmanMounts):
+		return "podman_mounts_failed"
+	case errors.Is(err, sandbox.ErrPodmanArguments):
+		return "podman_arguments_failed"
+	case errors.Is(err, sandbox.ErrPodmanStart):
+		return "podman_start_failed"
+	default:
+		return "execution_failed"
+	}
 }
 
 func (d *InMemoryDispatch) findTaskLocked(taskID string) *persistedTask {
