@@ -525,7 +525,15 @@ func applyStandaloneMigrations(t *testing.T, database *sql.DB, databaseURL strin
 		t.Fatal("resolve standalone migration directory")
 	}
 	migrationDir := filepath.Join(filepath.Dir(currentFile), "..", "..", "migrations")
-	for _, name := range []string{"001_initial.sql", "002_run_signal_idempotency.sql", "003_local_orchestration.sql", "004_artifact_catalog.sql"} {
+	entries, err := os.ReadDir(migrationDir)
+	if err != nil {
+		t.Fatalf("read standalone migration directory: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".sql" {
+			continue
+		}
+		name := entry.Name()
 		var applied bool
 		if err := database.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agw_standalone_live_migrations WHERE version=$1)`, name).Scan(&applied); err != nil {
 			t.Fatalf("read standalone migration ledger: %v", safeStandaloneError(err, databaseURL))
