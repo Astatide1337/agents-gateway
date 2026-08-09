@@ -151,6 +151,28 @@ func TestRuntimeStartupErrorIsLowCardinality(t *testing.T) {
 	}
 }
 
+func TestRuntimeProcessErrorClassifiesPodmanSetupWithoutCopyingStderr(t *testing.T) {
+	tests := []struct {
+		code   int
+		stderr string
+		want   error
+	}{
+		{125, "Error: statfs /private/path: permission denied secret-value", ErrPodmanPermission},
+		{125, "Error: OCI mount setup failed", ErrPodmanMount},
+		{125, "Error: container setup failed", ErrPodmanRuntime},
+		{1, "ordinary adapter failure", nil},
+	}
+	for _, test := range tests {
+		got := runtimeProcessError(test.code, test.stderr)
+		if !errors.Is(got, test.want) || (test.want == nil && got != nil) {
+			t.Fatalf("runtimeProcessError(%d, %q) = %v, want %v", test.code, test.stderr, got, test.want)
+		}
+		if got != nil && strings.Contains(got.Error(), "secret-value") {
+			t.Fatal("runtime classifier copied untrusted stderr")
+		}
+	}
+}
+
 func TestPodmanBackendResolvesBrokerSessionBeforeStart(t *testing.T) {
 	root, sessionID, runAsUser := validBrokerSession(t)
 	factory := &fakePodmanFactory{process: &fakePodmanProcess{}}
