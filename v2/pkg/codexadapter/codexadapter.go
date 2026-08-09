@@ -247,6 +247,10 @@ func BuildArgs(cfg Config) ([]string, error) {
 			"--config", "mcp_servers.agw.url="+strconv.Quote(cfg.MCPURL),
 			"--config", "mcp_servers.agw.required=true",
 			"--config", "mcp_servers.agw.startup_timeout_sec=10",
+			// Codex's MCP approval prompt is redundant in this architecture:
+			// the loopback server exposes only the run's selected tools and the
+			// Agent Gateway broker remains the authoritative policy/effect gate.
+			"--config", `mcp_servers.agw.default_tools_approval_mode="approve"`,
 			"-",
 		)
 	}

@@ -85,7 +85,9 @@ func TestBuildArgsAddsOnlyScopedMCPServerWhenEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, "\x00")
-	if !strings.Contains(joined, `mcp_servers.agw.url="http://127.0.0.1:8787/mcp"`) || !strings.Contains(joined, "mcp_servers.agw.required=true") {
+	if !strings.Contains(joined, `mcp_servers.agw.url="http://127.0.0.1:8787/mcp"`) ||
+		!strings.Contains(joined, "mcp_servers.agw.required=true") ||
+		!strings.Contains(joined, `mcp_servers.agw.default_tools_approval_mode="approve"`) {
 		t.Fatalf("scoped MCP configuration missing: %#v", args)
 	}
 }
