@@ -1,0 +1,9 @@
+# syntax=docker/dockerfile:1
+
+# The migration image is deliberately separate from the runtime images.  The
+# Git checkout is used only at build time; Coolify never needs a source bind
+# mount when it starts the one-shot migration container.
+ARG POSTGRES_BASE_IMAGE=postgres:latest
+FROM ${POSTGRES_BASE_IMAGE}
+
+COPY v2/migrations/ /migrations/

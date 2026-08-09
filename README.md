@@ -4,6 +4,16 @@ Agents Gateway is a self-hosted agent catalog and task runtime gateway. It expos
 
 **Not** a general-purpose API gateway, not a Kubernetes operator, not an LLM proxy.
 
+> **Two implementation tracks:** the Python service documented below is the
+> existing v1 gateway. The standalone Go v2 control plane and sandbox runner
+> are an active, security-first rewrite—not yet a full production release.
+> Start with the [v2 architecture](docs/v2/architecture-plan.md),
+> [implementation status](docs/v2/implementation-status.md), and
+> [acceptance matrix](docs/v2/acceptance-matrix.md) before evaluating or
+> deploying v2. The owner-operated rootless-Podman, quota, secret,
+> Skills/MCP/audit, and live-console slices are verified; the combined
+> real-provider chain and live Coolify deployment are still pending.
+
 ## Quick Start
 
 ```bash
@@ -410,7 +420,15 @@ docker compose down
 | [docs/verification.md](docs/verification.md) | Verification runner, env-required gate, failure feedback loop |
 | [docs/composer-integration.md](docs/composer-integration.md) | Composer contract — endpoint map, task spec, reply protocol, terminal outcomes |
 | [docs/runbooks.md](docs/runbooks.md) | Operational runbooks (boot, E2E, diagnose stall/blocked/missing artifacts) |
+| [docs/v2/architecture-plan.md](docs/v2/architecture-plan.md) | V2 standalone agent control-plane architecture and implementation plan |
+| [docs/v2/implementation-status.md](docs/v2/implementation-status.md) | V2 implementation ledger, configuration, release checks, and deferred scope |
+| [docs/v2/acceptance-matrix.md](docs/v2/acceptance-matrix.md) | V2 architecture promises mapped to current test evidence and release blockers |
+| [docs/v2/threat-model.md](docs/v2/threat-model.md) | V2 trust boundaries, threats, controls, and security acceptance tests |
+| [docs/v2/runtime-protocol.md](docs/v2/runtime-protocol.md) | V2 structured runner/agent event and command protocol |
+| [docs/v2/api.md](docs/v2/api.md) | V2 tenant-scoped resources, runs, events, and idempotent run-control API |
+| [docs/v2/artifacts.md](docs/v2/artifacts.md) | V2 Claude-style artifact authoring, catalog, secure preview, source, and download contract |
 
 ## License
 
-See individual agent directories. Gateway code: repository license.
+Agents Gateway is available under the [MIT License](LICENSE). See individual
+agent directories for any additional component-specific notices.

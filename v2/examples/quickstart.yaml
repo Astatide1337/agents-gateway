@@ -1,0 +1,72 @@
+apiVersion: agents.astatide.com/v1alpha1
+kind: SandboxProfile
+metadata:
+  name: rootless-default
+spec:
+  backend: podman
+  image: ghcr.io/astatide/agents-gateway-runtime-codex@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  resources:
+    cpu: "1"
+    memory: 512Mi
+    disk: 2Gi
+    pids: 128
+  filesystem:
+    root: read-only
+    workspace: ephemeral
+  network:
+    mode: brokered
+    directInternet: false
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: Credential
+metadata:
+  name: openai-api
+spec:
+  kind: api
+  secretRef: env://OPENAI_API_KEY
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: ModelRoute
+metadata:
+  name: default-codex
+spec:
+  providers:
+    - name: openai
+      kind: openai-responses
+      model: gpt-5.6-codex
+      credentialRef: openai-api
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: Agent
+metadata:
+  name: issue-fixer
+spec:
+  runtime:
+    harness: codex
+    image: ghcr.io/astatide/agents-gateway-runtime-codex@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  instructions:
+    inline: Investigate the supplied issue, make the smallest safe change, and verify it.
+  sandboxProfileRef: rootless-default
+  modelRouteRef: default-codex
+  limits:
+    timeout: 30m
+    maxToolCalls: 40
+  verification:
+    commands:
+      - go test ./...
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: Workflow
+metadata:
+  name: fix-issue
+spec:
+  steps:
+    - id: implement
+      agent: issue-fixer
+      timeout: 30m
+      retries: 1
+    - id: publish-approval
+      needs: [implement]
+      approval:
+        reason: Review the generated patch before publishing it.
+        role: approver

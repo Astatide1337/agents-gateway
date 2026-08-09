@@ -1,0 +1,41 @@
+{
+  "resources": [
+    {
+      "kind": "Agent",
+      "name": "fake-test",
+      "revision": "sha256:2ff6e561dfce05c8853e32327aaedae6a6f9caa5af5704ad8def18b312e2af87"
+    },
+    {
+      "kind": "SandboxProfile",
+      "name": "fake-test-sandbox",
+      "revision": "sha256:4bda5393f27abe09072b00d13b1582687788f84eea93c59679d6510a5b5c5909"
+    }
+  ],
+  "warnings": [
+    {
+      "code": "missing_runtime_image",
+      "field": "runtime.docker_image",
+      "message": "legacy manifest has no container image; generated v2 resources are not executable until an image is configured"
+    },
+    {
+      "code": "unsafe_legacy_runtime",
+      "field": "runtime.type",
+      "message": "legacy process execution is not carried into v2; the generated sandbox is isolated and requires an explicit image/harness migration"
+    },
+    {
+      "code": "legacy_command_not_enforced",
+      "field": "runtime.command",
+      "message": "legacy command is preserved as metadata only and will not be executed by the v2 translator"
+    },
+    {
+      "code": "missing_instructions",
+      "field": "instructions",
+      "message": "legacy manifest has no v2 instruction source; configure instructions before execution"
+    },
+    {
+      "code": "no_capability_bindings",
+      "field": "skills/tools",
+      "message": "legacy manifest declares no enforceable v2 skills or tools"
+    }
+  ]
+}

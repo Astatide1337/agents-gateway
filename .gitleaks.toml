@@ -1,0 +1,17 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Checksummed dependency lock files are not credentials"
+paths = [
+  '''(^|/)go\.sum$''',
+  '''(^|/)package-lock\.json$''',
+]
+
+[[allowlists]]
+description = "Committed blank environment template"
+paths = ['''(^|/)v2/deploy/\.env\.example$''']
+
+[[allowlists]]
+description = "Legacy redaction tests intentionally contain fake GitHub token shapes"
+paths = ['''(^|/)tests/test_proof_artifacts\.py$''']
