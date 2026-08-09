@@ -282,9 +282,15 @@ func TestNewResponsesProxyValidatesHTTPSAndConfiguration(t *testing.T) {
 	if _, err := NewResponsesProxy(valid); err != nil {
 		t.Fatal(err)
 	}
+	openRouter := valid
+	openRouter.UpstreamURL = "https://openrouter.ai/api/v1/responses"
+	if _, err := NewResponsesProxy(openRouter); err != nil {
+		t.Fatalf("rejected official OpenRouter Responses endpoint: %v", err)
+	}
 	for _, endpoint := range []string{
 		"http://api.example.test/v1/responses",
 		"https://api.example.test/v1/chat/completions",
+		"https://api.example.test/custom/api/v1/responses",
 		"https://user:pass@api.example.test/v1/responses",
 		"https://api.example.test/v1/responses?x=1",
 		"https://api.example.test/v1/responses#fragment",

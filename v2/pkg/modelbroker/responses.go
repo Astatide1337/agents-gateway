@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	responsesPath = "/v1/responses"
+	responsesPath           = "/v1/responses"
+	openRouterResponsesPath = "/api/v1/responses"
 
 	defaultResponsesMaxHeaderBytes = 32 << 10
 	defaultResponsesMaxBodyBytes   = 8 << 20
@@ -239,7 +240,11 @@ func validateResponsesEndpoint(raw string) (*url.URL, error) {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errResponsesInvalidConfig
 	}
-	if parsed.Path != responsesPath || parsed.RawPath != "" {
+	// The standalone factory supports exactly OpenAI-compatible Responses and
+	// OpenRouter Responses. Their official endpoints differ by the /api prefix;
+	// keep both exact paths allowlisted instead of accepting arbitrary upstream
+	// paths that merely happen to end in /responses.
+	if (parsed.Path != responsesPath && parsed.Path != openRouterResponsesPath) || parsed.RawPath != "" {
 		return nil, errResponsesInvalidConfig
 	}
 	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
