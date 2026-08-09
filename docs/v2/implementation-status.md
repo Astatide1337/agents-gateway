@@ -7,6 +7,19 @@ design baseline remains [architecture-plan.md](architecture-plan.md); this file
 records what exists in the repository and what still requires follow-up. The
 [acceptance matrix](acceptance-matrix.md) maps each release promise to evidence.
 
+Current release posture: this is an owner-operated alpha. The live Coolify
+deployment is in the `Gateways` project and is operationally verified. Gates
+1 through 6 are passed, including connected gate 2. This is not a claim of
+final CI/release-complete status or a general public/hostile multi-tenant
+execution service.
+
+Release evidence is anchored to commit
+`4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a`, Coolify deployment
+`yf0tuzljbgjwn0otluqpyhbb`, and production run
+`run-3686c06ef7ead0b0a1a5b13b7220df7ff0bb282ad1ebda5fe0b4506acbf6d937` in
+the `Gateways` project. The deployed `/healthz` and `/readyz` endpoints both
+returned 200.
+
 ## Operational today
 
 - Versioned `agents.astatide.com/v1alpha1` resources with strict YAML/JSON
@@ -18,7 +31,8 @@ records what exists in the repository and what still requires follow-up. The
 - A Go control-plane API with tenant-scoped resource revisions, run creation,
   run lookup, bounded status-event history, long-lived SSE, audit records,
   OIDC, RBAC, dependency-aware readiness, idempotent Temporal dispatch, and
-  bounded/idempotent cancellation, approval, and immutable-reply controls.
+  bounded/idempotent cancellation and immutable-reply controls plus durable
+  approval state. The complete broker approval workflow remains incomplete.
 - PostgreSQL persistence with organization and project row-level security for
   immutable definition revisions, runs/events, and audit metadata. The schema
   also reserves approvals, effects, credentials, entitlements, artifacts,
@@ -103,6 +117,26 @@ records what exists in the repository and what still requires follow-up. The
   production environment values remain forbidden, and secret values never
   enter manifests, events, errors, audit records, or logs.
 
+### Shared JSON and capability boundary
+
+The `strictjson` contract is shared at API, capability, persistence, and replay
+boundaries. It accepts one JSON value only, rejects unknown resource fields,
+duplicate keys, invalid UTF-8/NULs, and explicit `null` for ToolSet argument
+constraints. The optional `ToolSet` `arguments` field is either omitted, which
+means unconstrained arguments, or one exact JSON object. Exact matching ignores
+object member order, preserves array order, and compares numbers by value.
+Tool calls are constrained by conservative budgets: 1 MiB documents, 16 KiB
+number lexemes, 8,192 mantissa digits, absolute exponent 4,096, 12,288
+integer digits, 4,096 fractional digits, depth 128, 1,024 object members,
+1,024 array items, and 64 KiB strings.
+
+Broker authorization is audited before credentials are resolved or an upstream
+call is made. Denied, approval-required, duplicate, failed, succeeded, and
+unknown outcomes are recorded through the durable audit sink without raw tool
+arguments. If required audit persistence fails, the operation fails closed.
+The `approve` and `propose/commit` modes remain fail-closed policy boundaries;
+their complete broker workflow is not advertised as implemented.
+
 ## Implemented execution integrations and remaining boundaries
 
 The local-engine path connects model routing, MCP capability policy/effect
@@ -134,14 +168,20 @@ handoff are implemented. The standalone rootless-Podman E2E passed on
 2026-08-09 with concurrent sandboxes, network denial, secret materialization,
 tmpfs quota exhaustion, and cleanup. The connected Skills Gateway test passed
 canonical resolution/materialization, and the connected MCP test passed a
-real read, one approved write, and duplicate denial. The durable MCP audit sink
+real read, one policy-allowed write, and duplicate denial. The durable MCP audit sink
 is mandatory, privacy-preserving, and covered by its fail-closed and adapter
-tests; a combined live run that inspects that audit alongside a real provider
-remains pending.
-The current adapter E2E uses a fake local Responses provider, so the single
-combined local-engine run against a real OpenAI or OpenRouter provider is still
-pending. The containerd/gVisor path and hostile multi-tenant boundary are not
-live release evidence.
+tests. Connected gate 2 passed in production run
+`run-3686c06ef7ead0b0a1a5b13b7220df7ff0bb282ad1ebda5fe0b4506acbf6d937`.
+The durable run records a real skill digest/file marker, model completion,
+auth/read `get_me`, exact authenticated/succeeded `create_branch`, persisted
+ToolSet exact arguments, authored text/Markdown artifact catalog/content, and
+durable audit. The disposable branch was removed and no rootless container
+survived. The connected MCP evidence uses the direct origin
+`https://dockermcp.astatide.com/mcp`, separate from the OAuth-facing MCP
+portal. `nvidia/nemotron-3-ultra-550b-a55b:free` was attempted first and
+returned a provider-side HTTP 502; `cohere/north-mini-code:free` was an
+explicit retry, not an automatic production fallback. The containerd/gVisor
+path and hostile multi-tenant boundary are not live release evidence.
 
 The Claude-style artifact path is implemented end to end: strict agent-authored
 descriptors, private broker uploads, immutable local/S3-compatible storage,
@@ -161,9 +201,11 @@ source root `/var/lib/agw-runner/secrets` and ephemeral materialization root
 into the runner configuration. The separate integration Compose profile still
 exercises the bundled Temporal development server.
 
-The Coolify Git-backed profile is ready as a Compose Application profile and
-keeps the runner outside the Coolify Docker daemon. It has not yet been
-created, deployed, or live-verified on the Coolify instance.
+The Coolify Git-backed profile is deployed as a Compose Application in the
+`Gateways` project and keeps the runner outside the Coolify Docker daemon. The
+owner-operated alpha is live at `https://agents.astatide.com`; release commit
+`4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a` was deployed as
+`yf0tuzljbgjwn0otluqpyhbb`.
 
 Optional distributed-profile values include:
 
@@ -201,11 +243,11 @@ The current integration gate also runs a disposable PostgreSQL migration/RLS tes
 live mTLS runner lifecycle test. The control-plane E2E exercises PostgreSQL 18,
 all migrations, Temporal, authenticated apply/run/cancel, and signal audit
 events, then deletes its test containers, volumes, and images. The standalone
-Docker container E2E and live rootless-Podman standalone E2E are verified. The
-connected Skills/MCP tests and fault-injection suite are also release evidence.
-The combined real-provider local-engine chain, live Coolify deployment, live
-Temporal brokered execution, and live containerd/gVisor test remain
-profile-specific or pending release gates.
+Docker container E2E, live rootless-Podman standalone E2E, connected gate-2
+run, Skills/MCP tests, fault-injection suite, and live Coolify deployment are
+verified current evidence. This section does not claim that final CI, all
+cleanup automation, or a general-release review is complete; live Temporal
+brokered execution and live containerd/gVisor testing remain profile-specific.
 
 ## Deliberately deferred
 
@@ -221,11 +263,6 @@ profile-specific or pending release gates.
 - Cross-runner lease fencing/reassignment and team-profile quotas.
 - Artifact edit/remix mutation APIs, public sharing, cursor pagination, and
   orphan-object garbage collection.
-- One combined local-engine run using a real OpenAI or OpenRouter provider,
-  Skills Gateway materialization, MCP read/write, artifact authoring, and
-  durable audit inspection.
-- Live creation, deployment, and end-to-end verification of the Coolify
-  Git-backed profile.
 - Full Temporal-worker wiring for the brokered model/tool/artifact/skill path.
 - Complete semantic telemetry for workflow, sandbox, model, tool, approval,
   verification, and artifact operations.

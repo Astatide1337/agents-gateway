@@ -56,6 +56,14 @@ The runner is a separate process boundary because the web/API container must
 never receive a container-runtime socket. The installer hides that operational
 detail; users should not have to design a runner fleet to execute one agent.
 
+The current owner-operated alpha uses this profile through a Coolify Git-backed
+Compose Application in the `Gateways` project. Its live console/API is
+`https://agents.astatide.com`. This is an operational deployment of the alpha,
+not a claim that the platform is ready for hostile public multi-tenancy.
+Release commit `4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a` is deployed as
+Coolify deployment `yf0tuzljbgjwn0otluqpyhbb`; `/healthz` and `/readyz` both
+returned 200.
+
 ### Distributed (optional)
 
 ```text
@@ -169,6 +177,28 @@ passed to the sandbox, and removed at run cleanup. Neither gateway is modified
 or made a hard dependency: operators may configure any compatible MCP/skill
 source or none at all.
 
+The connected production evidence uses the direct MCP origin
+`https://dockermcp.astatide.com/mcp`; the OAuth-facing MCP portal is a separate
+client entry point. Model selection remains explicit and deployment-specific.
+`nvidia/nemotron-3-ultra-550b-a55b:free` was attempted first and returned a
+provider-side HTTP 502; `cohere/north-mini-code:free` was an explicit retry,
+not an automatic production fallback. The system does not advertise silent
+model fallback.
+
+The shared `strictjson` boundary is used for API, capability, persistence, and
+replay data. It accepts one JSON value only and rejects unknown fields,
+duplicate keys, invalid UTF-8/NULs, explicit `null` for ToolSet argument
+constraints, and out-of-budget numeric values. Optional ToolSet `arguments`
+means either omitted/unconstrained or one exact JSON object; explicit `null`
+is invalid. Exact matching ignores object key order, preserves array order, and
+compares numbers mathematically. Budgets are 1 MiB documents, 16 KiB number
+lexemes, 8,192 mantissa digits, absolute exponent 4,096, 12,288 integer
+digits, 4,096 fractional digits, depth 128, 1,024 object members, 1,024 array
+items, and 64 KiB strings. Authorization and approval denials are audited
+before credentials/upstream access; unavailable audit persistence fails closed.
+The `approve`/`propose/commit` broker workflow remains fail-closed and is not
+advertised as complete.
+
 ## What remains optional
 
 - Cloudflare Access/Tunnel and any other reverse proxy.
@@ -194,7 +224,10 @@ must not complicate or weaken the standalone defaults.
    policy broker, model routing, approvals, verification, and artifact export.
    The local-engine broker, opaque secret materialization, durable MCP audit,
    and Claude-style artifact catalog/viewer paths are implemented. The
-   combined real-provider run remains pending.
+   connected real-provider run passed as gate 2 in production run
+   `run-3686c06ef7ead0b0a1a5b13b7220df7ff0bb282ad1ebda5fe0b4506acbf6d937`.
+   Gates 1 through 6 are passed for the owner-operated alpha; this is not a
+   claim of final CI/release completion or public multi-tenant readiness.
 3. **Workflow completeness:** DAGs, retries, signals, crash recovery,
    idempotent external effects, and full failure injection.
 4. **Optional distributed profile:** Temporal adapter, S3, OIDC/RLS, OTLP,
@@ -208,8 +241,10 @@ must not complicate or weaken the standalone defaults.
   without Cloudflare, Kubernetes, Temporal, S3, OIDC, or a dedicated VM.
 - The acceptance test executes a real rootless Podman sandbox and real harness
   adapter; Docker container E2E is already verified, but it does not replace
-  the rootless-Podman test. The combined real-provider local-engine chain is
-  still pending.
+  the rootless-Podman test. The connected real-provider local-engine chain
+  passed as gate 2 in the cited production run. The live Coolify deployment is
+  verified separately in the `Gateways` project; final CI/cleanup completion
+  remains a separate claim.
 - A restart during queued and running work has a tested, accurate outcome.
 - Sandboxes cannot access runtime sockets, host credentials, another run's
   files/processes, or the network unless an explicit broker policy allows it.

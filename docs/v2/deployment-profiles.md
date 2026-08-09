@@ -28,8 +28,8 @@ broker. Provider and upstream MCP credentials stay outside the sandbox.
 ### Coolify Git-backed deployment
 
 Coolify's Git-backed Docker Compose resource is an **Application**, not a
-Coolify Service. In the existing `Services` project and `production`
-environment, create a Docker Compose Application with:
+Coolify Service. The current owner-operated alpha is a Docker Compose
+Application in the `Gateways` project and `production` environment, with:
 
 - repository: `Astatide1337/agents-gateway`;
 - base directory: `/`;
@@ -38,9 +38,21 @@ environment, create a Docker Compose Application with:
   (the `:8080` identifies the container port; Coolify's proxy publishes the
   normal HTTPS hostname).
 
-This is a committed deployment profile, not a claim that the live Coolify
-resource has already been created or deployed. Live Coolify deployment and
-verification remain pending.
+This profile is live and verified for the owner-operated alpha. It is not a
+claim of public multi-tenant readiness. Release commit
+`4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a` is deployed as Coolify deployment
+`yf0tuzljbgjwn0otluqpyhbb` in `Gateways`; `/healthz` and `/readyz` both
+returned 200. Final CI/release completion and all cleanup automation are not
+claimed here.
+
+For connected MCP evidence, use the direct origin
+`https://dockermcp.astatide.com/mcp`. It is separate from the OAuth-facing MCP
+portal and should not be substituted for the direct-origin test endpoint.
+Model selection is explicit and deployment-specific. In connected gate 2,
+`nvidia/nemotron-3-ultra-550b-a55b:free` was attempted first and returned a
+provider-side HTTP 502; `cohere/north-mini-code:free` was an explicit retry,
+not an automatic production fallback. This profile makes no silent or
+universal primary/fallback model claim.
 
 The Coolify profile intentionally has no `ports:` mappings. `agw-console`
 uses `expose: 8080`, so Coolify's proxy is the only public path; PostgreSQL,
@@ -48,8 +60,8 @@ the API, migration job, and host runner socket remain private. The Compose
 file also leaves network creation to Coolify so the proxy can attach to the
 stack's managed network.
 
-The host-side prerequisites must be completed before the first Coolify
-deployment:
+For a new installation, complete these host-side prerequisites before the
+first Coolify deployment. They are already in place for the current alpha:
 
 1. Install rootless Podman and run
    `v2/scripts/install-standalone.sh` on the Coolify localhost server.
@@ -77,7 +89,7 @@ containers in its aggregate status, configure that exclusion in Coolify's
 resource settings (or upgrade Coolify) before deploying; this review does not
 change the Coolify instance.
 
-The Coolify profile is still the owner-operated profile. Coolify's Docker
+The Coolify profile is the owner-operated profile. Coolify's Docker
 daemon is not the sandbox boundary and must not receive a Podman socket. The
 only runtime bridge to the host runner is the narrowly scoped Unix socket and
 broker/artifact directories above. Do not assign a public domain to
