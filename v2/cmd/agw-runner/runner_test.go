@@ -541,7 +541,7 @@ func TestStatusReturnsCursorBoundedRedactedRuntimeHistory(t *testing.T) {
 		{Protocol: proto.ProtocolVersion, Kind: proto.KindEvent, Type: proto.EventRunStarted, RunID: input.RunID, Seq: 1, Data: json.RawMessage(`{"agent_id":"agent","sandbox_id":"sandbox"}`)},
 		{Protocol: proto.ProtocolVersion, Kind: proto.KindEvent, Type: proto.EventHeartbeat, RunID: input.RunID, Seq: 2, Data: json.RawMessage(`{}`)},
 		{Protocol: proto.ProtocolVersion, Kind: proto.KindEvent, Type: proto.EventAssistantMessage, RunID: input.RunID, Seq: 3, Data: json.RawMessage(`{"message":"Authorization: Bearer glsa_live-secret"}`)},
-		{Protocol: proto.ProtocolVersion, Kind: proto.KindEvent, Type: proto.EventModelCompleted, RunID: input.RunID, Seq: 4, Data: json.RawMessage(`{"response":{"api_key":"hidden","ok":true}}`)},
+		{Protocol: proto.ProtocolVersion, Kind: proto.KindEvent, Type: proto.EventModelCompleted, RunID: input.RunID, Seq: 4, Data: json.RawMessage(`{"input_tokens":38655,"output_tokens":372,"response":{"api_key":"hidden","access_token":"also-hidden","ok":true}}`)},
 	}
 	for _, frame := range frames {
 		if err := service.observe(scheduled.TaskID, frame); err != nil {
@@ -564,6 +564,9 @@ func TestStatusReturnsCursorBoundedRedactedRuntimeHistory(t *testing.T) {
 	encoded, _ := json.Marshal(status.Events)
 	if strings.Contains(string(encoded), "glsa_live-secret") || strings.Contains(string(encoded), "hidden") || !strings.Contains(string(encoded), "[REDACTED]") {
 		t.Fatalf("runtime history was not privacy-safe: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"input_tokens":38655`) || !strings.Contains(string(encoded), `"output_tokens":372`) {
+		t.Fatalf("model token usage lost its numeric telemetry type: %s", encoded)
 	}
 
 	for sequence := uint64(5); sequence < 5+maxRuntimeEventHistory+48; sequence++ {

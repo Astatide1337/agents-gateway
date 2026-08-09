@@ -835,6 +835,12 @@ func redactRuntimeJSON(value any, key string) any {
 
 func isSensitiveRuntimeKey(key string) bool {
 	key = strings.ToLower(key)
+	// Token usage is numeric model telemetry, not authentication material. It
+	// must retain its type so a privacy pass cannot invalidate a valid
+	// model.completed protocol frame.
+	if key == "input_tokens" || key == "output_tokens" {
+		return false
+	}
 	for _, marker := range []string{"secret", "token", "password", "apikey", "api_key", "authorization", "privatekey", "private_key"} {
 		if strings.Contains(key, marker) {
 			return true
