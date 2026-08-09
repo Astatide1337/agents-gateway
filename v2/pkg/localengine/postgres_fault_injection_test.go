@@ -170,7 +170,7 @@ func TestPostgreSQLFaultInjectionRuntimeEventReplayIsIdempotent(t *testing.T) {
 		Status: "running", EventCursor: 2,
 		Events: []workflow.RunnerRuntimeEvent{
 			{Sequence: 1, Type: "model.requested", Payload: []byte(`{"model":"replay"}`)},
-			{Sequence: 2, Type: "assistant.message", Payload: []byte(`{"message":"first"}`)},
+			{Sequence: 2, Type: "assistant.message", Payload: []byte(`{"message":"<function_results> first \\ path and unicode: \u2603"}`)},
 		},
 	}
 	if cursor, err := engine.persistRunnerRuntimeEvents(ctx, claimed, "replay-task", status); err != nil || cursor != 2 {

@@ -846,7 +846,7 @@ func (e *Engine) persistRunnerRuntimeEvents(ctx context.Context, claimed claimed
 			var storedType string
 			var storedPayload []byte
 			if err := tx.QueryRowContext(ctx, `
-					SELECT event_type,payload::text::bytea FROM run_events
+					SELECT event_type,payload::text FROM run_events
 					WHERE organization_id=$1 AND project_id=$2 AND run_id=$3
 					  AND source=$4 AND source_sequence=$5`,
 				claimed.Scope.OrganizationID, claimed.Scope.ProjectID, claimed.RunID,
