@@ -68,13 +68,21 @@ func TestValidateSandboxSpecHardening(t *testing.T) {
 	}
 }
 
-func TestValidateExecutableSandboxSpecRejectsUnimplementedBrokeredNetwork(t *testing.T) {
+func TestValidateExecutableSandboxSpecCouplesNetworkAndBrokerSession(t *testing.T) {
 	for _, backend := range []BackendKind{BackendContainerdRunsc, BackendPodman} {
 		spec := validSandbox(backend)
-		if err := ValidateExecutableSandboxSpec(spec); err == nil || !strings.Contains(err.Error(), "not operational") {
-			t.Fatalf("brokered %s execution was not rejected: %v", backend, err)
+		if err := ValidateExecutableSandboxSpec(spec); err == nil || !strings.Contains(err.Error(), "requires a broker session") {
+			t.Fatalf("brokered %s execution without a session was not rejected: %v", backend, err)
+		}
+		spec.BrokerSessionID = "ags_session_123"
+		if err := ValidateExecutableSandboxSpec(spec); err != nil {
+			t.Fatalf("brokered %s execution with a session was rejected: %v", backend, err)
 		}
 		spec.Network = NetworkNone
+		if err := ValidateExecutableSandboxSpec(spec); err == nil || !strings.Contains(err.Error(), "must not reference") {
+			t.Fatalf("networkless %s execution retained a broker session: %v", backend, err)
+		}
+		spec.BrokerSessionID = ""
 		if err := ValidateExecutableSandboxSpec(spec); err != nil {
 			t.Fatalf("networkless %s execution rejected: %v", backend, err)
 		}

@@ -219,17 +219,19 @@ func ValidateBrokerSessionID(value string) error {
 	return nil
 }
 
-// ValidateExecutableSandboxSpec applies the runtime feature gate in addition
-// to declarative schema validation. The sandbox backends resolve the broker
-// session under their private BrokerRoot before calling the runtime-specific
-// builder; this public validator intentionally remains conservative for
-// callers that do not have a configured host broker root.
+// ValidateExecutableSandboxSpec applies executable network/session coupling in
+// addition to declarative schema validation. Runtime backends still resolve
+// the opaque session below their configured private BrokerRoot and reject
+// missing, replaced, or unsafe session directories before launching anything.
 func ValidateExecutableSandboxSpec(spec SandboxSpec) error {
 	if err := ValidateSandboxSpec(spec); err != nil {
 		return err
 	}
-	if spec.Network == NetworkBrokered {
-		return errors.New("brokered sandbox networking is not operational")
+	if spec.Network == NetworkBrokered && spec.BrokerSessionID == "" {
+		return errors.New("brokered sandbox networking requires a broker session id")
+	}
+	if spec.Network == NetworkNone && spec.BrokerSessionID != "" {
+		return errors.New("networkless sandbox must not reference a broker session")
 	}
 	return nil
 }
