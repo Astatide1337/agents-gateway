@@ -349,7 +349,7 @@ func (p *PostgreSQL) ListEvents(ctx context.Context, scope Scope, runID string, 
 		} else if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT sequence,event_type,payload::text::bytea,created_at FROM run_events WHERE organization_id=$1 AND project_id=$2 AND run_id=$3 AND sequence>$4 ORDER BY sequence`, scope.OrganizationID, scope.ProjectID, runID, after)
+		rows, err := tx.QueryContext(ctx, `SELECT sequence,event_type,payload::text,created_at FROM run_events WHERE organization_id=$1 AND project_id=$2 AND run_id=$3 AND sequence>$4 ORDER BY sequence`, scope.OrganizationID, scope.ProjectID, runID, after)
 		if err != nil {
 			return fmt.Errorf("list run events: %w", err)
 		}

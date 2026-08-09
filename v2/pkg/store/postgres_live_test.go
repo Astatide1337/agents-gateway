@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -60,6 +61,14 @@ func TestPostgreSQLLive(t *testing.T) {
 	events, err := storage.ListEvents(ctx, projectOne, run.ID, 0)
 	if err != nil || len(events) != 1 || events[0].Type != "run.status_changed" {
 		t.Fatalf("status events=%#v err=%v", events, err)
+	}
+	escapedPayload := []byte(`{"message":"line one\nline two with \\ path and unicode: \u2603"}`)
+	if _, err := storage.AppendEvent(ctx, Event{Scope: projectOne, RunID: run.ID, Type: "assistant.message", Payload: escapedPayload}); err != nil {
+		t.Fatalf("append escaped event: %v", err)
+	}
+	events, err = storage.ListEvents(ctx, projectOne, run.ID, 0)
+	if err != nil || len(events) != 2 || !json.Valid(events[1].Payload) {
+		t.Fatalf("escaped event replay=%#v err=%v", events, err)
 	}
 	if _, err := storage.GetRun(ctx, projectTwo, run.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-project run must be hidden, got %v", err)

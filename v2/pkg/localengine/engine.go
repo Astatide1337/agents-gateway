@@ -186,7 +186,7 @@ func (e *Engine) EnqueueCommand(ctx context.Context, scope store.Scope, runID st
 		}
 		var stored []byte
 		if err := tx.QueryRowContext(ctx, `
-			SELECT payload::text::bytea FROM local_workflow_commands
+			SELECT payload::text FROM local_workflow_commands
 			WHERE organization_id=$1 AND project_id=$2 AND run_id=$3 AND idempotency_key_hash=$4`,
 			scope.OrganizationID, scope.ProjectID, runID, command.IdempotencyKey).Scan(&stored); err != nil {
 			return fmt.Errorf("read local command: %w", err)
@@ -900,7 +900,7 @@ func (e *Engine) release(ctx context.Context, claimed claimedWorkflow, delay tim
 func (e *Engine) nextCommand(ctx context.Context, claimed claimedWorkflow) (*localCommand, error) {
 	var commands []localCommand
 	err := e.tenantTx(ctx, claimed.Scope, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT id,kind,target,payload::text::bytea FROM local_workflow_commands WHERE organization_id=$1 AND project_id=$2 AND run_id=$3 AND state='pending' ORDER BY id LIMIT $4`, claimed.Scope.OrganizationID, claimed.Scope.ProjectID, claimed.RunID, e.options().CommandLimit)
+		rows, err := tx.QueryContext(ctx, `SELECT id,kind,target,payload::text FROM local_workflow_commands WHERE organization_id=$1 AND project_id=$2 AND run_id=$3 AND state='pending' ORDER BY id LIMIT $4`, claimed.Scope.OrganizationID, claimed.Scope.ProjectID, claimed.RunID, e.options().CommandLimit)
 		if err != nil {
 			return err
 		}
