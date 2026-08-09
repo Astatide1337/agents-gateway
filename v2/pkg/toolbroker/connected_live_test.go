@@ -38,6 +38,14 @@ func TestConnectedMCPGatewayLive(t *testing.T) {
 	target.Path = ""
 	target.RawPath = ""
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(request *http.Request) {
+		originalDirector(request)
+		// Preserve the production TLS origin identity. NewSingleHostReverseProxy
+		// rewrites URL.Host but intentionally leaves Request.Host unchanged;
+		// Cloudflare rejects that loopback Host before the MCP origin sees it.
+		request.Host = target.Host
+	}
 	loopback := httptest.NewServer(proxy)
 	defer loopback.Close()
 

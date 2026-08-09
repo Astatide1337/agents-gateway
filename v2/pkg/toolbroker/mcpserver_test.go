@@ -290,6 +290,7 @@ func TestMCPHandlerRejectsUnboundedOrMalformedRequestMetadata(t *testing.T) {
 		`{"_meta":"not-an-object"}`,
 		`{"_meta":{"progressToken":0},"authority":"attacker"}`,
 		`{"cursor":42}`,
+		`{"cursor":"server-never-issued-this"}`,
 	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, mcpRequest("tools/list", 1, params))

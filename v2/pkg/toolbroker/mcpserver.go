@@ -685,11 +685,10 @@ func validateListParams(raw json.RawMessage) error {
 			return errors.New("unknown parameter")
 		}
 	}
+	// This endpoint always returns its complete bounded catalog and never
+	// advertises nextCursor, so a non-null cursor cannot have originated here.
 	if cursor, ok := fields["cursor"]; ok && string(cursor) != "null" {
-		var value string
-		if json.Unmarshal(cursor, &value) != nil || boundedText(value, mcpMaxField) != nil {
-			return errors.New("invalid cursor")
-		}
+		return errors.New("pagination is not available")
 	}
 	_, err := decodeMCPMeta(fields["_meta"])
 	return err
