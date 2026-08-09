@@ -116,6 +116,20 @@ class TestSessionResumption:
         second_capture = driver.capture(ref)
         assert "Resumed." in second_capture
 
+    def test_reply_rehydrates_session_id_without_prior_capture(self, driver, tmp_path):
+        ref = driver.create_session("s5_no_capture", cwd=str(tmp_path), command=["opencode", "--auto", "-m", "x/model"])
+        driver.send_text(ref, "Implement divide(a,b).")
+        driver.send_enter(ref)
+        _wait_exit(driver, ref)
+
+        # The completion poll may observe process exit before any capture
+        # has populated the in-memory session ID. Resumption must recover it
+        # from the persisted NDJSON transcript before spawning.
+        driver.send_text(ref, "Use float division.")
+        driver.send_enter(ref)
+        _wait_exit(driver, ref)
+        assert "Resumed." in driver.capture(ref)
+
 
 class TestReattachAcrossRestart:
     """OpencodeJsonDriver's session tracking is pure in-process memory
