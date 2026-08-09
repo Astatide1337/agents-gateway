@@ -53,6 +53,39 @@ func TestCollectAuthoredArtifactsRejectsFIFOWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestOpenWorkspaceFileFallsBackWithoutFollowingSymlinks(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "nested", "report.txt"), []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rootFD, err := unix.Open(workspace, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(rootFD)
+	unsupported := func(int, string, *unix.OpenHow) (int, error) { return -1, unix.EINVAL }
+	fd, err := openWorkspaceFile(rootFD, "nested/report.txt", unsupported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unix.Close(fd)
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if fd, err := openWorkspaceFile(rootFD, "linked/secret.txt", unsupported); err == nil {
+		_ = unix.Close(fd)
+		t.Fatal("component fallback followed a symlink")
+	}
+}
+
 func errString(err error) string {
 	if err == nil {
 		return ""

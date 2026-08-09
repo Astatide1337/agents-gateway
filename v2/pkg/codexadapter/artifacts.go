@@ -161,12 +161,7 @@ func readWorkspaceFile(workspace, relative string, limit int64) ([]byte, error) 
 		return nil, err
 	}
 	defer unix.Close(rootFD)
-	fd, err := unix.Openat2(rootFD, filepath.FromSlash(relative), &unix.OpenHow{
-		// O_NONBLOCK prevents a model-authored FIFO from blocking the adapter
-		// before the regular-file check below can reject it.
-		Flags:   uint64(unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK),
-		Resolve: uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS),
-	})
+	fd, err := openWorkspaceFile(rootFD, filepath.FromSlash(relative), unix.Openat2)
 	if err != nil {
 		return nil, err
 	}
@@ -188,6 +183,54 @@ func readWorkspaceFile(workspace, relative string, limit int64) ([]byte, error) 
 		return nil, errors.New("artifact source grew beyond its size limit")
 	}
 	return content, nil
+}
+
+type openat2Func func(int, string, *unix.OpenHow) (int, error)
+
+func openWorkspaceFile(rootFD int, relative string, openat2 openat2Func) (int, error) {
+	fd, err := openat2(rootFD, relative, &unix.OpenHow{
+		// O_NONBLOCK prevents a model-authored FIFO from blocking the adapter
+		// before the regular-file check below can reject it.
+		Flags:   uint64(unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK),
+		Resolve: uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS),
+	})
+	if err == nil || (!errors.Is(err, unix.ENOSYS) && !errors.Is(err, unix.EINVAL)) {
+		return fd, err
+	}
+	return openWorkspaceFileByComponents(rootFD, relative)
+}
+
+// openWorkspaceFileByComponents is the fail-closed compatibility path for
+// kernels or container policies that reject openat2. Every component is opened
+// relative to an already-open directory descriptor with O_NOFOLLOW, so a
+// concurrent rename cannot redirect resolution through a symlink or outside
+// the workspace.
+func openWorkspaceFileByComponents(rootFD int, relative string) (int, error) {
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	currentFD := rootFD
+	ownedCurrent := false
+	for index, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			if ownedCurrent {
+				_ = unix.Close(currentFD)
+			}
+			return -1, errors.New("invalid workspace artifact path")
+		}
+		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK
+		if index < len(parts)-1 {
+			flags |= unix.O_DIRECTORY
+		}
+		nextFD, err := unix.Openat(currentFD, part, flags, 0)
+		if ownedCurrent {
+			_ = unix.Close(currentFD)
+		}
+		if err != nil {
+			return -1, err
+		}
+		currentFD = nextFD
+		ownedCurrent = true
+	}
+	return currentFD, nil
 }
 
 // classifyWorkspaceReadError returns only a bounded, path-free reason. The
