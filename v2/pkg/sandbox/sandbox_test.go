@@ -89,6 +89,47 @@ func TestBrokerSessionIsResolvedAndMountedAtFixedDestination(t *testing.T) {
 	}
 }
 
+func TestMountPreparationDoesNotMutateBrokerCapabilities(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Mkdir(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	broker := filepath.Join(t.TempDir(), "session")
+	if err := os.Mkdir(broker, 0700); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(broker, "skills")
+	if err := os.Mkdir(skills, 0555); err != nil {
+		t.Fatal(err)
+	}
+	uid, gid := os.Geteuid(), os.Getegid()
+	mounts := []HardenedMount{
+		{Kind: "workspace", Source: workspace, Destination: "/workspace"},
+		{Kind: "artifact", Source: filepath.Join(workspace, "artifact"), Destination: "/artifacts", ReadOnly: true},
+		{Kind: "skills", Source: skills, Destination: "/skills", ReadOnly: true},
+		{Kind: "broker", Source: broker, Destination: BrokerMountDestination, ReadOnly: true},
+	}
+	if err := createMountDirectories(workspace, fmt.Sprintf("%d:%d", uid, gid), mounts); err != nil {
+		t.Fatal(err)
+	}
+	for path, mode := range map[string]os.FileMode{broker: 0700, skills: 0555} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != mode {
+			t.Fatalf("broker capability %q changed mode: got %o want %o", path, info.Mode().Perm(), mode)
+		}
+	}
+	artifactInfo, err := os.Stat(filepath.Join(workspace, "artifact"))
+	if err != nil {
+		t.Fatalf("workspace artifact mount was not prepared: %v", err)
+	}
+	if artifactInfo.Mode().Perm() != 0700 {
+		t.Fatalf("workspace artifact mount mode = %o, want 700", artifactInfo.Mode().Perm())
+	}
+}
+
 func TestPodmanBackendResolvesBrokerSessionBeforeStart(t *testing.T) {
 	root, sessionID, runAsUser := validBrokerSession(t)
 	factory := &fakePodmanFactory{process: &fakePodmanProcess{}}

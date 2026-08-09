@@ -33,6 +33,10 @@ var (
 	ErrRuntimeStreamIncomplete   = errors.New("runtime ended without a terminal event")
 	ErrRuntimeStreamUnavailable  = errors.New("sandbox does not expose a runtime event stream")
 	ErrSandboxControlUnavailable = errors.New("sandbox does not accept runner control input")
+	ErrRuntimeContractSend       = errors.New("runtime contract delivery failed")
+	ErrRuntimeStream             = errors.New("runtime protocol stream failed")
+	ErrRuntimeWait               = errors.New("runtime process wait failed")
+	ErrRuntimeCleanup            = errors.New("runtime cleanup failed")
 )
 
 type Config struct {
@@ -421,7 +425,7 @@ func (d Daemon) Run(ctx context.Context, request RunRequest) (result RunResult, 
 	}
 	if err := sendRunStart(ctx, request, control); err != nil {
 		cleanupErr := d.cleanup(ctx, request, handle)
-		return RunResult{}, errors.Join(fmt.Errorf("send run contract: %w", err), cleanupErr)
+		return RunResult{}, errors.Join(ErrRuntimeContractSend, fmt.Errorf("send run contract: %w", err), classifyCleanup(cleanupErr))
 	}
 
 	supervisorDone := make(chan supervisionResult, 1)
@@ -438,9 +442,9 @@ func (d Daemon) Run(ctx context.Context, request RunRequest) (result RunResult, 
 		if events.err != nil {
 			cleanupErr := d.cleanup(ctx, request, handle)
 			if cleanupErr != nil {
-				return RunResult{Events: events.count}, errors.Join(events.err, cleanupErr)
+				return RunResult{Events: events.count}, errors.Join(ErrRuntimeStream, events.err, ErrRuntimeCleanup, cleanupErr)
 			}
-			return RunResult{Events: events.count, TerminalType: events.terminalType}, events.err
+			return RunResult{Events: events.count, TerminalType: events.terminalType}, errors.Join(ErrRuntimeStream, events.err)
 		}
 	case <-ctx.Done():
 		cleanupErr := d.cleanup(ctx, request, handle)
@@ -452,9 +456,9 @@ func (d Daemon) Run(ctx context.Context, request RunRequest) (result RunResult, 
 		if result.err != nil {
 			cleanupErr := d.cleanup(ctx, request, handle)
 			if cleanupErr != nil {
-				return RunResult{}, errors.Join(result.err, cleanupErr)
+				return RunResult{}, errors.Join(ErrRuntimeWait, result.err, ErrRuntimeCleanup, cleanupErr)
 			}
-			return RunResult{}, result.err
+			return RunResult{}, errors.Join(ErrRuntimeWait, result.err)
 		}
 		select {
 		case events = <-supervisorDone:
@@ -487,6 +491,13 @@ func (d Daemon) Run(ctx context.Context, request RunRequest) (result RunResult, 
 		cleanupErr := d.cleanup(ctx, request, handle)
 		return RunResult{Events: events.count}, errors.Join(ctx.Err(), cleanupErr)
 	}
+}
+
+func classifyCleanup(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.Join(ErrRuntimeCleanup, err)
 }
 
 type waitResult struct {

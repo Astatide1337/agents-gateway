@@ -512,6 +512,15 @@ func createMountDirectories(workspace, runAsUser string, mounts []HardenedMount)
 		if mount.Source == workspace {
 			continue
 		}
+		// Broker sessions and broker-materialized skills are capabilities owned
+		// by the control plane. They were already validated by
+		// buildHardenedSpec and must remain immutable at the runner boundary.
+		if mount.Kind == "broker" || (mount.Kind == "skills" && !within(workspace, mount.Source)) {
+			continue
+		}
+		if !within(workspace, mount.Source) {
+			return fmt.Errorf("%s mount source is outside the dedicated workspace", mount.Kind)
+		}
 		if err := os.MkdirAll(mount.Source, 0700); err != nil {
 			return fmt.Errorf("create %s mount: %w", mount.Kind, err)
 		}
