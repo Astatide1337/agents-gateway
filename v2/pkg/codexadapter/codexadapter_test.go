@@ -282,6 +282,33 @@ exit 1
 	}
 }
 
+func TestRunClassifiesChildDiagnosticsWithoutLeakingThem(t *testing.T) {
+	fake := fakeCodex(t, `
+printf '%s\n' 'MCP server failed to start secret-child-diagnostic' >&2
+exit 1
+`)
+	cfg := Config{CodexBinary: fake, ResponsesURL: "http://127.0.0.1:8787/v1", Workspace: t.TempDir(), Model: "gpt-test", MaxRuntime: time.Minute, TerminationGrace: time.Second}
+	var output bytes.Buffer
+	err := Run(context.Background(), strings.NewReader(runStartLine(t, "run-child-error", "work")), &output, io.Discard, cfg)
+	if err == nil || !strings.Contains(err.Error(), "MCP initialization failed") {
+		t.Fatalf("child failure was not classified: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-child-diagnostic") || bytes.Contains(output.Bytes(), []byte("secret-child-diagnostic")) {
+		t.Fatal("child diagnostics leaked into the runtime protocol")
+	}
+}
+
+func TestBoundedChildDiagnostics(t *testing.T) {
+	var diagnostics boundedChildDiagnostics
+	payload := bytes.Repeat([]byte("x"), maxChildDiagnosticsBytes*2)
+	if n, err := diagnostics.Write(payload); err != nil || n != len(payload) {
+		t.Fatalf("bounded write n=%d err=%v", n, err)
+	}
+	if len(diagnostics.String()) != maxChildDiagnosticsBytes {
+		t.Fatalf("bounded diagnostics length = %d", len(diagnostics.String()))
+	}
+}
+
 func TestRunRejectsReplayedControlSequence(t *testing.T) {
 	fake := fakeCodex(t, `
 trap 'exit 143' TERM INT

@@ -444,7 +444,8 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diagnostics io.
 	if err != nil {
 		return emitRunFailure(e, "codex_start_failed", err, diagnostics)
 	}
-	cmd.Stderr = io.Discard
+	var childDiagnostics boundedChildDiagnostics
+	cmd.Stderr = &childDiagnostics
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = []string{
 		"PATH=" + safePath(cmdPath),
@@ -526,7 +527,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diagnostics io.
 		return emitRunFailure(e, "codex_failed", errors.New(codexOutput.upstreamError), diagnostics)
 	}
 	if processErr != nil {
-		return emitRunFailure(e, "codex_failed", processErr, diagnostics)
+		return emitRunFailure(e, "codex_failed", classifyCodexProcessFailure(processErr, childDiagnostics.String()), diagnostics)
 	}
 	result := map[string]any{"status": "completed"}
 	if codexOutput.lastMessage != "" {
@@ -575,6 +576,50 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diagnostics io.
 		return fmt.Errorf("emit run.completed: %w", err)
 	}
 	return nil
+}
+
+const maxChildDiagnosticsBytes = 16 << 10
+
+type boundedChildDiagnostics struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *boundedChildDiagnostics) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	remaining := maxChildDiagnosticsBytes - b.buf.Len()
+	if remaining > 0 {
+		if len(p) < remaining {
+			remaining = len(p)
+		}
+		_, _ = b.buf.Write(p[:remaining])
+	}
+	return len(p), nil
+}
+
+func (b *boundedChildDiagnostics) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func classifyCodexProcessFailure(processErr error, diagnostics string) error {
+	lower := strings.ToLower(diagnostics)
+	switch {
+	case strings.Contains(lower, "mcp"):
+		return errors.New("Codex MCP initialization failed")
+	case strings.Contains(lower, "model provider"), strings.Contains(lower, "model_provider"):
+		return errors.New("Codex model provider configuration failed")
+	case strings.Contains(lower, "connection refused"), strings.Contains(lower, "error sending request"), strings.Contains(lower, "failed to connect"):
+		return errors.New("Codex could not reach the local broker")
+	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "read-only file system"):
+		return errors.New("Codex encountered a sandbox filesystem restriction")
+	case strings.Contains(lower, "unexpected argument"), strings.Contains(lower, "unknown argument"), strings.Contains(lower, "unrecognized option"):
+		return errors.New("Codex CLI arguments are incompatible with the installed version")
+	default:
+		return processErr
+	}
 }
 
 func uploadRunOutput(ctx context.Context, endpoint string, result map[string]any) (workflow.ArtifactRef, error) {
