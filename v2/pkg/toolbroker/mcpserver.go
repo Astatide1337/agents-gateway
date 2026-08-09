@@ -364,14 +364,18 @@ func (h *MCPHandler) dispatch(ctx context.Context, request rpcRequest) (any, *mc
 			ProtocolVersion string          `json:"protocolVersion"`
 			Capabilities    json.RawMessage `json:"capabilities"`
 			ClientInfo      json.RawMessage `json:"clientInfo"`
+			Meta            json.RawMessage `json:"_meta"`
 		}
-		if err := decodeParams(request.params, &params, "protocolVersion", "capabilities", "clientInfo"); err != nil {
+		if err := decodeParams(request.params, &params, "protocolVersion", "capabilities", "clientInfo", "_meta"); err != nil {
 			return nil, invalidParams()
 		}
 		if err := boundedText(params.ProtocolVersion, 64); err != nil || len(params.Capabilities) == 0 || len(params.ClientInfo) == 0 {
 			return nil, invalidParams()
 		}
 		if err := validateJSONValue(params.Capabilities, 0); err != nil {
+			return nil, invalidParams()
+		}
+		if _, err := decodeMCPMeta(params.Meta); err != nil {
 			return nil, invalidParams()
 		}
 		var clientInfo map[string]json.RawMessage
@@ -397,17 +401,17 @@ func (h *MCPHandler) dispatch(ctx context.Context, request rpcRequest) (any, *mc
 			"serverInfo":      map[string]string{"name": h.config.serverName, "version": h.config.serverVersion},
 		}, nil
 	case "notifications/initialized":
-		if err := requireNoParams(request.params); err != nil {
+		if err := requireMetadataOnlyParams(request.params); err != nil {
 			return nil, invalidParams()
 		}
 		return map[string]any{}, nil
 	case "ping":
-		if err := requireNoParams(request.params); err != nil {
+		if err := requireMetadataOnlyParams(request.params); err != nil {
 			return nil, invalidParams()
 		}
 		return map[string]any{}, nil
 	case "tools/list":
-		if err := requireNoParams(request.params); err != nil {
+		if err := validateListParams(request.params); err != nil {
 			return nil, invalidParams()
 		}
 		tools := make([]map[string]any, 0, len(h.config.tools))
@@ -497,17 +501,9 @@ func (h *MCPHandler) callTool(ctx context.Context, raw, requestID json.RawMessag
 }
 
 func parseCallID(raw json.RawMessage) (string, error) {
-	if len(raw) == 0 {
-		return "", nil
-	}
-	var fields map[string]json.RawMessage
-	if err := decodeStrictObject(raw, &fields); err != nil {
+	fields, err := decodeMCPMeta(raw)
+	if err != nil {
 		return "", err
-	}
-	for key := range fields {
-		if key != "agw" {
-			return "", errors.New("unknown metadata field")
-		}
 	}
 	if rawAGW, ok := fields["agw"]; ok {
 		var agw map[string]json.RawMessage
@@ -640,7 +636,26 @@ func rpcParseMessage(err error) string {
 }
 func invalidParams() *mcpProtocolError { return &mcpProtocolError{-32602, "invalid method parameters"} }
 
-func requireNoParams(raw json.RawMessage) error {
+// MCP request metadata is explicitly extensible. It is never authority: the
+// broker derives policy, tenant, resource, and effect from its immutable run
+// binding. Accept bounded extension metadata for client interoperability and
+// read only the namespaced agw.call_id extension where a stable write identity
+// is useful.
+func decodeMCPMeta(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > mcpMaxSchema || validateJSONValue(raw, 0) != nil {
+		return nil, errors.New("invalid metadata")
+	}
+	var fields map[string]json.RawMessage
+	if err := decodeStrictObject(raw, &fields); err != nil {
+		return nil, errors.New("metadata must be an object")
+	}
+	return fields, nil
+}
+
+func requireMetadataOnlyParams(raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -648,10 +663,36 @@ func requireNoParams(raw json.RawMessage) error {
 	if err := decodeStrictObject(raw, &fields); err != nil {
 		return err
 	}
-	if len(fields) != 0 {
-		return errors.New("parameters must be empty")
+	for key := range fields {
+		if key != "_meta" {
+			return errors.New("unknown parameter")
+		}
 	}
-	return nil
+	_, err := decodeMCPMeta(fields["_meta"])
+	return err
+}
+
+func validateListParams(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := decodeStrictObject(raw, &fields); err != nil {
+		return err
+	}
+	for key := range fields {
+		if key != "cursor" && key != "_meta" {
+			return errors.New("unknown parameter")
+		}
+	}
+	if cursor, ok := fields["cursor"]; ok && string(cursor) != "null" {
+		var value string
+		if json.Unmarshal(cursor, &value) != nil || boundedText(value, mcpMaxField) != nil {
+			return errors.New("invalid cursor")
+		}
+	}
+	_, err := decodeMCPMeta(fields["_meta"])
+	return err
 }
 
 func decodeParams(raw json.RawMessage, target any, allowed ...string) error {

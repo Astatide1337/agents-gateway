@@ -255,6 +255,50 @@ func TestMCPHandlerInitializeIsTypedAndReturnsMCPMetadata(t *testing.T) {
 	}
 }
 
+func TestMCPHandlerAcceptsBoundedStandardRequestMetadata(t *testing.T) {
+	handler := mcpTestHandler(t, policySource{}, &countingMCPServerSource{}, &memoryEffects{}, []ExposedTool{testExposedTool("safe", toolpolicy.EffectRead)})
+	for _, test := range []struct {
+		name   string
+		method string
+		id     any
+		params string
+	}{
+		{"initialized", "notifications/initialized", nil, `{"_meta":{"progressToken":0}}`},
+		{"ping", "ping", 1, `{"_meta":{"traceparent":"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"}}`},
+		{"tools-list", "tools/list", 2, `{"cursor":null,"_meta":{"progressToken":0}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, mcpRequest(test.method, test.id, test.params))
+			if recorder.Code >= 300 || strings.Contains(recorder.Body.String(), `"error"`) {
+				t.Fatalf("metadata-compatible request failed: status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	if callID, err := parseCallID(json.RawMessage(`{"progressToken":0,"vendor":{"bounded":true},"agw":{"call_id":"stable-call"}}`)); err != nil || callID != "stable-call" {
+		t.Fatalf("standard metadata plus gateway extension: callID=%q err=%v", callID, err)
+	}
+	if _, err := parseCallID(json.RawMessage(`{"agw":{"call_id":"stable-call","authority":"attacker"}}`)); err == nil {
+		t.Fatal("unknown gateway-owned metadata field was accepted")
+	}
+}
+
+func TestMCPHandlerRejectsUnboundedOrMalformedRequestMetadata(t *testing.T) {
+	handler := mcpTestHandler(t, policySource{}, &countingMCPServerSource{}, &memoryEffects{}, []ExposedTool{testExposedTool("safe", toolpolicy.EffectRead)})
+	for _, params := range []string{
+		`{"_meta":"not-an-object"}`,
+		`{"_meta":{"progressToken":0},"authority":"attacker"}`,
+		`{"cursor":42}`,
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, mcpRequest("tools/list", 1, params))
+		if !strings.Contains(recorder.Body.String(), `"code":-32602`) {
+			t.Fatalf("malformed metadata was accepted: params=%s body=%s", params, recorder.Body.String())
+		}
+	}
+}
+
 func mcpRequestWithBody(body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")

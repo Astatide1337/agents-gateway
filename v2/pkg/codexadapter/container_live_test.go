@@ -13,14 +13,95 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Astatide1337/agents-gateway/v2/pkg/artifact"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/modelbroker"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/runbroker"
+	"github.com/Astatide1337/agents-gateway/v2/pkg/toolbroker"
+	"github.com/Astatide1337/agents-gateway/v2/pkg/toolpolicy"
 	"github.com/Astatide1337/agents-gateway/v2/proto"
 )
+
+type containerLivePolicy struct{}
+
+func (containerLivePolicy) Grants(context.Context, string, string, string) ([]toolpolicy.Grant, error) {
+	return nil, nil
+}
+
+type containerLiveCredentials struct{}
+
+func (containerLiveCredentials) ResolveCredential(context.Context, string, string) ([]byte, error) {
+	return []byte("unused-test-credential"), nil
+}
+
+type containerLiveServers struct{}
+
+func (containerLiveServers) Server(context.Context, string, string, string) (toolbroker.Server, error) {
+	return toolbroker.Server{}, nil
+}
+
+type containerLiveEffects struct{}
+
+func (containerLiveEffects) Claim(context.Context, string, string, string, string, string) (bool, error) {
+	return true, nil
+}
+
+func (containerLiveEffects) Complete(context.Context, string, string, string, string, string, []byte) error {
+	return nil
+}
+
+type containerLiveAudit struct{}
+
+func (containerLiveAudit) AppendAudit(context.Context, toolbroker.AuditRecord) error { return nil }
+
+type containerMCPExchange struct {
+	method          string
+	requestBody     string
+	requestAccept   string
+	requestProtocol string
+	status          int
+	responseBody    string
+	responseType    string
+}
+
+type containerMCPRecorder struct {
+	mu        sync.Mutex
+	handler   http.Handler
+	exchanges []containerMCPExchange
+}
+
+func (r *containerMCPRecorder) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	body, _ := io.ReadAll(request.Body)
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	r.handler.ServeHTTP(recorder, request)
+	result := recorder.Result()
+	responseBody, _ := io.ReadAll(result.Body)
+	_ = result.Body.Close()
+	r.mu.Lock()
+	r.exchanges = append(r.exchanges, containerMCPExchange{
+		method: request.Method, requestBody: string(body), requestAccept: request.Header.Get("Accept"),
+		requestProtocol: request.Header.Get("MCP-Protocol-Version"), status: result.StatusCode,
+		responseBody: string(responseBody), responseType: result.Header.Get("Content-Type"),
+	})
+	r.mu.Unlock()
+	for name, values := range result.Header {
+		for _, value := range values {
+			w.Header().Add(name, value)
+		}
+	}
+	w.WriteHeader(result.StatusCode)
+	_, _ = w.Write(responseBody)
+}
+
+func (r *containerMCPRecorder) snapshot() []containerMCPExchange {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]containerMCPExchange(nil), r.exchanges...)
+}
 
 func TestCodexRuntimeContainerEndToEnd(t *testing.T) {
 	if os.Getenv("AGW_CODEX_CONTAINER_LIVE") != "1" {
@@ -83,6 +164,23 @@ func TestCodexRuntimeContainerEndToEnd(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/responses", responses)
 	mux.Handle("/v1/artifacts/output", upload)
+	toolBroker, err := toolbroker.New(containerLivePolicy{}, containerLiveCredentials{}, containerLiveServers{}, containerLiveEffects{}, containerLiveAudit{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp, err := toolbroker.NewMCPHandler(toolBroker, toolbroker.MCPHandlerConfig{
+		OrganizationID: "org", ProjectID: "project", UserID: "owner", RunID: "run-container",
+		Tools: []toolbroker.ExposedTool{{
+			Name: "container_ping", Description: "Container MCP compatibility probe",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			Server:      "test", Effect: toolpolicy.EffectRead,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpRecorder := &containerMCPRecorder{handler: mcp}
+	mux.Handle("/mcp", mcpRecorder)
 
 	manager, err := runbroker.NewManager(runbroker.ManagerConfig{MaxTTL: time.Hour})
 	if err != nil {
@@ -117,7 +215,7 @@ func TestCodexRuntimeContainerEndToEnd(t *testing.T) {
 		"session_id": string(created.Session.ID), "bearer_token": created.Token.String(),
 		"policy_digest": policy, "allowed_model": "gpt-test",
 		"model_url": "http://127.0.0.1:8787/v1/responses", "tools_url": "http://127.0.0.1:8787/mcp",
-		"artifact_url": "http://127.0.0.1:8787/v1/artifacts/output", "tools_enabled": false, "artifact_enabled": true,
+		"artifact_url": "http://127.0.0.1:8787/v1/artifacts/output", "tools_enabled": true, "artifact_enabled": true,
 	}
 	rawClient, _ := json.Marshal(clientConfig)
 	if err := os.WriteFile(filepath.Join(sessionDirectory, "client.json"), rawClient, 0400); err != nil {
@@ -164,7 +262,7 @@ func TestCodexRuntimeContainerEndToEnd(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
-		t.Fatalf("runtime container: %v; stderr=%s; stdout=%s", err, stderr.String(), stdout.String())
+		t.Fatalf("runtime container: %v; mcp=%#v; stderr=%s; stdout=%s", err, mcpRecorder.snapshot(), stderr.String(), stdout.String())
 	}
 	frames := decodeEvents(t, stdout.Bytes())
 	if providerAuthorization != "Bearer provider-secret" || len(frames) < 2 || frames[len(frames)-2].Type != proto.EventArtifactCreated || frames[len(frames)-1].Type != proto.EventRunCompleted {
