@@ -55,7 +55,9 @@ services:
 
   agw-migrate:
     build:
-      context: ../..
+      # Coolify invokes Compose with the checked-out repository as its explicit
+      # project directory, so build contexts in this profile are root-relative.
+      context: .
       dockerfile: v2/deploy/Dockerfile.migrate
       args:
         POSTGRES_BASE_IMAGE: ${AGW_POSTGRES_IMAGE:-postgres:latest}
@@ -101,7 +103,7 @@ services:
 
   agw-server:
     build:
-      context: ../..
+      context: .
       dockerfile: v2/Dockerfile.server
     image: ${AGW_SERVER_IMAGE:-agents-gateway-v2-server:local}
     restart: unless-stopped
@@ -160,7 +162,7 @@ services:
 
   agw-console:
     build:
-      context: ../..
+      context: .
       dockerfile: v2/Dockerfile.web
     image: ${AGW_CONSOLE_IMAGE:-agents-gateway-v2-console:local}
     restart: unless-stopped
