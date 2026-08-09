@@ -26,6 +26,7 @@ import (
 	"github.com/Astatide1337/agents-gateway/v2/pkg/skills"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/spec"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/store"
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/toolbroker"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/toolpolicy"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/workflow"
@@ -305,7 +306,14 @@ func (f *Factory) mcpHandler(scope store.Scope, binding runbroker.SessionBinding
 			if err != nil {
 				return nil, errors.New("tool schema is not JSON serializable")
 			}
-			grants = append(grants, toolpolicy.Grant{Server: server.Name, Tool: grant.Name, Resources: exactResources(resource), Effect: effect, Approval: approval})
+			var rawArguments json.RawMessage
+			if grant.Arguments != nil {
+				rawArguments = grant.Arguments.Raw()
+				if strictjson.ValidateObject(rawArguments) != nil {
+					return nil, errors.New("tool arguments constraint must be a JSON object")
+				}
+			}
+			grants = append(grants, toolpolicy.Grant{Server: server.Name, Tool: grant.Name, Resources: exactResources(resource), Effect: effect, Approval: approval, Arguments: rawArguments})
 			exposed = append(exposed, toolbroker.ExposedTool{Name: grant.Name, InputSchema: rawSchema, Server: server.Name, Resource: resource, Effect: effect})
 		}
 	}

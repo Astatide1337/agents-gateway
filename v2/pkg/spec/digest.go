@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 )
 
 // RevisionDigest returns the stable content address of a resource. Encoding
@@ -47,13 +49,30 @@ func normalizedValue(value any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := strictjson.Validate(raw); err != nil {
+		return nil, fmt.Errorf("resource JSON violates strict contract: %w", err)
+	}
 	var generic any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&generic); err != nil {
 		return nil, err
 	}
-	return normalizeJSON(generic, ""), nil
+	normalized := normalizeJSON(generic, "")
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, err
+	}
+	if err := strictjson.Validate(encoded); err != nil {
+		return nil, fmt.Errorf("normalized resource JSON violates strict contract: %w", err)
+	}
+	var checked any
+	decoder = json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&checked); err != nil {
+		return nil, err
+	}
+	return checked, nil
 }
 
 func normalizeJSON(value any, path string) any {
@@ -61,6 +80,14 @@ func normalizeJSON(value any, path string) any {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, child := range typed {
+			if key == "arguments" {
+				// ToolGrant.arguments is an opaque capability constraint. It may
+				// contain null members and order-sensitive arrays; only its
+				// strict JSON meaning, not resource-level normalization rules,
+				// applies inside this field.
+				out[key] = child
+				continue
+			}
 			if child == nil {
 				continue
 			}

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 )
 
 type ValidationOptions struct {
@@ -155,6 +157,11 @@ func validateResource(resource Resource, options ValidationOptions) ValidationEr
 				}
 				if grant.Approval != "" && grant.Approval != "allow" && grant.Approval != "approve" && grant.Approval != "propose/commit" && grant.Approval != "deny" {
 					out = append(out, ValidationError{Resource: identity, Field: grantField + ".approval", Message: "must be allow, approve, propose/commit, or deny"})
+				}
+				if grant.Arguments != nil {
+					if strictjson.ValidateObject(grant.Arguments.Raw()) != nil {
+						out = append(out, ValidationError{Resource: identity, Field: grantField + ".arguments", Message: "must be a JSON object"})
+					}
 				}
 			}
 		}

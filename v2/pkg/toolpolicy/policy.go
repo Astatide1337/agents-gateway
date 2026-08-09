@@ -3,8 +3,11 @@
 package toolpolicy
 
 import (
+	"encoding/json"
 	"path"
 	"strings"
+
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 )
 
 type Effect string
@@ -31,12 +34,14 @@ type Grant struct {
 	Resources []string
 	Effect    Effect
 	Approval  ApprovalMode
+	Arguments json.RawMessage
 }
 
 type Request struct {
 	Server         string
 	Tool           string
 	Resource       string
+	Arguments      json.RawMessage
 	DeclaredEffect Effect
 	Approved       bool
 }
@@ -53,6 +58,9 @@ func Evaluate(grants []Grant, request Request) Decision {
 			continue
 		}
 		if !resourceAllowed(grant.Resources, request.Resource) {
+			continue
+		}
+		if grant.Arguments != nil && !exactJSONEqual(grant.Arguments, request.Arguments) {
 			continue
 		}
 		effect := grant.Effect
@@ -82,6 +90,20 @@ func Evaluate(grants []Grant, request Request) Decision {
 		}
 	}
 	return Decision{Reason: "no matching capability grant", EffectiveEffect: EffectUnknown}
+}
+
+// exactJSONEqual compares JSON values structurally. Object member order is
+// insignificant, arrays remain ordered, and JSON numbers compare by value so
+// equivalent forms such as 1 and 1.0 are accepted. This is intentionally
+// private: callers should only express constraints through ToolSet grants.
+func exactJSONEqual(expected, actual json.RawMessage) bool {
+	return strictjson.EqualObjects(expected, actual)
+}
+
+// ValidJSONObject reports whether raw is exactly one JSON object and contains
+// no duplicate keys at any nesting depth. It never returns payload details.
+func ValidJSONObject(raw json.RawMessage) bool {
+	return strictjson.ValidateObject(raw) == nil
 }
 
 func resourceAllowed(patterns []string, resource string) bool {

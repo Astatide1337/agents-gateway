@@ -133,10 +133,24 @@ func TestRunnerRuntimeEventValidationIsBoundedAndObjectOnly(t *testing.T) {
 		{Sequence: 1, Payload: valid.Payload},
 		{Sequence: 1, Type: valid.Type, Payload: []byte(`[]`)},
 		{Sequence: 1, Type: valid.Type, Payload: []byte(`{"message":`)},
+		{Sequence: 1, Type: valid.Type, Payload: []byte(`{"value":1,"value":2}`)},
+		{Sequence: 1, Type: valid.Type, Payload: []byte(`{"value":1}{"value":1}`)},
 		{Sequence: 1, Type: valid.Type, Payload: []byte(`{"message":"` + strings.Repeat("x", 768<<10) + `"}`)},
 	} {
 		if err := validateRunnerRuntimeEvent(event); err == nil {
 			t.Fatalf("invalid runtime event was accepted: %#v", event)
+		}
+	}
+}
+
+func TestMachineStateDecodeRequiresStrictJSON(t *testing.T) {
+	for _, document := range []string{
+		`{"version":1,"version":1}`,
+		`{"version":1} null`,
+		`{"version":1,"manifest":{"name":"\ud800"}}`,
+	} {
+		if _, err := decodeMachineState([]byte(document)); err == nil {
+			t.Fatalf("permissive machine-state input was accepted: %s", document)
 		}
 	}
 }

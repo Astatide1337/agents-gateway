@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 	"github.com/Astatide1337/agents-gateway/v2/proto"
 )
 
@@ -60,6 +61,9 @@ func ParseLine(line []byte) (proto.Envelope, error) {
 	}
 	if len(line) > MaxFrameBytes {
 		return out, ErrFrameTooLarge
+	}
+	if err := strictjson.Validate(line); err != nil {
+		return out, invalid("json", "invalid JSON")
 	}
 	if err := checkJSONShape(line); err != nil {
 		return out, err
@@ -161,7 +165,7 @@ func ValidateEnvelope(frame proto.Envelope) error {
 	if len(trimmedData) == 0 || bytes.Equal(trimmedData, []byte("null")) {
 		return invalid("data", "must be a JSON object")
 	}
-	if trimmedData[0] != '{' || !json.Valid(trimmedData) {
+	if trimmedData[0] != '{' || strictjson.ValidateObject(trimmedData) != nil {
 		return invalid("data", "must be a JSON object")
 	}
 	if frame.Kind == proto.KindEvent {

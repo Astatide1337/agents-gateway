@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/toolpolicy"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -102,8 +103,8 @@ func (b *Broker) Call(ctx context.Context, request Request) (Result, error) {
 	if request.OrganizationID == "" || request.ProjectID == "" || request.UserID == "" || request.RunID == "" || request.Server == "" || request.Tool == "" || len(request.Arguments) == 0 {
 		return Result{}, errors.New("complete tenant, principal, run, server, tool, and arguments are required")
 	}
-	if len(request.Arguments) > mcpMaxRequestBody || !json.Valid(request.Arguments) {
-		return Result{}, errors.New("tool arguments must be valid JSON")
+	if len(request.Arguments) > mcpMaxRequestBody || strictjson.ValidateObject(request.Arguments) != nil {
+		return Result{}, errors.New("tool arguments must be a JSON object without duplicate keys")
 	}
 	if len(request.EffectKey) > mcpMaxCallID {
 		return Result{}, errors.New("effect key exceeds size limit")
@@ -112,7 +113,7 @@ func (b *Broker) Call(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("load capability policy: %w", err)
 	}
-	decision := toolpolicy.Evaluate(grants, toolpolicy.Request{Server: request.Server, Tool: request.Tool, Resource: request.Resource, Approved: request.Approved})
+	decision := toolpolicy.Evaluate(grants, toolpolicy.Request{Server: request.Server, Tool: request.Tool, Resource: request.Resource, Arguments: request.Arguments, Approved: request.Approved})
 	requestDigest := digest(request.Server, request.Tool, request.Resource, request.Arguments)
 	mutating := decision.EffectiveEffect != toolpolicy.EffectRead
 	policyDecision := "denied"

@@ -54,7 +54,7 @@ func TestPostgreSQLLocalEngineLive(t *testing.T) {
 	manifest := workflow.Manifest{
 		Name: "live-local", Revision: "sha256:" + strings.Repeat("a", 64),
 		Steps: []workflow.Step{
-			{ID: "agent-one", AgentRef: "agent/live"},
+			{ID: "agent-one", AgentRef: "agent/live", Retry: workflow.RetryPolicy{BackoffCoefficient: 2}},
 			{ID: "agent-two", AgentRef: "agent/live", Needs: []string{"agent-one"}},
 		},
 	}
@@ -70,6 +70,21 @@ func TestPostgreSQLLocalEngineLive(t *testing.T) {
 	engine.Options.Scopes = []store.Scope{scope}
 	engine.Options.PollInterval = time.Millisecond
 	if err := engine.Enqueue(ctx, EnqueueInput{Run: run, Manifest: manifest, InputRef: "input://live"}); err != nil {
+		t.Fatal(err)
+	}
+	manifestTx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifestTx.ExecContext(ctx, `SELECT set_config('agw.organization_id',$1,true),set_config('agw.project_id',$2,true)`, scope.OrganizationID, scope.ProjectID); err != nil {
+		manifestTx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := manifestTx.ExecContext(ctx, `UPDATE local_workflows SET manifest=jsonb_set(manifest,'{steps,0,retry,backoff_coefficient}','2.0'::jsonb) WHERE organization_id=$1 AND project_id=$2 AND run_id=$3`, scope.OrganizationID, scope.ProjectID, runID); err != nil {
+		manifestTx.Rollback()
+		t.Fatal(err)
+	}
+	if err := manifestTx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.Enqueue(ctx, EnqueueInput{Run: run, Manifest: manifest, InputRef: "input://live"}); err != nil {

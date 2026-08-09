@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 )
 
 const maxMCPSessionHeader = 4096
@@ -194,7 +196,7 @@ func decodeMCPWireBodyForRequest(body []byte, contentType, expectedID string) ([
 		return nil, err
 	}
 	if !isSSE {
-		if !json.Valid(trimmed) {
+		if strictjson.Validate(trimmed) != nil {
 			return nil, errors.New("MCP server returned invalid JSON")
 		}
 		return trimmed, nil
@@ -218,7 +220,7 @@ func decodeMCPWireBodyForRequest(body []byte, contentType, expectedID string) ([
 			haveData = false
 			return nil
 		}
-		if !json.Valid(candidate) {
+		if strictjson.Validate(candidate) != nil {
 			return errors.New("MCP server returned an invalid event stream")
 		}
 		kind, id, err := classifyMCPEvent(candidate)
@@ -272,7 +274,7 @@ func decodeMCPWireBodyForRequest(body []byte, contentType, expectedID string) ([
 	if err := finishEvent(); err != nil {
 		return nil, err
 	}
-	if len(event) == 0 || !json.Valid(event) {
+	if len(event) == 0 || strictjson.Validate(event) != nil {
 		return nil, errors.New("MCP server returned an invalid event stream")
 	}
 	return event, nil
@@ -362,7 +364,7 @@ func decodeUpstreamMCPResponse(raw []byte, expectedID string) (mcpResponse, erro
 		return mcpResponse{}, errors.New("MCP response must contain exactly one result or error")
 	}
 	if hasResult {
-		if !json.Valid(result) {
+		if strictjson.Validate(result) != nil {
 			return mcpResponse{}, errors.New("MCP response result is invalid JSON")
 		}
 		return mcpResponse{Result: append(json.RawMessage(nil), result...)}, nil
@@ -387,7 +389,11 @@ func decodeUpstreamMCPResponse(raw []byte, expectedID string) (mcpResponse, erro
 }
 
 func decodeMCPTopLevelObject(raw []byte) (map[string]json.RawMessage, error) {
-	decoder := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(raw)))
+	raw = bytes.TrimSpace(raw)
+	if strictjson.ValidateObject(raw) != nil {
+		return nil, errors.New("object required")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	first, err := decoder.Token()
 	if err != nil || first != json.Delim('{') {
 		return nil, errors.New("object required")

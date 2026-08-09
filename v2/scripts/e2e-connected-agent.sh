@@ -288,7 +288,7 @@ cat >"$tool_set_file" <<EOF
   "metadata":{"name":"$tool_set_name"},
   "spec":{"servers":[{"name":"gateway","ref":"$AGW_CONNECTED_MCP_URL","credentialsRef":"$mcp_credential_name","tools":[
     {"name":"get_me","effect":"read","approval":"allow"},
-    {"name":"create_branch","resources":["$AGW_CONNECTED_MCP_RESOURCE"],"effect":"write","approval":"allow"}
+    {"name":"create_branch","resources":["$AGW_CONNECTED_MCP_RESOURCE"],"effect":"write","approval":"allow","arguments":{"owner":"$github_owner","repo":"$github_repo","branch":"$branch_name","from_branch":"main"}}
   ]}]}
 }
 EOF
@@ -300,7 +300,7 @@ cat >"$agent_file" <<EOF
   "metadata":{"name":"$agent_name"},
   "spec":{
     "runtime":{"harness":"codex","image":"$AGW_CONNECTED_RUNTIME_IMAGE"},
-    "instructions":{"inline":"You are running the Agents Gateway connected acceptance chain. Work only in the current workspace. First use the shell to compute sha256sum for the staged file /skills/*/SKILL.md and fail unless it exactly equals ${AGW_CONNECTED_SKILL_FILE_SHA256#sha256:}; this is required evidence that the immutable skill was mounted and read. Do not expose the skill contents. Then call the MCP tool get_me exactly once as a read. Then call create_branch exactly once as an approved write using owner=$github_owner, repo=$github_repo, branch=$branch_name, from_branch=main. Do not call any other MCP tool and do not retry either call. Create a Markdown file named connected-agent-report.md containing these exact markers: AGW_CONNECTED_ARTIFACT_MARKER_$stamp and AGW_CONNECTED_SKILL_PROOF_$AGW_CONNECTED_SKILL_FILE_SHA256. Create .agw/artifacts/connected-agent-report.json with schema=agents-gateway.artifact.v1, title=Connected agent acceptance report, description=Live connected-chain acceptance artifact, content_kind=document, media_type=text/markdown, source=connected-agent-report.md, and capabilities=[]. Before finishing, use the shell to read both authored files back and fail unless the descriptor is valid JSON, both files are regular files, and the Markdown contains both exact markers. Finish only after that read-back succeeds, with a concise message containing both exact markers and the MCP results."},
+    "instructions":{"inline":"You are running the Agents Gateway connected acceptance chain. Work only in the current workspace. First use the shell to compute sha256sum for the staged file /skills/*/SKILL.md and fail unless it exactly equals ${AGW_CONNECTED_SKILL_FILE_SHA256#sha256:}; this is required evidence that the immutable skill was mounted and read. Do not expose the skill contents. Then call the MCP tool get_me exactly once as a read. Then call create_branch exactly once as an approved write with exactly these JSON arguments: {\"owner\":\"$github_owner\",\"repo\":\"$github_repo\",\"branch\":\"$branch_name\",\"from_branch\":\"main\"}. Every one of those four arguments is required. Do not call any other MCP tool and do not retry either call. Create a Markdown file named connected-agent-report.md containing these exact markers: AGW_CONNECTED_ARTIFACT_MARKER_$stamp and AGW_CONNECTED_SKILL_PROOF_$AGW_CONNECTED_SKILL_FILE_SHA256. Create .agw/artifacts/connected-agent-report.json with schema=agents-gateway.artifact.v1, title=Connected agent acceptance report, description=Live connected-chain acceptance artifact, content_kind=document, media_type=text/markdown, source=connected-agent-report.md, and capabilities=[]. Before finishing, use the shell to read both authored files back and fail unless the descriptor is valid JSON, both files are regular files, and the Markdown contains both exact markers. Finish only after that read-back succeeds, with a concise message containing both exact markers and the MCP results."},
     "skillSetRef":"$skill_set_name",
     "toolSetRef":"$tool_set_name",
     "modelRouteRef":"$model_route_name",
@@ -343,6 +343,15 @@ jq -e --arg digest "$skill_set_digest" --arg skill_ref "$AGW_CONNECTED_SKILL_REF
    .data.document.spec.skills[0].ref == $skill_ref and
    .data.document.spec.skills[0].digest == $skill_digest' \
   "$response_file" >/dev/null || fail "applied SkillSet did not preserve the pinned Skills reference"
+
+api_request GET "$scope/resources/ToolSet/$tool_set_name"
+jq -e --arg digest "$tool_set_digest" --arg owner "$github_owner" --arg repo "$github_repo" --arg branch "$branch_name" \
+  '.data.digest == $digest and .data.document.kind == "ToolSet" and
+   (.data.document.spec.servers | length == 1) and
+   ([.data.document.spec.servers[0].tools[] | select(.name == "create_branch")] | length == 1) and
+   ([.data.document.spec.servers[0].tools[] | select(.name == "create_branch")][0].arguments ==
+     {"owner":$owner,"repo":$repo,"branch":$branch,"from_branch":"main"})' \
+  "$response_file" >/dev/null || fail "applied ToolSet did not preserve the exact create_branch arguments constraint"
 
 api_request GET "$scope/resources/Agent/$agent_name"
 jq -e --arg digest "$agent_digest" --arg image "$AGW_CONNECTED_RUNTIME_IMAGE" \

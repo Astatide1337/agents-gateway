@@ -45,6 +45,9 @@ func TestParseLineStrictAndRoundTrip(t *testing.T) {
 		"non-object data":           `{"protocol":"agw.runtime.v1","kind":"event","type":"heartbeat","run_id":"r","seq":1,"terminal":false,"data":[]}`,
 		"malformed data":            `{"protocol":"agw.runtime.v1","kind":"event","type":"heartbeat","run_id":"r","seq":1,"terminal":false,"data":{"x":}}`,
 		"whitespace data":           `{"protocol":"agw.runtime.v1","kind":"event","type":"heartbeat","run_id":"r","seq":1,"terminal":false,"data":   }`,
+		"lone surrogate data":       `{"protocol":"agw.runtime.v1","kind":"event","type":"heartbeat","run_id":"r","seq":1,"terminal":false,"data":{"x":"\ud800"}}`,
+		"escaped NUL data":          `{"protocol":"agw.runtime.v1","kind":"event","type":"heartbeat","run_id":"r","seq":1,"terminal":false,"data":{"x":"\u0000"}}`,
+		"duplicate nested data":     `{"protocol":"agw.runtime.v1","kind":"event","type":"heartbeat","run_id":"r","seq":1,"terminal":false,"data":{"x":{"a":1,"a":2}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := ParseLine([]byte(input)); err == nil {

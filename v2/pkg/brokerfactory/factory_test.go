@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -351,6 +352,69 @@ func TestFactoryMCPCatalogDeniesUnlistedToolsAndApprovesWritesByDefault(t *testi
 	handler.Handler.ServeHTTP(writeRecorder, write)
 	if !strings.Contains(writeRecorder.Body.String(), `"code":-32002`) || upstreamCalls != 0 {
 		t.Fatalf("write tool did not default to approval-required: status=%d body=%s calls=%d", writeRecorder.Code, writeRecorder.Body.String(), upstreamCalls)
+	}
+}
+
+func TestFactoryThreadsExactToolArgumentsIntoBrokerPolicy(t *testing.T) {
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "factory-test-session")
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"test","version":"1"}}}`, request.ID)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			upstreamCalls++
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, request.ID)
+		default:
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{}}`, request.ID)
+		}
+	}))
+	defer upstream.Close()
+
+	arguments, err := spec.NewJSONArguments(json.RawMessage(`{"owner":"acme","repo":"gateway","nested":{"enabled":true},"huge":90071992547409931234567890.1234500}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := newFactoryFixture(t, "")
+	toolSet := &spec.ToolSet{
+		ResourceMeta: resourceMeta(spec.KindToolSet, "exact-catalog"),
+		Spec: spec.ToolSetSpec{Servers: []spec.MCPServer{{
+			Name: "local", Ref: upstream.URL, Tools: []spec.ToolGrant{{
+				Name: "create_branch", Effect: string(toolpolicy.EffectRead), Approval: string(toolpolicy.ApprovalAllow), Arguments: arguments,
+			}},
+		}}},
+	}
+	toolRef := applyResource(t, fixture.store, fixture.binding, toolSet)
+	request := newHandlerRequest(fixture)
+	request.Input.Contract.ToolSet = &toolRef
+	handler, err := fixture.factory.NewHandler(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	matching := mcpFactoryRequest(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_branch","arguments":{"huge":90071992547409931234567890.12345,"nested":{"enabled":true},"repo":"gateway","owner":"acme"}}}`)
+	matchingRecorder := httptest.NewRecorder()
+	handler.Handler.ServeHTTP(matchingRecorder, matching)
+	if matchingRecorder.Code != http.StatusOK || strings.Contains(matchingRecorder.Body.String(), `"error"`) || upstreamCalls != 1 {
+		t.Fatalf("matching exact arguments failed: status=%d body=%s upstream=%d", matchingRecorder.Code, matchingRecorder.Body.String(), upstreamCalls)
+	}
+
+	mismatch := mcpFactoryRequest(http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_branch","arguments":{"huge":90071992547409931234567890.12345,"nested":{"enabled":true},"repo":"gateway","owner":"acme","extra":"no"}}}`)
+	mismatchRecorder := httptest.NewRecorder()
+	handler.Handler.ServeHTTP(mismatchRecorder, mismatch)
+	if !strings.Contains(mismatchRecorder.Body.String(), `"code":-32001`) || upstreamCalls != 1 || strings.Contains(mismatchRecorder.Body.String(), "no") {
+		t.Fatalf("mismatched exact arguments was not denied before upstream: status=%d body=%s upstream=%d", mismatchRecorder.Code, mismatchRecorder.Body.String(), upstreamCalls)
 	}
 }
 

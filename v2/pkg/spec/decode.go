@@ -27,6 +27,9 @@ func DecodeAll(r io.Reader) ([]Resource, error) {
 		if isEmptyDocument(&node) {
 			continue
 		}
+		if containsYAMLAlias(&node) {
+			return nil, fmt.Errorf("decode YAML document %d: YAML aliases are not permitted", document)
+		}
 
 		var meta struct {
 			TypeMeta `yaml:",inline"`
@@ -73,6 +76,21 @@ func isEmptyDocument(node *yaml.Node) bool {
 	}
 	root := node.Content[0]
 	return root.Kind == 0 || (root.Kind == yaml.ScalarNode && root.Tag == "!!null")
+}
+
+func containsYAMLAlias(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == yaml.AliasNode {
+		return true
+	}
+	for _, child := range node.Content {
+		if containsYAMLAlias(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func newResource(kind string) (Resource, error) {

@@ -145,6 +145,7 @@ type ToolGrant struct {
 	Resources   []string       `json:"resources,omitempty" yaml:"resources,omitempty"`
 	Effect      string         `json:"effect,omitempty" yaml:"effect,omitempty"`
 	Approval    string         `json:"approval,omitempty" yaml:"approval,omitempty"`
+	Arguments   *JSONArguments `json:"arguments,omitempty" yaml:"arguments,omitempty"`
 	InputSchema map[string]any `json:"inputSchema,omitempty" yaml:"inputSchema,omitempty"`
 }
 

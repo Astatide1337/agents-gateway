@@ -188,11 +188,22 @@ func (m *Memory) ApplyResource(_ context.Context, resource Resource) (Resource, 
 	if resource.Kind == "" || resource.Name == "" || resource.Digest == "" || len(resource.Document) == 0 {
 		return Resource{}, errors.New("kind, name, digest, and document are required")
 	}
+	if err := ValidateJSONDocument(resource.Document); err != nil {
+		return Resource{}, fmt.Errorf("resource document is not valid JSON: %w", err)
+	}
+	normalizedDocument, err := NormalizeJSONDocument(resource.Document)
+	if err != nil {
+		return Resource{}, fmt.Errorf("normalize resource document: %w", err)
+	}
+	resource.Document = normalizedDocument
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := resourceKey(resource.Scope, resource.Kind, resource.Name)
 	revisions := m.resources[key]
 	if len(revisions) > 0 && revisions[len(revisions)-1].Digest == resource.Digest {
+		if !JSONDocumentsEqual(revisions[len(revisions)-1].Document, resource.Document) {
+			return Resource{}, ErrConflict
+		}
 		return cloneResource(revisions[len(revisions)-1]), nil
 	}
 	resource.Revision = int64(len(revisions) + 1)
@@ -292,6 +303,11 @@ func (m *Memory) PutArtifactVersion(_ context.Context, version ArtifactVersion) 
 	if err := validateArtifactVersion(version); err != nil {
 		return ArtifactVersion{}, err
 	}
+	normalizedDocument, err := NormalizeJSONDocument(version.Document)
+	if err != nil {
+		return ArtifactVersion{}, fmt.Errorf("normalize artifact document: %w", err)
+	}
+	version.Document = normalizedDocument
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.runs[runKey(version.Scope, version.RunID)]; !ok {
@@ -300,7 +316,7 @@ func (m *Memory) PutArtifactVersion(_ context.Context, version ArtifactVersion) 
 	key := artifactKey(version.Scope, version.ArtifactID)
 	for _, existing := range m.artifacts[key] {
 		if existing.VersionID == version.VersionID || existing.VersionNumber == version.VersionNumber {
-			if existing.VersionID == version.VersionID && string(existing.Document) == string(version.Document) {
+			if existing.VersionID == version.VersionID && JSONDocumentsEqual(existing.Document, version.Document) {
 				return cloneArtifactVersion(existing), nil
 			}
 			return ArtifactVersion{}, ErrConflict
@@ -435,6 +451,14 @@ func (m *Memory) AppendEvent(_ context.Context, event Event) (Event, error) {
 	if err := event.Scope.Validate(); err != nil {
 		return Event{}, err
 	}
+	if len(event.Payload) == 0 {
+		event.Payload = []byte(`{}`)
+	}
+	normalizedPayload, err := NormalizeJSONDocument(event.Payload)
+	if err != nil {
+		return Event{}, fmt.Errorf("event payload is not valid JSON: %w", err)
+	}
+	event.Payload = normalizedPayload
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.runs[runKey(event.Scope, event.RunID)]; !ok {
@@ -469,9 +493,17 @@ func (m *Memory) ListEvents(_ context.Context, scope Scope, runID string, after 
 }
 
 func (m *Memory) AppendAudit(_ context.Context, event AuditEvent) error {
-	if event.OrganizationID == "" || event.PrincipalID == "" || event.Action == "" || event.ResourceID == "" {
-		return errors.New("audit scope, principal, action, and resource are required")
+	if event.OrganizationID == "" || event.ProjectID == "" || event.PrincipalID == "" || event.Action == "" || event.ResourceType == "" || event.ResourceID == "" || event.Decision == "" {
+		return errors.New("complete audit event is required")
 	}
+	if len(event.Metadata) == 0 {
+		event.Metadata = []byte(`{}`)
+	}
+	normalizedMetadata, err := NormalizeJSONDocument(event.Metadata)
+	if err != nil {
+		return fmt.Errorf("audit metadata is not valid JSON: %w", err)
+	}
+	event.Metadata = normalizedMetadata
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	event.CreatedAt = m.now()
@@ -621,6 +653,17 @@ func (m *Memory) Complete(_ context.Context, organizationID, projectID, runID, k
 	if err := scope.Validate(); err != nil {
 		return err
 	}
+	if len(result) == 0 {
+		result = []byte(`null`)
+	}
+	if err := ValidateJSONDocument(result); err != nil {
+		return fmt.Errorf("effect result must be valid JSON: %w", err)
+	}
+	normalizedResult, err := NormalizeJSONDocument(result)
+	if err != nil {
+		return fmt.Errorf("normalize effect result: %w", err)
+	}
+	result = normalizedResult
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	id := runKey(scope, runID) + "/" + key
@@ -629,7 +672,7 @@ func (m *Memory) Complete(_ context.Context, organizationID, projectID, runID, k
 		return ErrNotFound
 	}
 	if current.State != "claimed" {
-		if current.State == state {
+		if current.State == state && JSONDocumentsEqual(current.Result, result) {
 			return nil
 		}
 		return ErrConflict
@@ -695,8 +738,8 @@ func validateArtifactVersion(version ArtifactVersion) error {
 	if version.ArtifactID == "" || version.VersionID == "" || version.RunID == "" || version.ContentObjectKey == "" || version.SourceObjectKey == "" || version.VersionNumber < 1 || len(version.Document) == 0 {
 		return errors.New("complete artifact version is required")
 	}
-	if !json.Valid(version.Document) {
-		return errors.New("artifact version document must be valid JSON")
+	if err := ValidateJSONDocument(version.Document); err != nil {
+		return fmt.Errorf("artifact version document must be valid JSON: %w", err)
 	}
 	return nil
 }

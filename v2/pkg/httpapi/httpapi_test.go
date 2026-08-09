@@ -288,6 +288,37 @@ func TestInvalidPayloadsAndBodyLimit(t *testing.T) {
 	}
 }
 
+func TestToolSetArgumentsNullRejectedAndOmissionReadBackUnconstrained(t *testing.T) {
+	storage := &auditRecordingStore{Store: store.NewMemory()}
+	handler := newTestHandler(storage, editor())
+	path := "/api/v1alpha1/organizations/org-a/projects/project-a/resources/ToolSet/github-tools"
+	prefix := `{"apiVersion":"agents.astatide.com/v1alpha1","kind":"ToolSet","metadata":{"name":"github-tools"},"spec":{"servers":[{"name":"gateway","ref":"https://mcp.example.test/mcp","tools":[{"name":"get_me","effect":"read"`
+	suffix := `}]}]}}`
+
+	explicitNull := request(t, handler, http.MethodPut, path, "application/json", prefix+`,"arguments":null`+suffix)
+	if explicitNull.Code != http.StatusBadRequest || strings.Contains(explicitNull.Body.String(), "get_me") {
+		t.Fatalf("explicit null status=%d body=%s", explicitNull.Code, explicitNull.Body.String())
+	}
+
+	omitted := request(t, handler, http.MethodPut, path, "application/json", prefix+suffix)
+	if omitted.Code != http.StatusCreated {
+		t.Fatalf("omitted arguments apply status=%d body=%s", omitted.Code, omitted.Body.String())
+	}
+	get := request(t, handler, http.MethodGet, path, "", "")
+	if get.Code != http.StatusOK {
+		t.Fatalf("omitted arguments readback status=%d body=%s", get.Code, get.Body.String())
+	}
+	response := decodeResponse(t, get)
+	data := response["data"].(map[string]any)
+	document := data["document"].(map[string]any)
+	specification := document["spec"].(map[string]any)
+	servers := specification["servers"].([]any)
+	tools := servers[0].(map[string]any)["tools"].([]any)
+	if _, present := tools[0].(map[string]any)["arguments"]; present {
+		t.Fatalf("omitted arguments appeared in API readback: %#v", tools[0])
+	}
+}
+
 func TestRunCreationIsIdempotentAndScoped(t *testing.T) {
 	storage := &auditRecordingStore{Store: store.NewMemory()}
 	handler := newTestHandler(storage, editor())

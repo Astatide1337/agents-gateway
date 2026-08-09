@@ -28,6 +28,7 @@ import (
 	"github.com/Astatide1337/agents-gateway/v2/pkg/authz"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/spec"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/store"
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 )
 
 const (
@@ -1311,6 +1312,9 @@ func decodeResource(data []byte) (spec.Resource, error) {
 }
 
 func decodeStrictJSON(data []byte, target any) error {
+	if err := strictjson.Validate(data); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {

@@ -81,10 +81,10 @@ func TestPostgreSQLFaultInjectionEffectLedgerIsSingleClaimAndTerminallyUnknown(t
 	if owners != 1 {
 		t.Fatalf("concurrent PostgreSQL effect owners=%d, want exactly one", owners)
 	}
-	if err := storage.Complete(ctx, scope.OrganizationID, scope.ProjectID, runID, "external-write", "unknown", []byte(`{"transport":"connection_dropped"}`)); err != nil {
+	if err := storage.Complete(ctx, scope.OrganizationID, scope.ProjectID, runID, "external-write", "unknown", []byte(`{"transport":"connection_dropped","value":2}`)); err != nil {
 		t.Fatalf("complete ambiguous effect: %v", err)
 	}
-	if err := storage.Complete(ctx, scope.OrganizationID, scope.ProjectID, runID, "external-write", "unknown", []byte(`{"transport":"connection_dropped"}`)); err != nil {
+	if err := storage.Complete(ctx, scope.OrganizationID, scope.ProjectID, runID, "external-write", "unknown", []byte(`{"value":2.0,"transport":"connection_dropped"}`)); err != nil {
 		t.Fatalf("idempotent unknown completion: %v", err)
 	}
 	if err := storage.Complete(ctx, scope.OrganizationID, scope.ProjectID, runID, "external-write", "succeeded", []byte(`{"ok":true}`)); !errors.Is(err, ErrConflict) {

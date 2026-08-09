@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Astatide1337/agents-gateway/v2/pkg/strictjson"
 	"github.com/Astatide1337/agents-gateway/v2/pkg/toolpolicy"
 )
 
@@ -31,10 +32,6 @@ const (
 	mcpMaxField       = 512
 	mcpMaxCallID      = 128
 	mcpMaxSchema      = 64 << 10
-	mcpMaxDepth       = 16
-	mcpMaxString      = 32 << 10
-	mcpMaxArray       = 256
-	mcpMaxObject      = 128
 )
 
 var (
@@ -178,7 +175,7 @@ func validateMCPBinding(config MCPHandlerConfig) error {
 		if len(tool.Description) > mcpMaxDescription || !utf8.ValidString(tool.Description) {
 			return fmt.Errorf("%w: tool %q description is too long or invalid", ErrMCPInvalidConfig, tool.Name)
 		}
-		if len(tool.InputSchema) == 0 || len(tool.InputSchema) > mcpMaxSchema || !json.Valid(tool.InputSchema) {
+		if len(tool.InputSchema) == 0 || len(tool.InputSchema) > mcpMaxSchema || strictjson.Validate(tool.InputSchema) != nil {
 			return fmt.Errorf("%w: tool %q has an invalid input schema", ErrMCPInvalidConfig, tool.Name)
 		}
 		if err := validateJSONValue(tool.InputSchema, 0); err != nil {
@@ -530,7 +527,7 @@ func stableEffectKey(runID, toolName, callID string) string {
 }
 
 func normalizeMCPResult(content json.RawMessage) any {
-	if len(content) == 0 || !json.Valid(content) {
+	if len(content) == 0 || strictjson.Validate(content) != nil {
 		return map[string]any{"content": []map[string]any{{"type": "text", "text": "tool returned no content"}}}
 	}
 	var value any
@@ -734,7 +731,7 @@ func decodeStrictObject(raw []byte, target any) error {
 	if len(raw) == 0 || raw[0] != '{' {
 		return errors.New("object required")
 	}
-	if err := rejectDuplicateKeys(raw); err != nil {
+	if err := strictjson.ValidateObject(raw); err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -749,86 +746,7 @@ func decodeStrictObject(raw []byte, target any) error {
 	return nil
 }
 
-// rejectDuplicateKeys also walks arbitrary argument/schema JSON. The standard
-// encoding/json decoder keeps the last duplicate field, which is unsafe for a
-// policy boundary.
-func rejectDuplicateKeys(raw []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	if err := walkJSON(decoder, 0); err != nil {
-		return err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return errors.New("trailing JSON")
-	}
-	return nil
-}
-
-func walkJSON(decoder *json.Decoder, depth int) error {
-	if depth > mcpMaxDepth {
-		return errors.New("JSON nesting limit exceeded")
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	switch value := token.(type) {
-	case json.Delim:
-		switch value {
-		case '{':
-			seen := map[string]struct{}{}
-			count := 0
-			for decoder.More() {
-				count++
-				if count > mcpMaxObject {
-					return errors.New("JSON object limit exceeded")
-				}
-				keyToken, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				key, ok := keyToken.(string)
-				if !ok || len(key) > mcpMaxString {
-					return errors.New("invalid JSON object key")
-				}
-				if _, ok := seen[key]; ok {
-					return errors.New("duplicate JSON object key")
-				}
-				seen[key] = struct{}{}
-				if err := walkJSON(decoder, depth+1); err != nil {
-					return err
-				}
-			}
-			_, err = decoder.Token()
-			return err
-		case '[':
-			count := 0
-			for decoder.More() {
-				count++
-				if count > mcpMaxArray {
-					return errors.New("JSON array limit exceeded")
-				}
-				if err := walkJSON(decoder, depth+1); err != nil {
-					return err
-				}
-			}
-			_, err = decoder.Token()
-			return err
-		default:
-			return errors.New("unexpected JSON delimiter")
-		}
-	case string:
-		if len(value) > mcpMaxString || !utf8.ValidString(value) {
-			return errors.New("JSON string limit exceeded")
-		}
-	}
-	return nil
-}
-
 func validateJSONValue(raw []byte, depth int) error {
-	if len(raw) == 0 {
-		return errors.New("JSON value required")
-	}
-	return rejectDuplicateKeys(raw)
+	_ = depth
+	return strictjson.Validate(raw)
 }

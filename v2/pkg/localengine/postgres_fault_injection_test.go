@@ -169,7 +169,7 @@ func TestPostgreSQLFaultInjectionRuntimeEventReplayIsIdempotent(t *testing.T) {
 	status := workflow.StatusRunnerTaskResult{
 		Status: "running", EventCursor: 2,
 		Events: []workflow.RunnerRuntimeEvent{
-			{Sequence: 1, Type: "model.requested", Payload: []byte(`{"model":"replay"}`)},
+			{Sequence: 1, Type: "model.requested", Payload: []byte(`{"model":"replay","value":2}`)},
 			{Sequence: 2, Type: "assistant.message", Payload: []byte(`{"message":"<function_results> first \\ path and unicode: \u2603"}`)},
 		},
 	}
@@ -178,6 +178,12 @@ func TestPostgreSQLFaultInjectionRuntimeEventReplayIsIdempotent(t *testing.T) {
 	}
 	if cursor, err := engine.persistRunnerRuntimeEvents(ctx, claimed, "replay-task", status); err != nil || cursor != 2 {
 		t.Fatalf("persist replay runtime response cursor=%d err=%v", cursor, err)
+	}
+	equivalent := status
+	equivalent.Events = append([]workflow.RunnerRuntimeEvent(nil), status.Events...)
+	equivalent.Events[0].Payload = []byte(`{"value":2.0,"model":"replay"}`)
+	if cursor, err := engine.persistRunnerRuntimeEvents(ctx, claimed, "replay-task", equivalent); err != nil || cursor != 2 {
+		t.Fatalf("persist semantically equivalent runtime response cursor=%d err=%v", cursor, err)
 	}
 	conflicting := status
 	conflicting.Events = append([]workflow.RunnerRuntimeEvent(nil), status.Events...)

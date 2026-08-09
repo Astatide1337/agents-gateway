@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"reflect"
 	"strings"
 	"time"
 
@@ -87,10 +86,16 @@ func (e *Engine) Enqueue(ctx context.Context, input EnqueueInput) error {
 	if err != nil {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
+	if err := store.ValidateJSONDocument(manifestJSON); err != nil {
+		return fmt.Errorf("validate manifest: %w", err)
+	}
 	state := newMachineState(manifest, input.InputRef)
 	stateJSON, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("encode local state: %w", err)
+	}
+	if err := store.ValidateJSONDocument(stateJSON); err != nil {
+		return fmt.Errorf("validate local state: %w", err)
 	}
 
 	return e.tenantTx(ctx, input.Run.Scope, func(tx *sql.Tx) error {
@@ -137,7 +142,7 @@ func (e *Engine) Enqueue(ctx context.Context, input EnqueueInput) error {
 		if err != nil {
 			return fmt.Errorf("read local enqueue: %w", err)
 		}
-		if !jsonEqual([]byte(storedManifest), manifestJSON) || storedInput != input.InputRef {
+		if !store.JSONDocumentsEqual([]byte(storedManifest), manifestJSON) || storedInput != input.InputRef {
 			return fmt.Errorf("%w: run ID refers to different local workflow", store.ErrConflict)
 		}
 		if _, err := decodeMachineState([]byte(storedState)); err != nil {
@@ -165,6 +170,9 @@ func (e *Engine) EnqueueCommand(ctx context.Context, scope store.Scope, runID st
 	if err != nil {
 		return err
 	}
+	if err := store.ValidateJSONDocument(payload); err != nil {
+		return fmt.Errorf("validate local command: %w", err)
+	}
 	return e.tenantTx(ctx, scope, func(tx *sql.Tx) error {
 		var runExists string
 		if err := tx.QueryRowContext(ctx, `
@@ -184,14 +192,14 @@ func (e *Engine) EnqueueCommand(ctx context.Context, scope store.Scope, runID st
 		if err != nil {
 			return fmt.Errorf("enqueue local command: %w", err)
 		}
-		var stored []byte
+		var stored string
 		if err := tx.QueryRowContext(ctx, `
 			SELECT payload::text FROM local_workflow_commands
 			WHERE organization_id=$1 AND project_id=$2 AND run_id=$3 AND idempotency_key_hash=$4`,
 			scope.OrganizationID, scope.ProjectID, runID, command.IdempotencyKey).Scan(&stored); err != nil {
 			return fmt.Errorf("read local command: %w", err)
 		}
-		if !jsonEqual(stored, payload) {
+		if !store.JSONDocumentsEqual([]byte(stored), payload) {
 			return fmt.Errorf("%w: command idempotency key was reused", store.ErrConflict)
 		}
 		return nil
@@ -304,6 +312,9 @@ func (e *Engine) claim(ctx context.Context, scope store.Scope, workerID string) 
 		}
 		if err != nil {
 			return fmt.Errorf("claim local workflow: %w", err)
+		}
+		if err := store.ValidateJSONDocument([]byte(manifestJSON)); err != nil {
+			return fmt.Errorf("validate claimed manifest: %w", err)
 		}
 		if err := json.Unmarshal([]byte(manifestJSON), &result.Manifest); err != nil {
 			return fmt.Errorf("decode claimed manifest: %w", err)
@@ -806,6 +817,13 @@ func (e *Engine) persistRunnerRuntimeEvents(ctx context.Context, claimed claimed
 			return claimed.RunnerEventCursor, errors.New("runner event sequence exceeds database range")
 		}
 	}
+	for index := range status.Events {
+		normalizedPayload, normalizeErr := store.NormalizeJSONDocument(status.Events[index].Payload)
+		if normalizeErr != nil {
+			return claimed.RunnerEventCursor, fmt.Errorf("normalize runner runtime event %d: %w", status.Events[index].Sequence, normalizeErr)
+		}
+		status.Events[index].Payload = normalizedPayload
+	}
 
 	err := e.tenantTx(ctx, claimed.Scope, func(tx *sql.Tx) error {
 		var databaseTaskID string
@@ -844,7 +862,7 @@ func (e *Engine) persistRunnerRuntimeEvents(ctx context.Context, claimed claimed
 				return fmt.Errorf("persist runner event %d: %w", event.Sequence, err)
 			}
 			var storedType string
-			var storedPayload []byte
+			var storedPayload string
 			if err := tx.QueryRowContext(ctx, `
 					SELECT event_type,payload::text FROM run_events
 					WHERE organization_id=$1 AND project_id=$2 AND run_id=$3
@@ -853,7 +871,7 @@ func (e *Engine) persistRunnerRuntimeEvents(ctx context.Context, claimed claimed
 				runnerEventSource, int64(event.Sequence)).Scan(&storedType, &storedPayload); err != nil {
 				return fmt.Errorf("verify runner event %d: %w", event.Sequence, err)
 			}
-			if storedType != event.Type || !jsonEqual(storedPayload, event.Payload) {
+			if storedType != event.Type || !store.JSONDocumentsEqual([]byte(storedPayload), event.Payload) {
 				return fmt.Errorf("%w: runner source sequence %d was reused with different data", store.ErrConflict, event.Sequence)
 			}
 		}
@@ -880,7 +898,7 @@ func validateRunnerRuntimeEvent(event workflow.RunnerRuntimeEvent) error {
 		return errors.New("event sequence and type are required")
 	}
 	data := strings.TrimSpace(string(event.Payload))
-	if data == "" || data[0] != '{' || !json.Valid([]byte(data)) {
+	if data == "" || data[0] != '{' || store.ValidateJSONDocument([]byte(data)) != nil {
 		return errors.New("event payload must be a JSON object")
 	}
 	if len(data) > 768<<10 {
@@ -907,11 +925,14 @@ func (e *Engine) nextCommand(ctx context.Context, claimed claimedWorkflow) (*loc
 		defer rows.Close()
 		for rows.Next() {
 			var command localCommand
-			var payload []byte
+			var payload string
 			if err := rows.Scan(&command.ID, &command.Kind, &command.Target, &payload); err != nil {
 				return err
 			}
-			if err := json.Unmarshal(payload, &command.Command); err != nil {
+			if err := store.ValidateJSONDocument([]byte(payload)); err != nil {
+				return fmt.Errorf("validate stored local command: %w", err)
+			}
+			if err := json.Unmarshal([]byte(payload), &command.Command); err != nil {
 				return fmt.Errorf("decode local command: %w", err)
 			}
 			commands = append(commands, command)
@@ -963,6 +984,9 @@ func newMachineState(manifest workflow.Manifest, inputRef string) MachineState {
 }
 
 func decodeMachineState(data []byte) (MachineState, error) {
+	if err := store.ValidateJSONDocument(data); err != nil {
+		return MachineState{}, err
+	}
 	var state MachineState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return MachineState{}, err
@@ -1210,11 +1234,6 @@ func randomToken() string {
 		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(bytes[:])
-}
-
-func jsonEqual(left, right []byte) bool {
-	var a, b any
-	return json.Unmarshal(left, &a) == nil && json.Unmarshal(right, &b) == nil && reflect.DeepEqual(a, b)
 }
 
 func nullTime(value time.Time) any {

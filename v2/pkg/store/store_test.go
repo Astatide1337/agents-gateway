@@ -35,6 +35,58 @@ func TestMemoryStoreTenantAndRevisionBoundaries(t *testing.T) {
 	}
 }
 
+func TestMemoryStorageJSONIdempotencyIsSemanticAndFailClosed(t *testing.T) {
+	ctx := context.Background()
+	scope := Scope{OrganizationID: "org-json", ProjectID: "project-json"}
+	storage := NewMemory()
+	firstDocument := []byte(`{"nested":{"value":2},"message":"first"}`)
+	if _, err := storage.ApplyResource(ctx, Resource{Scope: scope, Kind: "Agent", Name: "json", Digest: "sha256:json", Document: firstDocument, AppliedBy: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := storage.ApplyResource(ctx, Resource{Scope: scope, Kind: "Agent", Name: "json", Digest: "sha256:json", Document: []byte(`{"message":"first","nested":{"value":2.0}}`), AppliedBy: "test-replay"})
+	if err != nil || replay.Revision != 1 {
+		t.Fatalf("semantic resource replay=%#v err=%v", replay, err)
+	}
+	if _, err := storage.ApplyResource(ctx, Resource{Scope: scope, Kind: "Agent", Name: "json", Digest: "sha256:json", Document: []byte(`{"nested":{"value":9007199254740992},"message":"first"}`), AppliedBy: "test-conflict"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("arbitrary-precision resource mismatch returned %v, want conflict", err)
+	}
+	if _, err := storage.ApplyResource(ctx, Resource{Scope: scope, Kind: "Agent", Name: "invalid", Digest: "sha256:invalid", Document: []byte(`{"value":1,"value":2}`), AppliedBy: "test"}); err == nil {
+		t.Fatal("duplicate-key resource was accepted")
+	}
+
+	if _, err := storage.CreateRun(ctx, Run{Scope: scope, ID: "run-json", Kind: "AgentRun", DefinitionDigest: "sha256:run", RequestedBy: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	version := ArtifactVersion{
+		Scope: scope, ArtifactID: "artifact-json", VersionID: "artifact-json-v1", RunID: "run-json", VersionNumber: 1,
+		Document: []byte(`{"value":2,"nested":{"message":"first"}}`), ContentObjectKey: "content/json", SourceObjectKey: "source/json",
+	}
+	if _, err := storage.PutArtifactVersion(ctx, version); err != nil {
+		t.Fatal(err)
+	}
+	version.Document = []byte(`{"nested":{"message":"first"},"value":2.0}`)
+	if _, err := storage.PutArtifactVersion(ctx, version); err != nil {
+		t.Fatalf("semantic artifact replay: %v", err)
+	}
+	version.Document = []byte(`{"nested":{"message":"first"},"value":9007199254740993}`)
+	if _, err := storage.PutArtifactVersion(ctx, version); !errors.Is(err, ErrConflict) {
+		t.Fatalf("arbitrary-precision artifact mismatch returned %v, want conflict", err)
+	}
+	claimed, err := storage.Claim(ctx, scope.OrganizationID, scope.ProjectID, "run-json", "effect-json", "sha256:request")
+	if err != nil || !claimed {
+		t.Fatalf("claim JSON effect claimed=%v err=%v", claimed, err)
+	}
+	if err := storage.Complete(ctx, scope.OrganizationID, scope.ProjectID, "run-json", "effect-json", "unknown", []byte(`{"value":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Complete(ctx, scope.OrganizationID, scope.ProjectID, "run-json", "effect-json", "unknown", []byte(`{"value":2.0}`)); err != nil {
+		t.Fatalf("semantic effect replay: %v", err)
+	}
+	if err := storage.Complete(ctx, scope.OrganizationID, scope.ProjectID, "run-json", "effect-json", "unknown", []byte(`{"value":9007199254740993}`)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("arbitrary-precision effect mismatch returned %v, want conflict", err)
+	}
+}
+
 func TestMemoryArtifactCatalogListIsBounded(t *testing.T) {
 	storage := NewMemory()
 	scope := Scope{OrganizationID: "org-a", ProjectID: "project-a"}
@@ -133,6 +185,56 @@ func TestRunIdempotencyAndEventScope(t *testing.T) {
 	}
 	if _, err := storage.ListEvents(ctx, Scope{OrganizationID: "other", ProjectID: "project"}, run.ID, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-tenant events=%v", err)
+	}
+}
+
+func TestMemoryEventsAndAuditUseStrictCanonicalJSON(t *testing.T) {
+	ctx := context.Background()
+	storage := NewMemory()
+	scope := Scope{OrganizationID: "org-events", ProjectID: "project-events"}
+	run, err := storage.CreateRun(ctx, Run{Scope: scope, ID: "run-events", Kind: "AgentRun", DefinitionDigest: "sha256:events", RequestedBy: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultEvent, err := storage.AppendEvent(ctx, Event{Scope: scope, RunID: run.ID, Type: "default"})
+	if err != nil || string(defaultEvent.Payload) != `{}` {
+		t.Fatalf("default event=%#v err=%v", defaultEvent, err)
+	}
+	canonicalEvent, err := storage.AppendEvent(ctx, Event{Scope: scope, RunID: run.ID, Type: "complex", Payload: []byte(`{"z":2.0,"a":{"b":1e3,"a":true}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(canonicalEvent.Payload), `{"a":{"a":true,"b":1e3},"z":2}`; got != want {
+		t.Fatalf("canonical event payload=%s want=%s", got, want)
+	}
+	if _, err := storage.AppendEvent(ctx, Event{Scope: scope, RunID: run.ID, Type: "duplicate", Payload: []byte(`{"x":1,"x":2}`)}); err == nil {
+		t.Fatal("duplicate-key event payload was accepted")
+	}
+	events, err := storage.ListEvents(ctx, scope, run.ID, 0)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+
+	if err := storage.AppendAudit(ctx, AuditEvent{Scope: scope, PrincipalID: "test", Action: "default", ResourceType: "run", ResourceID: run.ID, Decision: "allowed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.AppendAudit(ctx, AuditEvent{Scope: scope, PrincipalID: "test", Action: "complex", ResourceType: "run", ResourceID: run.ID, Decision: "allowed", Metadata: []byte(`{"z":2.0,"a":{"b":1e3,"a":true}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.AppendAudit(ctx, AuditEvent{Scope: scope, PrincipalID: "test", Action: "duplicate", ResourceType: "run", ResourceID: run.ID, Decision: "allowed", Metadata: []byte(`{"x":1,"x":2}`)}); err == nil {
+		t.Fatal("duplicate-key audit metadata was accepted")
+	}
+	audits, _, err := storage.ListAudit(ctx, scope, Page{Limit: 10})
+	if err != nil || len(audits) != 2 {
+		t.Fatalf("audits=%#v err=%v", audits, err)
+	}
+	for _, audit := range audits {
+		if audit.Action == "default" && string(audit.Metadata) != `{}` {
+			t.Fatalf("default audit metadata=%s", audit.Metadata)
+		}
+		if audit.Action == "complex" && string(audit.Metadata) != `{"a":{"a":true,"b":1e3},"z":2}` {
+			t.Fatalf("canonical audit metadata=%s", audit.Metadata)
+		}
 	}
 }
 

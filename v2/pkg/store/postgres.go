@@ -49,6 +49,14 @@ func (p *PostgreSQL) ApplyResource(ctx context.Context, resource Resource) (resu
 	if resource.Kind == "" || resource.Name == "" || resource.Digest == "" || len(resource.Document) == 0 || resource.AppliedBy == "" {
 		return Resource{}, errors.New("kind, name, digest, document, and applied-by are required")
 	}
+	if err := ValidateJSONDocument(resource.Document); err != nil {
+		return Resource{}, fmt.Errorf("resource document is not valid JSON: %w", err)
+	}
+	normalizedDocument, err := NormalizeJSONDocument(resource.Document)
+	if err != nil {
+		return Resource{}, fmt.Errorf("normalize resource document: %w", err)
+	}
+	resource.Document = normalizedDocument
 	err = p.tenantTx(ctx, resource.Scope, func(tx *sql.Tx) error {
 		var definitionID string
 		var currentRevision int64
@@ -69,19 +77,22 @@ func (p *PostgreSQL) ApplyResource(ctx context.Context, resource Resource) (resu
 		}
 		if currentRevision > 0 {
 			var digest string
-			var document []byte
+			var document string
 			var appliedBy string
 			var createdAt sql.NullTime
 			if err := tx.QueryRowContext(ctx, `
-				SELECT digest,document::text::bytea,applied_by,created_at
+				SELECT digest,document::text,applied_by,created_at
 				FROM definition_revisions WHERE definition_id=$1 AND revision=$2`,
 				definitionID, currentRevision,
 			).Scan(&digest, &document, &appliedBy, &createdAt); err != nil {
 				return fmt.Errorf("read current revision: %w", err)
 			}
 			if digest == resource.Digest {
+				if !JSONDocumentsEqual([]byte(document), resource.Document) {
+					return ErrConflict
+				}
 				result = resource
-				result.Revision, result.Document, result.AppliedBy = currentRevision, document, appliedBy
+				result.Revision, result.Document, result.AppliedBy = currentRevision, []byte(document), appliedBy
 				if createdAt.Valid {
 					result.CreatedAt = createdAt.Time
 				}
@@ -89,10 +100,6 @@ func (p *PostgreSQL) ApplyResource(ctx context.Context, resource Resource) (resu
 			}
 		}
 
-		var normalized any
-		if err := json.Unmarshal(resource.Document, &normalized); err != nil {
-			return fmt.Errorf("resource document is not JSON: %w", err)
-		}
 		revision := currentRevision + 1
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO definition_revisions
@@ -116,19 +123,21 @@ func (p *PostgreSQL) ApplyResource(ctx context.Context, resource Resource) (resu
 func (p *PostgreSQL) GetResource(ctx context.Context, scope Scope, kind, name string) (result Resource, err error) {
 	err = p.tenantTx(ctx, scope, func(tx *sql.Tx) error {
 		result.Scope, result.Kind, result.Name = scope, kind, name
+		var document string
 		err := tx.QueryRowContext(ctx, `
-			SELECT r.revision,r.digest,r.document::text::bytea,r.applied_by,r.created_at
+			SELECT r.revision,r.digest,r.document::text,r.applied_by,r.created_at
 			FROM definitions d JOIN definition_revisions r
 			  ON r.definition_id=d.id AND r.revision=d.current_revision
 			WHERE d.organization_id=$1 AND d.project_id=$2 AND d.kind=$3 AND d.name=$4`,
 			scope.OrganizationID, scope.ProjectID, kind, name,
-		).Scan(&result.Revision, &result.Digest, &result.Document, &result.AppliedBy, &result.CreatedAt)
+		).Scan(&result.Revision, &result.Digest, &document, &result.AppliedBy, &result.CreatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("get resource: %w", err)
 		}
+		result.Document = []byte(document)
 		return nil
 	})
 	return result, err
@@ -141,7 +150,7 @@ func (p *PostgreSQL) ListResources(ctx context.Context, scope Scope, kind string
 	}
 	err = p.tenantTx(ctx, scope, func(tx *sql.Tx) error {
 		rows, queryErr := tx.QueryContext(ctx, `
-			SELECT d.kind,d.name,r.revision,r.digest,r.document::text::bytea,r.applied_by,r.created_at
+			SELECT d.kind,d.name,r.revision,r.digest,r.document::text,r.applied_by,r.created_at
 			FROM definitions d
 			JOIN definition_revisions r ON r.definition_id=d.id AND r.revision=d.current_revision
 			WHERE d.organization_id=$1 AND d.project_id=$2 AND ($3='' OR d.kind = ANY(string_to_array($3, ',')))
@@ -153,9 +162,11 @@ func (p *PostgreSQL) ListResources(ctx context.Context, scope Scope, kind string
 		defer rows.Close()
 		for rows.Next() {
 			resource := Resource{Scope: scope}
-			if scanErr := rows.Scan(&resource.Kind, &resource.Name, &resource.Revision, &resource.Digest, &resource.Document, &resource.AppliedBy, &resource.CreatedAt); scanErr != nil {
+			var document string
+			if scanErr := rows.Scan(&resource.Kind, &resource.Name, &resource.Revision, &resource.Digest, &document, &resource.AppliedBy, &resource.CreatedAt); scanErr != nil {
 				return scanErr
 			}
+			resource.Document = []byte(document)
 			result = append(result, resource)
 		}
 		if scanErr := rows.Err(); scanErr != nil {
@@ -323,6 +334,11 @@ func (p *PostgreSQL) AppendEvent(ctx context.Context, event Event) (result Event
 	if len(event.Payload) == 0 {
 		event.Payload = []byte(`{}`)
 	}
+	normalizedPayload, err := NormalizeJSONDocument(event.Payload)
+	if err != nil {
+		return Event{}, fmt.Errorf("event payload is not valid JSON: %w", err)
+	}
+	event.Payload = normalizedPayload
 	err = p.tenantTx(ctx, event.Scope, func(tx *sql.Tx) error {
 		result = event
 		if err := tx.QueryRowContext(ctx, `
@@ -356,9 +372,11 @@ func (p *PostgreSQL) ListEvents(ctx context.Context, scope Scope, runID string, 
 		defer rows.Close()
 		for rows.Next() {
 			event := Event{Scope: scope, RunID: runID}
-			if err := rows.Scan(&event.Sequence, &event.Type, &event.Payload, &event.CreatedAt); err != nil {
+			var payload string
+			if err := rows.Scan(&event.Sequence, &event.Type, &payload, &event.CreatedAt); err != nil {
 				return err
 			}
+			event.Payload = []byte(payload)
 			result = append(result, event)
 		}
 		return rows.Err()
@@ -373,6 +391,11 @@ func (p *PostgreSQL) AppendAudit(ctx context.Context, event AuditEvent) error {
 	if len(event.Metadata) == 0 {
 		event.Metadata = []byte(`{}`)
 	}
+	normalizedMetadata, err := NormalizeJSONDocument(event.Metadata)
+	if err != nil {
+		return fmt.Errorf("audit metadata is not valid JSON: %w", err)
+	}
+	event.Metadata = normalizedMetadata
 	return p.tenantTx(ctx, event.Scope, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO audit_events (organization_id,project_id,principal_id,action,resource_type,resource_id,decision,metadata) VALUES ($1,NULLIF($2,'')::uuid,$3,$4,$5,$6,$7,$8::jsonb)`, event.OrganizationID, event.ProjectID, event.PrincipalID, event.Action, event.ResourceType, event.ResourceID, event.Decision, string(event.Metadata))
 		if err != nil {
@@ -389,7 +412,7 @@ func (p *PostgreSQL) ListAudit(ctx context.Context, scope Scope, page Page) (res
 	}
 	err = p.tenantTx(ctx, scope, func(tx *sql.Tx) error {
 		rows, queryErr := tx.QueryContext(ctx, `
-			SELECT principal_id,action,resource_type,resource_id,decision,metadata::text::bytea,created_at
+			SELECT principal_id,action,resource_type,resource_id,decision,metadata::text,created_at
 			FROM audit_events
 			WHERE organization_id=$1 AND (project_id IS NULL OR project_id=$2)
 			ORDER BY sequence DESC
@@ -400,9 +423,11 @@ func (p *PostgreSQL) ListAudit(ctx context.Context, scope Scope, page Page) (res
 		defer rows.Close()
 		for rows.Next() {
 			event := AuditEvent{Scope: scope}
-			if scanErr := rows.Scan(&event.PrincipalID, &event.Action, &event.ResourceType, &event.ResourceID, &event.Decision, &event.Metadata, &event.CreatedAt); scanErr != nil {
+			var metadata string
+			if scanErr := rows.Scan(&event.PrincipalID, &event.Action, &event.ResourceType, &event.ResourceID, &event.Decision, &metadata, &event.CreatedAt); scanErr != nil {
 				return scanErr
 			}
+			event.Metadata = []byte(metadata)
 			result = append(result, event)
 		}
 		if scanErr := rows.Err(); scanErr != nil {
@@ -586,8 +611,8 @@ func (p *PostgreSQL) Complete(ctx context.Context, organizationID, projectID, ru
 	if len(result) == 0 {
 		result = []byte(`null`)
 	}
-	if !json.Valid(result) {
-		return errors.New("effect result must be valid JSON")
+	if err := ValidateJSONDocument(result); err != nil {
+		return fmt.Errorf("effect result must be valid JSON: %w", err)
 	}
 	scope := Scope{OrganizationID: organizationID, ProjectID: projectID}
 	return p.tenantTx(ctx, scope, func(tx *sql.Tx) error {
@@ -605,15 +630,15 @@ func (p *PostgreSQL) Complete(ctx context.Context, organizationID, projectID, ru
 		if rows == 1 {
 			return nil
 		}
-		var existing string
-		err = tx.QueryRowContext(ctx, "SELECT state FROM effects WHERE organization_id=$1 AND project_id=$2 AND run_id=$3 AND effect_key=$4", organizationID, projectID, runID, key).Scan(&existing)
+		var existingState, existingResult string
+		err = tx.QueryRowContext(ctx, "SELECT state,coalesce(result::text,'null') FROM effects WHERE organization_id=$1 AND project_id=$2 AND run_id=$3 AND effect_key=$4", organizationID, projectID, runID, key).Scan(&existingState, &existingResult)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		if existing == state {
+		if existingState == state && JSONDocumentsEqual([]byte(existingResult), result) {
 			return nil
 		}
 		return ErrConflict
@@ -624,6 +649,11 @@ func (p *PostgreSQL) PutArtifactVersion(ctx context.Context, version ArtifactVer
 	if err := validateArtifactVersion(version); err != nil {
 		return ArtifactVersion{}, err
 	}
+	normalizedDocument, err := NormalizeJSONDocument(version.Document)
+	if err != nil {
+		return ArtifactVersion{}, fmt.Errorf("normalize artifact document: %w", err)
+	}
+	version.Document = normalizedDocument
 	err = p.tenantTx(ctx, version.Scope, func(tx *sql.Tx) error {
 		result = version
 		err := tx.QueryRowContext(ctx, `
@@ -645,7 +675,7 @@ func (p *PostgreSQL) PutArtifactVersion(ctx context.Context, version ArtifactVer
 		var existing ArtifactVersion
 		existing.Scope = version.Scope
 		scanErr := scanArtifactVersion(tx.QueryRowContext(ctx, `
-			SELECT artifact_id,version_id,run_id,version_number,document::text::bytea,
+			SELECT artifact_id,version_id,run_id,version_number,document::text,
 			       content_object_key,source_object_key,created_at
 			FROM artifact_versions
 			WHERE organization_id=$1 AND project_id=$2 AND version_id=$3`,
@@ -662,7 +692,7 @@ func (p *PostgreSQL) PutArtifactVersion(ctx context.Context, version ArtifactVer
 		if scanErr != nil {
 			return fmt.Errorf("read artifact version conflict: %w", scanErr)
 		}
-		if existing.ArtifactID != version.ArtifactID || existing.RunID != version.RunID || existing.VersionNumber != version.VersionNumber || existing.ContentObjectKey != version.ContentObjectKey || existing.SourceObjectKey != version.SourceObjectKey || string(existing.Document) != string(version.Document) {
+		if existing.ArtifactID != version.ArtifactID || existing.RunID != version.RunID || existing.VersionNumber != version.VersionNumber || existing.ContentObjectKey != version.ContentObjectKey || existing.SourceObjectKey != version.SourceObjectKey || !JSONDocumentsEqual(existing.Document, version.Document) {
 			return ErrConflict
 		}
 		result = existing
@@ -674,7 +704,7 @@ func (p *PostgreSQL) PutArtifactVersion(ctx context.Context, version ArtifactVer
 func (p *PostgreSQL) ListArtifactVersions(ctx context.Context, scope Scope, artifactID string) (result []ArtifactVersion, err error) {
 	err = p.tenantTx(ctx, scope, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT artifact_id,version_id,run_id,version_number,document::text::bytea,
+			SELECT artifact_id,version_id,run_id,version_number,document::text,
 			       content_object_key,source_object_key,created_at
 			FROM artifact_versions
 			WHERE organization_id=$1 AND project_id=$2 AND ($3='' OR artifact_id=$3)
@@ -703,7 +733,7 @@ func (p *PostgreSQL) GetArtifactVersion(ctx context.Context, scope Scope, artifa
 	err = p.tenantTx(ctx, scope, func(tx *sql.Tx) error {
 		result.Scope = scope
 		query := `
-			SELECT artifact_id,version_id,run_id,version_number,document::text::bytea,
+			SELECT artifact_id,version_id,run_id,version_number,document::text,
 			       content_object_key,source_object_key,created_at
 			FROM artifact_versions
 			WHERE organization_id=$1 AND project_id=$2 AND artifact_id=$3`
@@ -729,6 +759,11 @@ type artifactVersionScanner interface {
 }
 
 func scanArtifactVersion(scanner artifactVersionScanner, version *ArtifactVersion) error {
-	return scanner.Scan(&version.ArtifactID, &version.VersionID, &version.RunID, &version.VersionNumber,
-		&version.Document, &version.ContentObjectKey, &version.SourceObjectKey, &version.CreatedAt)
+	var document string
+	if err := scanner.Scan(&version.ArtifactID, &version.VersionID, &version.RunID, &version.VersionNumber,
+		&document, &version.ContentObjectKey, &version.SourceObjectKey, &version.CreatedAt); err != nil {
+		return err
+	}
+	version.Document = []byte(document)
+	return nil
 }
