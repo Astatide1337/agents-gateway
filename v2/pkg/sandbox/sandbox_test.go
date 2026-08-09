@@ -160,7 +160,9 @@ func TestRuntimeProcessErrorClassifiesPodmanSetupWithoutCopyingStderr(t *testing
 		{125, "Error: statfs /private/path: permission denied secret-value", ErrPodmanPermission},
 		{125, "Error: OCI mount setup failed", ErrPodmanMount},
 		{125, "Error: container setup failed", ErrPodmanRuntime},
-		{1, "ordinary adapter failure", nil},
+		{1, "ordinary adapter failure", ErrRuntimePreamble},
+		{2, "adapter configuration failure", ErrRuntimeEntrypoint},
+		{137, "killed", ErrRuntimeKilled},
 	}
 	for _, test := range tests {
 		got := runtimeProcessError(test.code, test.stderr)

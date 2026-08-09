@@ -469,6 +469,12 @@ func executionFailureCode(err error) string {
 		return "podman_runtime_mount_failed"
 	case errors.Is(err, sandbox.ErrPodmanRuntime):
 		return "podman_runtime_setup_failed"
+	case errors.Is(err, sandbox.ErrRuntimePreamble):
+		return "runtime_adapter_preamble_failed"
+	case errors.Is(err, sandbox.ErrRuntimeEntrypoint):
+		return "runtime_adapter_entrypoint_failed"
+	case errors.Is(err, sandbox.ErrRuntimeKilled):
+		return "runtime_adapter_killed"
 	case errors.Is(err, ErrRuntimeContractSend):
 		return "runtime_contract_send_failed"
 	case errors.Is(err, ErrRuntimeStreamIncomplete):

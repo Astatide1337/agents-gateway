@@ -25,17 +25,20 @@ const (
 )
 
 var (
-	ErrPodmanWorkspace  = errors.New("podman sandbox workspace preparation failed")
-	ErrPodmanPlan       = errors.New("podman hardened plan failed")
-	ErrPodmanMounts     = errors.New("podman mount preparation failed")
-	ErrPodmanArguments  = errors.New("podman argument construction failed")
-	ErrPodmanStart      = errors.New("podman sandbox start failed")
-	ErrRuntimeBroker    = errors.New("runtime broker bridge startup failed")
-	ErrRuntimeConfig    = errors.New("runtime adapter configuration failed")
-	ErrRuntimeContract  = errors.New("runtime rejected the start contract")
-	ErrPodmanRuntime    = errors.New("podman runtime setup failed")
-	ErrPodmanMount      = errors.New("podman runtime mount setup failed")
-	ErrPodmanPermission = errors.New("podman runtime permission check failed")
+	ErrPodmanWorkspace   = errors.New("podman sandbox workspace preparation failed")
+	ErrPodmanPlan        = errors.New("podman hardened plan failed")
+	ErrPodmanMounts      = errors.New("podman mount preparation failed")
+	ErrPodmanArguments   = errors.New("podman argument construction failed")
+	ErrPodmanStart       = errors.New("podman sandbox start failed")
+	ErrRuntimeBroker     = errors.New("runtime broker bridge startup failed")
+	ErrRuntimeConfig     = errors.New("runtime adapter configuration failed")
+	ErrRuntimeContract   = errors.New("runtime rejected the start contract")
+	ErrPodmanRuntime     = errors.New("podman runtime setup failed")
+	ErrPodmanMount       = errors.New("podman runtime mount setup failed")
+	ErrPodmanPermission  = errors.New("podman runtime permission check failed")
+	ErrRuntimePreamble   = errors.New("runtime adapter failed before protocol startup")
+	ErrRuntimeEntrypoint = errors.New("runtime adapter entrypoint failed")
+	ErrRuntimeKilled     = errors.New("runtime adapter was killed")
 )
 
 type PodmanConfig struct {
@@ -354,7 +357,16 @@ func runtimeProcessError(exitCode int, stderr string) error {
 		return startup
 	}
 	if exitCode != 125 {
-		return nil
+		switch exitCode {
+		case 1:
+			return ErrRuntimePreamble
+		case 2, 126, 127:
+			return ErrRuntimeEntrypoint
+		case 137, 143:
+			return ErrRuntimeKilled
+		default:
+			return nil
+		}
 	}
 	lower := strings.ToLower(stderr)
 	if strings.Contains(lower, "permission denied") || strings.Contains(lower, "operation not permitted") {
