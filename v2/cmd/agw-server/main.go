@@ -210,7 +210,7 @@ func configureRunEngine(storage store.Store, database *sql.DB, artifacts *artifa
 		engine := localengine.New(database, brokeredActivities)
 		engine.Compiler = orchestration.Compiler{
 			Store:       storage,
-			SandboxUser: envOr("AGW_RUNNER_UID", "65532"),
+			SandboxUser: configuredSandboxUser(),
 		}
 		localScope := store.Scope{
 			OrganizationID: strings.TrimSpace(os.Getenv("AGW_LOCAL_ORGANIZATION_ID")),
@@ -575,6 +575,12 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func configuredSandboxUser() string {
+	uid := envOr("AGW_RUNNER_UID", "65532")
+	gid := envOr("AGW_RUNNER_GID", uid)
+	return uid + ":" + gid
 }
 
 func envInt64(name string, fallback int64) int64 {

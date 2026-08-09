@@ -100,7 +100,8 @@ doctor` and the systemd unit with `systemd-analyze` before changing anything.
 Each differing existing managed file is copied byte-for-byte to a private
 same-directory `.backup.*` file before replacement. Re-running the command is
 idempotent when the generated files already match. The standalone env file is
-never regenerated or rewritten during an update, so existing owner and
+stored at `/etc/agw/standalone.env` by default and is never regenerated or
+rewritten during an update, so existing owner and
 database secrets remain unchanged. Review and remove backups only after the
 new runner has been checked; they may contain the previous unit/config state.
 `AGW_UPDATE_BINARY=1` similarly rebuilds from the checksummed module and

@@ -11,7 +11,7 @@ v2_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 runner_user=${AGW_RUNNER_USER:-agw-runner}
 runner_binary=${AGW_RUNNER_BINARY:-/usr/local/bin/agw-runner}
 podman_binary=$(command -v podman 2>/dev/null || true)
-env_file=${AGW_STANDALONE_ENV_FILE:-$v2_dir/deploy/.env.standalone}
+env_file=${AGW_STANDALONE_ENV_FILE:-/etc/agw/standalone.env}
 config_file=${AGW_RUNNER_CONFIG:-/etc/agw/runner.yaml}
 service_file=${AGW_RUNNER_SERVICE_FILE:-/etc/systemd/system/agw-runner.service}
 workspace_root=${AGW_RUNNER_WORKSPACE_ROOT:-/var/lib/agw-runner/workspaces}
@@ -39,6 +39,7 @@ Environment overrides:
   AGW_RUNNER_BINARY       absolute agw-runner destination
   AGW_RUNNER_USER         dedicated non-root user (default: agw-runner)
   AGW_STANDALONE_ENV_FILE generated Compose env file
+                          (default: /etc/agw/standalone.env)
   AGW_UPDATE_EXISTING=1
                           explicitly update differing installer-managed runner
                           config and systemd files; each existing file is

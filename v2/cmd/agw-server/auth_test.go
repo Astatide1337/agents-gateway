@@ -49,3 +49,16 @@ func TestRunEngineModeFailsClosed(t *testing.T) {
 		t.Fatal("local orchestration without PostgreSQL was accepted")
 	}
 }
+
+func TestConfiguredSandboxUserPreservesRunnerUIDAndGID(t *testing.T) {
+	t.Setenv("AGW_RUNNER_UID", "999")
+	t.Setenv("AGW_RUNNER_GID", "987")
+	if got := configuredSandboxUser(); got != "999:987" {
+		t.Fatalf("configured sandbox user = %q", got)
+	}
+
+	t.Setenv("AGW_RUNNER_GID", "")
+	if got := configuredSandboxUser(); got != "999:999" {
+		t.Fatalf("configured sandbox user without explicit gid = %q", got)
+	}
+}
