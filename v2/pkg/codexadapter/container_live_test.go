@@ -134,8 +134,30 @@ func TestCodexRuntimeContainerEndToEnd(t *testing.T) {
 	}
 	args = append(args,
 		"--workdir", "/workspace", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
-		"--mount", "type=bind,src="+sessionDirectory+",dst=/run/agw,readonly",
-		"--mount", "type=bind,src="+workspace+",dst=/workspace", image)
+		"--mount", "type=bind,src="+sessionDirectory+",dst=/run/agw,readonly")
+	if os.Getenv("AGW_CODEX_WORKSPACE_TMPFS") == "1" {
+		args = append(args, "--tmpfs", "/workspace:rw,nosuid,nodev,size=1g,mode=01777")
+	} else {
+		args = append(args, "--mount", "type=bind,src="+workspace+",dst=/workspace")
+	}
+	if os.Getenv("AGW_CODEX_EXTRA_MOUNTS") == "1" {
+		skills := filepath.Join(sessionDirectory, "skills")
+		if err := os.Mkdir(skills, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skills, "SKILL.md"), []byte("# Test skill\n"), 0444); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(skills, 0555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(skills, 0700) })
+		artifactMount := t.TempDir()
+		args = append(args,
+			"--mount", "type=bind,src="+skills+",dst=/skills,readonly",
+			"--mount", "type=bind,src="+artifactMount+",dst=/artifacts,readonly")
+	}
+	args = append(args, image)
 	command := exec.CommandContext(ctx, engine, args...)
 	command.Stdin = strings.NewReader(runStartLine(t, "run-container", "Reply with exactly container-e2e-ok and do not use tools."))
 	var stdout, stderr bytes.Buffer

@@ -24,6 +24,7 @@ func TestExecutionFailureCode(t *testing.T) {
 		{sandbox.ErrPodmanMount, "podman_runtime_mount_failed"},
 		{sandbox.ErrPodmanRuntime, "podman_runtime_setup_failed"},
 		{sandbox.ErrRuntimePreamble, "runtime_adapter_preamble_failed"},
+		{sandbox.ErrRuntimeEnvironment, "runtime_adapter_environment_failed"},
 		{sandbox.ErrRuntimeEntrypoint, "runtime_adapter_entrypoint_failed"},
 		{sandbox.ErrRuntimeKilled, "runtime_adapter_killed"},
 		{ErrRuntimeContractSend, "runtime_contract_send_failed"},

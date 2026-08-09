@@ -471,6 +471,8 @@ func executionFailureCode(err error) string {
 		return "podman_runtime_setup_failed"
 	case errors.Is(err, sandbox.ErrRuntimePreamble):
 		return "runtime_adapter_preamble_failed"
+	case errors.Is(err, sandbox.ErrRuntimeEnvironment):
+		return "runtime_adapter_environment_failed"
 	case errors.Is(err, sandbox.ErrRuntimeEntrypoint):
 		return "runtime_adapter_entrypoint_failed"
 	case errors.Is(err, sandbox.ErrRuntimeKilled):

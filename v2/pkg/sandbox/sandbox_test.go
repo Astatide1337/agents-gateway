@@ -161,7 +161,7 @@ func TestRuntimeProcessErrorClassifiesPodmanSetupWithoutCopyingStderr(t *testing
 		{125, "Error: OCI mount setup failed", ErrPodmanMount},
 		{125, "Error: container setup failed", ErrPodmanRuntime},
 		{1, "ordinary adapter failure", ErrRuntimePreamble},
-		{2, "adapter configuration failure", ErrRuntimeEntrypoint},
+		{2, "adapter configuration failure", ErrRuntimeEnvironment},
 		{137, "killed", ErrRuntimeKilled},
 	}
 	for _, test := range tests {
