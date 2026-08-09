@@ -39,6 +39,7 @@ var (
 	ErrRuntimePreamble    = errors.New("runtime adapter failed before protocol startup")
 	ErrRuntimeEnvironment = errors.New("runtime adapter environment validation failed")
 	ErrRuntimeEntrypoint  = errors.New("runtime adapter entrypoint failed")
+	ErrRuntimeMissing     = errors.New("runtime adapter entrypoint is unavailable")
 	ErrRuntimeKilled      = errors.New("runtime adapter was killed")
 )
 
@@ -361,14 +362,19 @@ func runtimeProcessError(exitCode int, stderr string) error {
 	if strings.Contains(lower, "permission denied") || strings.Contains(lower, "operation not permitted") {
 		return ErrPodmanPermission
 	}
+	if strings.Contains(lower, "no such file or directory") || strings.Contains(lower, "executable file not found") || strings.Contains(lower, "command not found") {
+		return ErrRuntimeMissing
+	}
 	if exitCode != 125 {
 		switch exitCode {
 		case 1:
 			return ErrRuntimePreamble
 		case 2:
 			return ErrRuntimeEnvironment
-		case 126, 127:
+		case 126:
 			return ErrRuntimeEntrypoint
+		case 127:
+			return ErrRuntimeMissing
 		case 137, 143:
 			return ErrRuntimeKilled
 		default:

@@ -164,6 +164,7 @@ func TestRuntimeProcessErrorClassifiesPodmanSetupWithoutCopyingStderr(t *testing
 		{2, "adapter configuration failure", ErrRuntimeEnvironment},
 		{137, "killed", ErrRuntimeKilled},
 		{126, "exec container process: Permission denied", ErrPodmanPermission},
+		{127, "exec container process: no such file or directory", ErrRuntimeMissing},
 	}
 	for _, test := range tests {
 		got := runtimeProcessError(test.code, test.stderr)

@@ -475,6 +475,8 @@ func executionFailureCode(err error) string {
 		return "runtime_adapter_environment_failed"
 	case errors.Is(err, sandbox.ErrRuntimeEntrypoint):
 		return "runtime_adapter_entrypoint_failed"
+	case errors.Is(err, sandbox.ErrRuntimeMissing):
+		return "runtime_adapter_entrypoint_missing"
 	case errors.Is(err, sandbox.ErrRuntimeKilled):
 		return "runtime_adapter_killed"
 	case errors.Is(err, ErrRuntimeContractSend):

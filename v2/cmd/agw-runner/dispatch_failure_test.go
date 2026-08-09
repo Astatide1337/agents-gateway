@@ -26,6 +26,7 @@ func TestExecutionFailureCode(t *testing.T) {
 		{sandbox.ErrRuntimePreamble, "runtime_adapter_preamble_failed"},
 		{sandbox.ErrRuntimeEnvironment, "runtime_adapter_environment_failed"},
 		{sandbox.ErrRuntimeEntrypoint, "runtime_adapter_entrypoint_failed"},
+		{sandbox.ErrRuntimeMissing, "runtime_adapter_entrypoint_missing"},
 		{sandbox.ErrRuntimeKilled, "runtime_adapter_killed"},
 		{ErrRuntimeContractSend, "runtime_contract_send_failed"},
 		{ErrRuntimeStreamIncomplete, "runtime_stream_incomplete"},
