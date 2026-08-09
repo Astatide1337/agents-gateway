@@ -128,7 +128,8 @@ func TestCodexRuntimeContainerEndToEnd(t *testing.T) {
 	defer cancel()
 	uidGID := strconv.Itoa(os.Geteuid()) + ":" + strconv.Itoa(os.Getegid())
 	args := []string{"run", "--rm", "--interactive", "--network=none", "--read-only",
-		"--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", uidGID}
+		"--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", uidGID,
+		"--pids-limit", "128", "--memory", "2147483648", "--cpus", "1.000"}
 	if engine == "podman" {
 		args = append(args, "--userns=keep-id")
 	}

@@ -445,7 +445,9 @@ printf '%s\n' \
   'RestrictSUIDSGID=yes' \
   'LockPersonality=yes' \
   'MemoryDenyWriteExecute=yes' \
-  'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' \
+  '# AF_NETLINK is required by the OCI runtime to initialize isolated namespaces.' \
+  '# Sandbox egress remains disabled by the per-run --network=none contract.' \
+  'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' \
   'RuntimeDirectory=agw-runner agw-broker' \
   'RuntimeDirectoryMode=0700' \
   'StateDirectory=agw-runner' \
