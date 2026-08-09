@@ -60,7 +60,7 @@ func TestBuildArgsUsesBoundedCodexInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--sandbox", "workspace-write", "--config", `model_provider="agw_loopback"`}
+	want := []string{"--ask-for-approval", "never", "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--sandbox", "workspace-write", "--config", `model_provider="agw_loopback"`}
 	for _, value := range want {
 		if !contains(args, value) {
 			t.Fatalf("args missing %q: %#v", value, args)
@@ -72,6 +72,9 @@ func TestBuildArgsUsesBoundedCodexInvocation(t *testing.T) {
 	}
 	if contains(args, "--dangerously-bypass-approvals-and-sandbox") || contains(args, "--full-auto") {
 		t.Fatalf("unsafe or deprecated flag present: %#v", args)
+	}
+	if len(args) < 3 || args[0] != "--ask-for-approval" || args[1] != "never" || args[2] != "exec" {
+		t.Fatalf("Codex approval policy must be a global option before exec: %#v", args)
 	}
 }
 
@@ -330,7 +333,7 @@ while :; do sleep 1; done
 func fakeCodex(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-codex")
-	script := "#!/bin/sh\nset -eu\n[ \"${1:-}\" = exec ]\n[ \"${2:-}\" = --json ]\n[ \"${3:-}\" = --ephemeral ]\ncat >/dev/null\n" + body + "\n"
+	script := "#!/bin/sh\nset -eu\n[ \"${1:-}\" = --ask-for-approval ]\n[ \"${2:-}\" = never ]\n[ \"${3:-}\" = exec ]\n[ \"${4:-}\" = --json ]\n[ \"${5:-}\" = --ephemeral ]\ncat >/dev/null\n" + body + "\n"
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

@@ -231,6 +231,7 @@ func BuildArgs(cfg Config) ([]string, error) {
 	provider := fmt.Sprintf(`{name=%s,base_url=%s,wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}`,
 		strconv.Quote("Agents Gateway loopback"), strconv.Quote(cfg.ResponsesURL))
 	args := []string{
+		"--ask-for-approval", "never",
 		"exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules",
 		"--sandbox", "workspace-write", "--skip-git-repo-check", "--color", "never",
 		"--cd", cfg.Workspace,

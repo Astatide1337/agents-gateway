@@ -30,6 +30,8 @@ const (
 	maxGeneratedBytes          int64 = 8 << 20
 )
 
+var errArtifactFileBounds = errors.New("artifact source is not a bounded regular file")
+
 type authoredArtifactDescriptor struct {
 	Schema       string                       `json:"schema"`
 	Title        string                       `json:"title"`
@@ -67,7 +69,7 @@ func collectAuthoredArtifacts(workspace string) ([]authoredArtifact, error) {
 		descriptorPath := generatedArtifactDirectory + "/" + entry.Name()
 		raw, err := readWorkspaceFile(workspace, descriptorPath, maxDescriptorBytes)
 		if err != nil {
-			return nil, errors.New("read authored artifact descriptor")
+			return nil, fmt.Errorf("read authored artifact descriptor: %w", classifyWorkspaceReadError(err))
 		}
 		var descriptor authoredArtifactDescriptor
 		decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -83,8 +85,11 @@ func collectAuthoredArtifacts(workspace string) ([]authoredArtifact, error) {
 			return nil, errors.New("invalid authored artifact media type")
 		}
 		body, err := readWorkspaceFile(workspace, descriptor.Source, maxGeneratedBytes)
-		if err != nil || !utf8.Valid(body) {
-			return nil, errors.New("read authored artifact source")
+		if err != nil {
+			return nil, fmt.Errorf("read authored artifact source: %w", classifyWorkspaceReadError(err))
+		}
+		if !utf8.Valid(body) {
+			return nil, errors.New("read authored artifact source: content is not valid UTF-8")
 		}
 		total += int64(len(body))
 		if total > maxGeneratedBytes {
@@ -157,7 +162,9 @@ func readWorkspaceFile(workspace, relative string, limit int64) ([]byte, error) 
 	}
 	defer unix.Close(rootFD)
 	fd, err := unix.Openat2(rootFD, filepath.FromSlash(relative), &unix.OpenHow{
-		Flags:   uint64(unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW),
+		// O_NONBLOCK prevents a model-authored FIFO from blocking the adapter
+		// before the regular-file check below can reject it.
+		Flags:   uint64(unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK),
 		Resolve: uint64(unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS),
 	})
 	if err != nil {
@@ -171,7 +178,7 @@ func readWorkspaceFile(workspace, relative string, limit int64) ([]byte, error) 
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > limit {
-		return nil, errors.New("artifact source is not a bounded regular file")
+		return nil, errArtifactFileBounds
 	}
 	content, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
@@ -181,6 +188,28 @@ func readWorkspaceFile(workspace, relative string, limit int64) ([]byte, error) 
 		return nil, errors.New("artifact source grew beyond its size limit")
 	}
 	return content, nil
+}
+
+// classifyWorkspaceReadError returns only a bounded, path-free reason. The
+// underlying syscall error may contain model-controlled path material and must
+// not cross the runtime protocol boundary.
+func classifyWorkspaceReadError(err error) error {
+	switch {
+	case errors.Is(err, errArtifactFileBounds):
+		return errArtifactFileBounds
+	case errors.Is(err, os.ErrNotExist):
+		return errors.New("artifact file does not exist")
+	case errors.Is(err, os.ErrPermission):
+		return errors.New("artifact file permission denied")
+	case errors.Is(err, unix.ELOOP):
+		return errors.New("artifact symlink rejected")
+	case errors.Is(err, unix.EXDEV):
+		return errors.New("artifact path escaped the workspace")
+	case errors.Is(err, unix.ENOSYS), errors.Is(err, unix.EINVAL):
+		return errors.New("secure artifact path resolution is unavailable")
+	default:
+		return errors.New("artifact file is unavailable")
+	}
 }
 
 func safeRelativeSource(value string) bool {

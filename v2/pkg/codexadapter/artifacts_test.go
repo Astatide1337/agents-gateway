@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/Astatide1337/agents-gateway/v2/pkg/artifactcatalog"
 )
 
@@ -31,6 +33,31 @@ func TestCollectAuthoredArtifactsUsesStrictWorkspaceRelativeDescriptors(t *testi
 	if len(artifacts) != 1 || string(artifacts[0].body) != body || artifacts[0].mediaType != "text/html" || artifacts[0].descriptor.ContentKind != artifactcatalog.ContentKindInteractive || len(artifacts[0].descriptor.Capabilities) != 1 {
 		t.Fatalf("unexpected authored artifacts: %#v", artifacts)
 	}
+}
+
+func TestCollectAuthoredArtifactsRejectsFIFOWithoutBlocking(t *testing.T) {
+	workspace := t.TempDir()
+	directory := filepath.Join(workspace, ".agw", "artifacts")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(filepath.Join(workspace, "report.txt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := `{"schema":"agents-gateway.artifact.v1","title":"FIFO","content_kind":"document","media_type":"text/plain","source":"report.txt"}`
+	if err := os.WriteFile(filepath.Join(directory, "report.json"), []byte(descriptor), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectAuthoredArtifacts(workspace); !strings.Contains(errString(err), "bounded regular file") {
+		t.Fatalf("FIFO was not rejected safely: %v", err)
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func TestCollectAuthoredArtifactsRejectsTraversalSymlinksAndUnknownFields(t *testing.T) {
