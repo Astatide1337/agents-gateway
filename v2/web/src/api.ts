@@ -194,7 +194,10 @@ export class ApiClient {
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? '/api/v1alpha1';
     this.tokenProvider = options.tokenProvider;
-    this.fetcher = options.fetcher ?? fetch;
+    // Browser fetch is a Web-IDL method and some engines require its Window
+    // receiver. Keeping a detached reference causes `Illegal invocation` in
+    // production even though ordinary test doubles accept the call.
+    this.fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
   }
 
   private async headers(accept: string, init?: HeadersInit, includeAuth = true): Promise<Headers> {

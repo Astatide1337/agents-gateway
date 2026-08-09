@@ -6,6 +6,21 @@ function response(body: unknown, init: ResponseInit = {}) {
 }
 
 describe('ApiClient', () => {
+  it('binds the browser fetch receiver when no custom fetcher is supplied', async () => {
+    const browserFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) throw new TypeError('Illegal invocation');
+      return Promise.resolve(response({ data: { status: 'ok' } }));
+    });
+    vi.stubGlobal('fetch', browserFetch);
+
+    try {
+      await expect(new ApiClient().health()).resolves.toEqual({ data: { status: 'ok' } });
+      expect(browserFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('resolves bearer authentication at request time and unwraps data envelopes', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({ data: { kind: 'Agent', name: 'issue-fixer', revision: 24 } }));
     const tokenProvider = vi.fn().mockResolvedValue('runtime-token');
