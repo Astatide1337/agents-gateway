@@ -157,8 +157,8 @@ func TestFactoryRejectsImmutableDigestMismatch(t *testing.T) {
 	request.Input.Contract.ModelRoute.Digest = strings.Repeat("sha256:", 1) + strings.Repeat("0", 64)
 
 	_, err := fixture.factory.NewHandler(context.Background(), request)
-	if err == nil || !strings.Contains(err.Error(), "resource revision digest changed") {
-		t.Fatalf("expected immutable revision mismatch, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), string(brokerdispatch.HandlerSetupModelRoute)) {
+		t.Fatalf("expected secret-safe model-route failure, got %v", err)
 	}
 }
 

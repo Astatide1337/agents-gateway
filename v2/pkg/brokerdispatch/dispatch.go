@@ -3,6 +3,7 @@ package brokerdispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,7 @@ func (a *Activities) ScheduleRunnerTask(ctx context.Context, input workflow.Sche
 	}
 	identityKey, fingerprint, err := sessionFingerprint(input)
 	if err != nil {
-		return workflow.ScheduleRunnerTaskResult{}, ErrInvalidConfig
+		return workflow.ScheduleRunnerTaskResult{}, fmt.Errorf("%w: fingerprint broker session: %v", ErrInvalidConfig, err)
 	}
 	wantsBroker := input.Contract.ModelRoute != nil || input.Contract.ToolSet != nil
 
@@ -196,10 +197,14 @@ func (a *Activities) createSessionLocked(ctx context.Context, input workflow.Sch
 	}
 	handlerSpec, err := a.cfg.Factory.NewHandler(ctx, HandlerRequest{Input: input, Binding: binding})
 	if err != nil {
-		return nil, ErrInvalidConfig
+		var setupError *handlerSetupError
+		if errors.As(err, &setupError) {
+			return nil, fmt.Errorf("%w: resolve broker handler at %s", ErrInvalidConfig, setupError.stage)
+		}
+		return nil, fmt.Errorf("%w: resolve broker handler", ErrInvalidConfig)
 	}
 	if handlerSpec.Handler == nil || handlerSpec.AllowedModel == "" || handlerSpec.PolicyDigest == "" {
-		return nil, ErrInvalidConfig
+		return nil, fmt.Errorf("%w: broker handler omitted a required field", ErrInvalidConfig)
 	}
 	ttl := handlerSpec.TTL
 	if ttl <= 0 {
@@ -212,7 +217,7 @@ func (a *Activities) createSessionLocked(ctx context.Context, input workflow.Sch
 		TTL:           ttl,
 	})
 	if err != nil {
-		return nil, ErrInvalidConfig
+		return nil, fmt.Errorf("%w: create broker session: %v", ErrInvalidConfig, err)
 	}
 	directory, directoryInfo, err := createSessionDirectory(a.root, string(created.Session.ID))
 	if err != nil {
@@ -225,7 +230,7 @@ func (a *Activities) createSessionLocked(ctx context.Context, input workflow.Sch
 			_ = a.cfg.Manager.Revoke(context.Background(), created.Session.ID)
 			_ = a.cfg.Manager.Delete(context.Background(), created.Session.ID)
 			_ = removeOwnedDirectory(directory, directoryInfo)
-			return nil, ErrInvalidConfig
+			return nil, fmt.Errorf("%w: prepare brokered sandbox inputs", ErrInvalidConfig)
 		}
 	}
 	server, err := runbroker.NewUnixServer(runbroker.UnixServerConfig{
@@ -244,7 +249,7 @@ func (a *Activities) createSessionLocked(ctx context.Context, input workflow.Sch
 		_ = a.cfg.Manager.Revoke(context.Background(), created.Session.ID)
 		_ = a.cfg.Manager.Delete(context.Background(), created.Session.ID)
 		_ = removeOwnedDirectory(directory, directoryInfo)
-		return nil, ErrInvalidConfig
+		return nil, fmt.Errorf("%w: create broker Unix server: %v", ErrInvalidConfig, err)
 	}
 	if err := writeClientConfig(directory, clientConfig{
 		SessionID:       string(created.Session.ID),
@@ -261,7 +266,7 @@ func (a *Activities) createSessionLocked(ctx context.Context, input workflow.Sch
 		_ = a.cfg.Manager.Revoke(context.Background(), created.Session.ID)
 		_ = a.cfg.Manager.Delete(context.Background(), created.Session.ID)
 		_ = removeOwnedDirectory(directory, directoryInfo)
-		return nil, ErrInvalidConfig
+		return nil, fmt.Errorf("%w: write broker client configuration: %v", ErrInvalidConfig, err)
 	}
 	go func() { _ = server.Serve(context.Background()) }()
 	return &sessionRecord{

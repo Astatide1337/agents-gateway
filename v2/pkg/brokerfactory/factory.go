@@ -52,18 +52,18 @@ type Factory struct {
 
 func (f *Factory) NewHandler(ctx context.Context, request brokerdispatch.HandlerRequest) (brokerdispatch.HandlerSpec, error) {
 	if f == nil || f.Store == nil || f.Artifacts == nil || f.Effects == nil {
-		return brokerdispatch.HandlerSpec{}, errors.New("broker factory is not configured")
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupFactory)
 	}
 	if request.Input.Contract.ModelRoute == nil {
-		return brokerdispatch.HandlerSpec{}, errors.New("brokered run requires a model route")
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupModelRoute)
 	}
 	scope := store.Scope{OrganizationID: request.Binding.OrgID, ProjectID: request.Binding.ProjectID}
 	modelRoute, err := resolveResource[*spec.ModelRoute](ctx, f.Store, scope, *request.Input.Contract.ModelRoute)
 	if err != nil {
-		return brokerdispatch.HandlerSpec{}, fmt.Errorf("resolve model route: %w", err)
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupModelRoute)
 	}
 	if len(modelRoute.Spec.Providers) != 1 {
-		return brokerdispatch.HandlerSpec{}, errors.New("standalone Responses routing currently requires exactly one provider")
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupModelRoute)
 	}
 	provider := modelRoute.Spec.Providers[0]
 	upstream := ""
@@ -79,10 +79,10 @@ func (f *Factory) NewHandler(ctx context.Context, request brokerdispatch.Handler
 			upstream = defaultOpenRouterResponsesURL
 		}
 	default:
-		return brokerdispatch.HandlerSpec{}, errors.New("standalone Responses routing supports only explicit OpenAI or OpenRouter providers")
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupModelRoute)
 	}
 	if provider.Credential == "" {
-		return brokerdispatch.HandlerSpec{}, errors.New("Responses API provider requires a credentialRef")
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupModelRoute)
 	}
 	credentials := &credentialResolver{store: f.Store, scope: scope, lookup: f.LookupEnv}
 	responses, err := modelbroker.NewResponsesProxy(modelbroker.ResponsesProxyConfig{
@@ -93,7 +93,7 @@ func (f *Factory) NewHandler(ctx context.Context, request brokerdispatch.Handler
 		},
 	})
 	if err != nil {
-		return brokerdispatch.HandlerSpec{}, errors.New("configure model Responses boundary")
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupModelBoundary)
 	}
 
 	mux := http.NewServeMux()
@@ -101,11 +101,11 @@ func (f *Factory) NewHandler(ctx context.Context, request brokerdispatch.Handler
 	if request.Input.Contract.ToolSet != nil {
 		toolSet, resolveErr := resolveResource[*spec.ToolSet](ctx, f.Store, scope, *request.Input.Contract.ToolSet)
 		if resolveErr != nil {
-			return brokerdispatch.HandlerSpec{}, fmt.Errorf("resolve tool set: %w", resolveErr)
+			return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupToolSet)
 		}
 		mcp, mcpErr := f.mcpHandler(scope, request.Binding, toolSet, credentials)
 		if mcpErr != nil {
-			return brokerdispatch.HandlerSpec{}, mcpErr
+			return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupMCPBoundary)
 		}
 		mux.Handle(brokerbridge.MCPPath, mcp)
 	}
@@ -129,7 +129,7 @@ func (f *Factory) NewHandler(ctx context.Context, request brokerdispatch.Handler
 		},
 	})
 	if err != nil {
-		return brokerdispatch.HandlerSpec{}, errors.New("configure immutable run output")
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupArtifact)
 	}
 	mux.Handle(brokerbridge.ArtifactPath, upload)
 	publish, err := artifact.NewPublishHandler(f.Artifacts, artifact.PublishHandlerConfig{
@@ -146,12 +146,12 @@ func (f *Factory) NewHandler(ctx context.Context, request brokerdispatch.Handler
 		},
 	})
 	if err != nil {
-		return brokerdispatch.HandlerSpec{}, errors.New("configure authored artifact upload")
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupArtifact)
 	}
 	mux.Handle(brokerbridge.ArtifactCreatePath, publish)
 	prepare, err := f.skillsPreparer(ctx, scope, request.Input.Contract)
 	if err != nil {
-		return brokerdispatch.HandlerSpec{}, err
+		return brokerdispatch.HandlerSpec{}, brokerdispatch.NewHandlerSetupError(brokerdispatch.HandlerSetupSkills)
 	}
 	return brokerdispatch.HandlerSpec{
 		Handler:        mux,

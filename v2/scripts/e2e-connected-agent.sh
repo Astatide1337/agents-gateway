@@ -20,7 +20,12 @@ need_command() {
 require_value() {
   local name=$1 value=${!1-}
   [[ -n $value ]] || fail "$name is required"
-  [[ $value != *$'\n'* && $value != *$'\r'* && $value != *$'\0'* ]] || fail "$name contains a forbidden control character"
+  # Bash variables cannot contain NUL bytes: Bash strips them during command
+  # substitution and cannot represent them in parameter expansion.  A
+  # `$'\0'` pattern therefore becomes an empty pattern and matches every
+  # value.  Reject the representable line-breaking controls here; downstream
+  # validators constrain each value's remaining character set.
+  [[ $value != *$'\n'* && $value != *$'\r'* ]] || fail "$name contains a forbidden control character"
 }
 
 valid_name() {
@@ -127,16 +132,29 @@ cleanup_done=0
 cleanup_branch() {
   [[ $cleanup_done == 1 || -z ${branch_name:-} ]] && return 0
   cleanup_done=1
-  local encoded status
+  local encoded status endpoint
   encoded=$(jq -rn --arg value "$branch_name" '$value|@uri')
+  endpoint="https://api.github.com/repos/$github_repository/git/refs/heads/$encoded"
+  status=$(curl -sS --connect-timeout 10 --max-time 45 --output /dev/null --write-out '%{http_code}' \
+    --request GET \
+    --header "@$github_auth_header" \
+    --header 'Accept: application/vnd.github+json' \
+    --header 'User-Agent: agents-gateway-connected-e2e' \
+    "$endpoint" \
+    2>/dev/null || true)
+  [[ $status == 200 || $status == 404 ]] || {
+    printf 'e2e-connected-agent: disposable branch lookup returned HTTP %s\n' "$status" >&2
+    return 1
+  }
+  [[ $status == 200 ]] || return 0
   status=$(curl -sS --connect-timeout 10 --max-time 45 --output /dev/null --write-out '%{http_code}' \
     --request DELETE \
     --header "@$github_auth_header" \
     --header 'Accept: application/vnd.github+json' \
     --header 'User-Agent: agents-gateway-connected-e2e' \
-    "https://api.github.com/repos/$github_repository/git/refs/heads/$encoded" \
+    "$endpoint" \
     2>/dev/null || true)
-  [[ $status == 204 || $status == 404 ]] || {
+  [[ $status == 204 ]] || {
     printf 'e2e-connected-agent: disposable branch cleanup returned HTTP %s\n' "$status" >&2
     return 1
   }
@@ -375,7 +393,7 @@ done
 [[ -n $terminal_status ]] || fail "run $run_id did not reach a terminal state within ${timeout_seconds}s"
 api_request GET "$scope/runs/$run_id/events?after=0"
 cp -- "$response_file" "$events_file"
-api_request GET "$scope/audit?limit=5000"
+api_request GET "$scope/audit?limit=500"
 cp -- "$response_file" "$audit_file"
 api_request GET "$scope/artifacts"
 cp -- "$response_file" "$artifacts_file"
