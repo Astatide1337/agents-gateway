@@ -130,6 +130,27 @@ func TestMountPreparationDoesNotMutateBrokerCapabilities(t *testing.T) {
 	}
 }
 
+func TestRuntimeStartupErrorIsLowCardinality(t *testing.T) {
+	tests := []struct {
+		stderr string
+		want   error
+	}{
+		{"agw-codex-adapter: start run broker bridge: open broker client config: permission denied", ErrRuntimeBroker},
+		{"agw-codex-adapter: invalid adapter configuration: model invalid", ErrRuntimeConfig},
+		{"agw-codex-adapter: decode run.start: private-prompt-must-not-escape", ErrRuntimeContract},
+		{"arbitrary untrusted stderr", nil},
+	}
+	for _, test := range tests {
+		got := runtimeStartupError(test.stderr)
+		if !errors.Is(got, test.want) || (test.want == nil && got != nil) {
+			t.Fatalf("runtimeStartupError(%q) = %v, want %v", test.stderr, got, test.want)
+		}
+		if got != nil && strings.Contains(got.Error(), "private-prompt") {
+			t.Fatal("startup classifier copied untrusted stderr")
+		}
+	}
+}
+
 func TestPodmanBackendResolvesBrokerSessionBeforeStart(t *testing.T) {
 	root, sessionID, runAsUser := validBrokerSession(t)
 	factory := &fakePodmanFactory{process: &fakePodmanProcess{}}

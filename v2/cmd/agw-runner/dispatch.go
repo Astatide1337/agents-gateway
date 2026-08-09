@@ -457,6 +457,12 @@ func executionFailureCode(err error) string {
 		return "podman_arguments_failed"
 	case errors.Is(err, sandbox.ErrPodmanStart):
 		return "podman_start_failed"
+	case errors.Is(err, sandbox.ErrRuntimeBroker):
+		return "runtime_broker_start_failed"
+	case errors.Is(err, sandbox.ErrRuntimeConfig):
+		return "runtime_adapter_config_failed"
+	case errors.Is(err, sandbox.ErrRuntimeContract):
+		return "runtime_contract_rejected"
 	case errors.Is(err, ErrRuntimeContractSend):
 		return "runtime_contract_send_failed"
 	case errors.Is(err, ErrRuntimeStreamIncomplete):

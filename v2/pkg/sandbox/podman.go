@@ -30,6 +30,9 @@ var (
 	ErrPodmanMounts    = errors.New("podman mount preparation failed")
 	ErrPodmanArguments = errors.New("podman argument construction failed")
 	ErrPodmanStart     = errors.New("podman sandbox start failed")
+	ErrRuntimeBroker   = errors.New("runtime broker bridge startup failed")
+	ErrRuntimeConfig   = errors.New("runtime adapter configuration failed")
+	ErrRuntimeContract = errors.New("runtime rejected the start contract")
 )
 
 type PodmanConfig struct {
@@ -308,7 +311,8 @@ func (h *podmanHandle) Wait(ctx context.Context) (runner.ExitStatus, error) {
 		_ = h.stdoutWriter.Close()
 		finished := time.Now().UTC()
 		if result.err != nil {
-			return runner.ExitStatus{Code: result.code, StartedAt: h.startedAt, FinishedAt: finished}, commandError("wait for podman sandbox", result.err, h.stderr.String())
+			stderr := h.stderr.String()
+			return runner.ExitStatus{Code: result.code, StartedAt: h.startedAt, FinishedAt: finished}, errors.Join(runtimeStartupError(stderr), commandError("wait for podman sandbox", result.err, stderr))
 		}
 		if result.code != 0 && h.stderr.String() != "" {
 			return runner.ExitStatus{Code: result.code, StartedAt: h.startedAt, FinishedAt: finished}, commandError(
@@ -319,6 +323,26 @@ func (h *podmanHandle) Wait(ctx context.Context) (runner.ExitStatus, error) {
 		return runner.ExitStatus{Code: result.code, StartedAt: h.startedAt, FinishedAt: finished}, nil
 	case <-ctx.Done():
 		return runner.ExitStatus{}, ctx.Err()
+	}
+}
+
+func runtimeStartupError(stderr string) error {
+	// The adapter owns these fixed prefixes. Map them to low-cardinality
+	// sentinels while keeping the untrusted stderr bytes out of durable state.
+	switch {
+	case strings.Contains(stderr, "agw-codex-adapter: start run broker bridge:"):
+		return ErrRuntimeBroker
+	case strings.Contains(stderr, "agw-codex-adapter: invalid adapter configuration:"):
+		return ErrRuntimeConfig
+	case strings.Contains(stderr, "agw-codex-adapter: read run.start:"),
+		strings.Contains(stderr, "agw-codex-adapter: first frame must be request run.start"),
+		strings.Contains(stderr, "agw-codex-adapter: run.start must have sequence 1"),
+		strings.Contains(stderr, "agw-codex-adapter: decode run.start:"),
+		strings.Contains(stderr, "agw-codex-adapter: run.start run_id does not match"),
+		strings.Contains(stderr, "agw-codex-adapter: agent id:"):
+		return ErrRuntimeContract
+	default:
+		return nil
 	}
 }
 
