@@ -57,6 +57,29 @@ services:
         WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'agw_db') \gexec
         SQL
 
+  agw-runtime-init:
+    image: ${AGW_RUNTIME_INIT_IMAGE:-alpine:latest}
+    restart: "no"
+    user: "0:0"
+    environment:
+      AGW_SERVER_UID: ${AGW_SERVER_UID:?set AGW_SERVER_UID from the host installer}
+      AGW_RUNNER_GID: ${AGW_RUNNER_GID:?set AGW_RUNNER_GID from the host installer}
+    command:
+      - sh
+      - -ec
+      - |
+        for path in /var/lib/agw/artifacts /run/agw-broker /run/agw-runner; do
+          test -d "$${path}" || { echo "runtime directory missing: $${path}" >&2; exit 1; }
+          test ! -L "$${path}" || { echo "runtime directory is a symlink: $${path}" >&2; exit 1; }
+          chown "$${AGW_SERVER_UID}:$${AGW_RUNNER_GID}" "$${path}"
+          chmod 0700 "$${path}"
+        done
+    volumes:
+      # Coolify appends -pr-<id> to these host paths for PR previews.
+      - /run/agw-runner:/run/agw-runner:rw
+      - /run/agw-broker:/run/agw-broker:rw
+      - /var/lib/agents-gateway/artifacts:/var/lib/agw/artifacts:rw
+
   agw-migrate:
     build:
       # Coolify invokes Compose with the checked-out repository as its explicit
@@ -160,6 +183,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      agw-runtime-init:
+        condition: service_completed_successfully
       agw-migrate:
         condition: service_completed_successfully
     healthcheck:
