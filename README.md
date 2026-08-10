@@ -4,6 +4,58 @@ Agents Gateway is a self-hosted agent catalog and task runtime gateway. It expos
 
 **Not** a general-purpose API gateway, not a Kubernetes operator, not an LLM proxy.
 
+For the focused owner-operated workflow, start with the [personal agent
+guide](docs/v2/personal-agent.md) and [personal example](v2/examples/personal-agent.yaml).
+It documents the current file-based `AgentBundle` and the `agw run -f`
+compiler/launch flow.
+
+> **Two implementation tracks:** the Python service documented below is the
+> existing v1 gateway. The standalone Go v2 control plane and sandbox runner
+> are an active, security-first rewrite—not yet a general production release.
+> Start with the [v2 architecture](docs/v2/architecture-plan.md),
+> [implementation status](docs/v2/implementation-status.md), and
+> [acceptance matrix](docs/v2/acceptance-matrix.md) before evaluating or
+> deploying v2. The owner-operated alpha is deployed through Coolify's
+> `Gateways` project. Gates 1 through 6 are passed, including connected gate 2;
+> this is not a final CI/release-complete or public multi-tenant claim.
+
+## Current v2 alpha deployment
+
+The current v2 deployment is owner-operated and is not a public,
+multi-tenant code-execution service. It runs as a Coolify Git-backed Compose
+Application in the `Gateways` project and serves the console/API at
+`https://agents.astatide.com`.
+
+For connected MCP evidence, the gateway uses the direct origin
+`https://dockermcp.astatide.com/mcp`. This is intentionally distinct from the
+OAuth-facing MCP portal; OAuth discovery/login routing must not be treated as
+the direct-origin test endpoint.
+
+Model selection is explicit and deployment-specific. In the connected gate-2
+run, `nvidia/nemotron-3-ultra-550b-a55b:free` was attempted first and returned
+a provider-side HTTP 502. `cohere/north-mini-code:free` was then selected by an
+explicit retry; it was not an automatic production fallback. The alpha does
+not advertise silent model fallback.
+
+Connected gate-2 evidence is persisted under run
+`run-3686c06ef7ead0b0a1a5b13b7220df7ff0bb282ad1ebda5fe0b4506acbf6d937` and
+release commit `9a61a65da0920b6beab760906a2dad716af4bbc9`. It was deployed as
+Coolify deployment `p6ribksrqvjmh4x1adtyuje8` in `Gateways`; `/healthz` and
+`/readyz` both returned 200. Evidence includes the pinned skill digest/file
+marker, authenticated/read `get_me`, authenticated/succeeded `create_branch`
+with exactly `owner`, `repo`, `branch`, and `from_branch` arguments, persisted
+ToolSet constraints, authored text/Markdown artifact catalog/content, durable
+audit, disposable-branch removal, and no surviving rootless container.
+
+V2 uses one shared strict JSON boundary for API, capability, persistence, and
+replay data. Optional ToolSet `arguments` are either omitted (unconstrained) or
+an exact JSON object; explicit `null`, unknown fields, duplicate keys, and
+out-of-budget numbers are rejected. Exact matching ignores object key order,
+preserves array order, and compares numbers mathematically. Denied and
+approval-required broker calls are audited before any upstream call; missing
+audit persistence fails closed. The `approve`/`propose/commit` broker workflow
+remains fail-closed and is not advertised as complete.
+
 ## Quick Start
 
 ```bash
@@ -410,7 +462,15 @@ docker compose down
 | [docs/verification.md](docs/verification.md) | Verification runner, env-required gate, failure feedback loop |
 | [docs/composer-integration.md](docs/composer-integration.md) | Composer contract — endpoint map, task spec, reply protocol, terminal outcomes |
 | [docs/runbooks.md](docs/runbooks.md) | Operational runbooks (boot, E2E, diagnose stall/blocked/missing artifacts) |
+| [docs/v2/architecture-plan.md](docs/v2/architecture-plan.md) | V2 standalone agent control-plane architecture and implementation plan |
+| [docs/v2/implementation-status.md](docs/v2/implementation-status.md) | V2 implementation ledger, configuration, release checks, and deferred scope |
+| [docs/v2/acceptance-matrix.md](docs/v2/acceptance-matrix.md) | V2 architecture promises mapped to current test evidence and release blockers |
+| [docs/v2/threat-model.md](docs/v2/threat-model.md) | V2 trust boundaries, threats, controls, and security acceptance tests |
+| [docs/v2/runtime-protocol.md](docs/v2/runtime-protocol.md) | V2 structured runner/agent event and command protocol |
+| [docs/v2/api.md](docs/v2/api.md) | V2 tenant-scoped resources, runs, events, and idempotent run-control API |
+| [docs/v2/artifacts.md](docs/v2/artifacts.md) | V2 Claude-style artifact authoring, catalog, secure preview, source, and download contract |
 
 ## License
 
-See individual agent directories. Gateway code: repository license.
+Agents Gateway is available under the [MIT License](LICENSE). See individual
+agent directories for any additional component-specific notices.

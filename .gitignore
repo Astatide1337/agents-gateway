@@ -1,9 +1,17 @@
 .env
 **/.env
+.env.*
+**/.env.*
+!**/.env*.example
 __pycache__/
 *.pyc
 *.db
 /data/
+
+# JavaScript build and dependency artifacts
+**/node_modules/
+**/dist/
+**/coverage/
 
 # Claude Code worktrees
 .claude/worktrees/

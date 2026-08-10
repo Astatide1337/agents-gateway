@@ -1,0 +1,374 @@
+name: agents-gateway-v2
+
+services:
+  agw-server:
+    build:
+      context: ../..
+      dockerfile: v2/Dockerfile.server
+    image: ${AGW_SERVER_IMAGE:-agents-gateway-v2-server:local}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    expose: ["8094"]
+    environment:
+      AGW_ENVIRONMENT: ${AGW_ENVIRONMENT:-production}
+      AGW_SERVER_ADDR: ":8094"
+      AGW_DATABASE_URL: ${AGW_DATABASE_URL:-postgres://${AGW_DB_USER:-agw}:${AGW_DB_PASSWORD:-}@postgres:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable}
+      AGW_AUTH_MODE: ${AGW_AUTH_MODE:-local}
+      AGW_AUTH_DATABASE_URL: ${AGW_AUTH_DATABASE_URL:-postgres://${AGW_AUTH_DB_USER:-agw_auth}:${AGW_AUTH_DB_PASSWORD:-}@postgres:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable}
+      AGW_OIDC_ISSUER: ${AGW_OIDC_ISSUER:-}
+      AGW_OIDC_AUDIENCE: ${AGW_OIDC_AUDIENCE:-}
+      AGW_OIDC_TOKEN_HEADER: ${AGW_OIDC_TOKEN_HEADER:-}
+      AGW_BOOTSTRAP_ADMIN_SUBJECT: ${AGW_BOOTSTRAP_ADMIN_SUBJECT:-}
+      AGW_SERVICE_TOKEN_PRIVATE_KEY: ${AGW_SERVICE_TOKEN_PRIVATE_KEY:-}
+      AGW_SERVICE_TOKEN_ISSUER: ${AGW_SERVICE_TOKEN_ISSUER:-agents-gateway}
+      AGW_SERVICE_TOKEN_AUDIENCE: ${AGW_SERVICE_TOKEN_AUDIENCE:-agents-gateway-api}
+      AGW_SERVICE_TOKEN_KEY_ID: ${AGW_SERVICE_TOKEN_KEY_ID:-primary}
+      AGW_AUTH_TOKEN: ${AGW_AUTH_TOKEN:-}
+      AGW_AUTH_PRINCIPAL_ID: ${AGW_AUTH_PRINCIPAL_ID:-}
+      AGW_AUTH_ROLE: ${AGW_AUTH_ROLE:-}
+      AGW_AUTH_ORGANIZATION_ID: ${AGW_AUTH_ORGANIZATION_ID:-}
+      AGW_AUTH_PROJECT_ID: ${AGW_AUTH_PROJECT_ID:-}
+      AGW_ALLOW_INSECURE_DEV_AUTH: ${AGW_ALLOW_INSECURE_DEV_AUTH:-false}
+      AGW_TEMPORAL_ADDRESS: ${AGW_TEMPORAL_ADDRESS:-temporal:7233}
+      AGW_TEMPORAL_NAMESPACE: ${AGW_TEMPORAL_NAMESPACE:-default}
+      AGW_TEMPORAL_TASK_QUEUE: ${AGW_TEMPORAL_TASK_QUEUE:-agents-gateway-v2}
+      AGW_TEMPORAL_INSECURE: ${AGW_TEMPORAL_INSECURE:-false}
+      AGW_TEMPORAL_TLS_SERVER_NAME: ${AGW_TEMPORAL_TLS_SERVER_NAME:-}
+      AGW_TEMPORAL_TLS_CA_FILE: ${AGW_TEMPORAL_TLS_CA_FILE:-}
+      AGW_TEMPORAL_TLS_CERT_FILE: ${AGW_TEMPORAL_TLS_CERT_FILE:-}
+      AGW_TEMPORAL_TLS_KEY_FILE: ${AGW_TEMPORAL_TLS_KEY_FILE:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      AGW_OTEL_INSECURE_HOSTS: ${AGW_OTEL_INSECURE_HOSTS:-otel-collector}
+    depends_on:
+      agw-migrate:
+        condition: service_completed_successfully
+        required: false
+      temporal:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agw-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [control, egress]
+
+  agw-worker:
+    build:
+      context: ../..
+      dockerfile: v2/Dockerfile.worker
+    image: ${AGW_WORKER_IMAGE:-agents-gateway-v2-worker:local}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      AGW_ENVIRONMENT: ${AGW_ENVIRONMENT:-production}
+      AGW_DATABASE_URL: ${AGW_DATABASE_URL:-postgres://${AGW_DB_USER:-agw}:${AGW_DB_PASSWORD:-}@postgres:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable}
+      AGW_TEMPORAL_ADDRESS: ${AGW_TEMPORAL_ADDRESS:-temporal:7233}
+      AGW_TEMPORAL_NAMESPACE: ${AGW_TEMPORAL_NAMESPACE:-default}
+      AGW_TEMPORAL_TASK_QUEUE: ${AGW_TEMPORAL_TASK_QUEUE:-agents-gateway-v2}
+      AGW_TEMPORAL_INSECURE: ${AGW_TEMPORAL_INSECURE:-false}
+      AGW_TEMPORAL_TLS_SERVER_NAME: ${AGW_TEMPORAL_TLS_SERVER_NAME:-}
+      AGW_TEMPORAL_TLS_CA_FILE: ${AGW_TEMPORAL_TLS_CA_FILE:-}
+      AGW_TEMPORAL_TLS_CERT_FILE: ${AGW_TEMPORAL_TLS_CERT_FILE:-}
+      AGW_TEMPORAL_TLS_KEY_FILE: ${AGW_TEMPORAL_TLS_KEY_FILE:-}
+      AGW_RUNNER_ENDPOINT: ${AGW_RUNNER_ENDPOINT:-}
+      AGW_RUNNER_TRANSPORT: ${AGW_RUNNER_TRANSPORT:-mtls}
+      AGW_RUNNER_SOCKET: ${AGW_RUNNER_SOCKET:-/run/agw-runner/runner.sock}
+      AGW_RUNNER_TLS_SERVER_NAME: ${AGW_RUNNER_TLS_SERVER_NAME:-}
+      AGW_RUNNER_TLS_CA_FILE: ${AGW_RUNNER_TLS_CA_FILE:-}
+      AGW_RUNNER_TLS_CERT_FILE: ${AGW_RUNNER_TLS_CERT_FILE:-}
+      AGW_RUNNER_TLS_KEY_FILE: ${AGW_RUNNER_TLS_KEY_FILE:-}
+      AGW_RUNNER_REQUEST_TIMEOUT: ${AGW_RUNNER_REQUEST_TIMEOUT:-30s}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      AGW_OTEL_INSECURE_HOSTS: ${AGW_OTEL_INSECURE_HOSTS:-otel-collector}
+    volumes:
+      - ${AGW_RUNNER_SOCKET_DIR:-/run/agw-runner}:/run/agw-runner:ro
+    depends_on:
+      agw-migrate:
+        condition: service_completed_successfully
+        required: false
+      temporal:
+        condition: service_healthy
+        required: false
+    networks: [control, egress]
+
+  agw-console:
+    build:
+      context: ../..
+      dockerfile: v2/Dockerfile.web
+    image: ${AGW_CONSOLE_IMAGE:-agents-gateway-v2-console:local}
+    restart: unless-stopped
+    read_only: true
+    user: "101:101"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m
+      - /var/run:rw,noexec,nosuid,size=4m
+      - /tmp:rw,noexec,nosuid,size=32m
+    expose: ["8080"]
+    depends_on:
+      agw-server:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [control]
+
+  postgres:
+    image: postgres:latest
+    profiles: [bundled]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-}
+    volumes:
+      # PostgreSQL 18+ uses a major-version-specific PGDATA below this parent.
+      # `postgres:latest` therefore requires the volume at this location.
+      - postgres-data:/var/lib/postgresql
+    expose: ["5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [control]
+
+  postgres-init:
+    image: postgres:latest
+    profiles: [bundled]
+    restart: "no"
+    user: postgres
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_ADMIN_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:-}
+      AGW_DB_NAME: ${AGW_DB_NAME:-agents_gateway}
+      AGW_DB_USER: ${AGW_DB_USER:-agw}
+      AGW_DB_PASSWORD: ${AGW_DB_PASSWORD:-}
+      AGW_AUTH_DB_USER: ${AGW_AUTH_DB_USER:-agw_auth}
+      AGW_AUTH_DB_PASSWORD: ${AGW_AUTH_DB_PASSWORD:-}
+      AGW_AUTH_MODE: ${AGW_AUTH_MODE:-local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - sh
+      - -ec
+      - |
+        psql --dbname=postgres --set=agw_db="$${AGW_DB_NAME}" --set=agw_user="$${AGW_DB_USER}" --set=agw_password="$${AGW_DB_PASSWORD}" --set=auth_user="$${AGW_AUTH_DB_USER}" --set=auth_password="$${AGW_AUTH_DB_PASSWORD}" <<'SQL'
+        SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'agw_user', :'agw_password')
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'agw_user') \gexec
+        SELECT format('ALTER ROLE %I LOGIN PASSWORD %L', :'agw_user', :'agw_password') \gexec
+        SELECT format('CREATE DATABASE %I OWNER %I', :'agw_db', :'agw_user')
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'agw_db') \gexec
+        SQL
+        if [ "$${AGW_AUTH_MODE}" = "oidc" ]; then
+          psql --dbname=postgres --set=auth_user="$${AGW_AUTH_DB_USER}" --set=auth_password="$${AGW_AUTH_DB_PASSWORD}" <<'SQL'
+        SELECT format('CREATE ROLE %I LOGIN BYPASSRLS PASSWORD %L', :'auth_user', :'auth_password')
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'auth_user') \gexec
+        SELECT format('ALTER ROLE %I LOGIN BYPASSRLS PASSWORD %L', :'auth_user', :'auth_password') \gexec
+        SQL
+        fi
+    networks: [control]
+
+  agw-migrate:
+    image: postgres:latest
+    profiles: [bundled, migrate]
+    restart: "no"
+    user: postgres
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${AGW_DB_USER:-agw}
+      PGPASSWORD: ${AGW_DB_PASSWORD:-}
+      PGDATABASE: ${AGW_DB_NAME:-agents_gateway}
+      AGW_AUTH_DB_USER: ${AGW_AUTH_DB_USER:-agw_auth}
+      AGW_MIGRATION_DATABASE_URL: ${AGW_MIGRATION_DATABASE_URL:-}
+      AGW_AUTH_MODE: ${AGW_AUTH_MODE:-local}
+      AGW_LOCAL_ORGANIZATION_ID: ${AGW_LOCAL_ORGANIZATION_ID:-00000000-0000-4000-8000-000000000001}
+      AGW_LOCAL_PROJECT_ID: ${AGW_LOCAL_PROJECT_ID:-00000000-0000-4000-8000-000000000002}
+    volumes:
+      - ../migrations:/migrations:ro
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
+        required: false
+    command:
+      - sh
+      - -ec
+      - |
+        psql_agw() {
+          if [ -n "$${AGW_MIGRATION_DATABASE_URL}" ]; then
+            psql --dbname="$${AGW_MIGRATION_DATABASE_URL}" "$$@"
+          else
+            psql "$$@"
+          fi
+        }
+        psql_agw --set ON_ERROR_STOP=1 --command "CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
+        found=0
+        for file in /migrations/*.sql; do
+          [ -f "$$file" ] || continue
+          found=1
+          version=$$(basename "$$file" .sql)
+          checksum=$$(sha256sum "$$file" | awk '{print $$1}')
+          case "$$version" in *[!A-Za-z0-9_.-]*) echo "invalid migration filename: $$version" >&2; exit 1;; esac
+          applied=$$(psql_agw --tuples-only --no-align --command "SELECT checksum FROM schema_migrations WHERE version = '$$version'")
+          if [ -n "$$applied" ]; then
+            [ "$$applied" = "$$checksum" ] || { echo "migration checksum changed: $$version" >&2; exit 1; }
+            continue
+          fi
+          psql_agw --set ON_ERROR_STOP=1 --file "$$file"
+          psql_agw --command "INSERT INTO schema_migrations(version, checksum) VALUES ('$$version', '$$checksum')"
+        done
+        if [ "$${AGW_AUTH_MODE}" = "oidc" ]; then
+          psql_agw --set=auth_user="$${AGW_AUTH_DB_USER}" <<'SQL'
+        SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'auth_user') \gexec
+        SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'auth_user') \gexec
+        SELECT format('GRANT SELECT ON memberships, service_accounts TO %I', :'auth_user') \gexec
+        SELECT format('GRANT UPDATE (last_used_at) ON service_accounts TO %I', :'auth_user') \gexec
+        SQL
+        fi
+        if [ "$${AGW_AUTH_MODE}" = "local" ]; then
+          psql_agw --set=org_id="$${AGW_LOCAL_ORGANIZATION_ID}" --set=project_id="$${AGW_LOCAL_PROJECT_ID}" <<'SQL'
+        BEGIN;
+        SELECT set_config('agw.organization_id', :'org_id', true), set_config('agw.project_id', :'project_id', true);
+        INSERT INTO organizations (id,name) VALUES (:'org_id'::uuid,'local')
+        ON CONFLICT (id) DO NOTHING;
+        INSERT INTO projects (id,organization_id,name) VALUES (:'project_id'::uuid,:'org_id'::uuid,'default')
+        ON CONFLICT (id) DO NOTHING;
+        COMMIT;
+        SQL
+        fi
+        [ "$$found" -eq 1 ]
+    networks: [control]
+
+  temporal:
+    image: temporalio/temporal:latest
+    profiles: [bundled]
+    restart: unless-stopped
+    command:
+      - server
+      - start-dev
+      - --ip
+      - 0.0.0.0
+      - --headless
+      - --db-filename
+      - /home/temporal/temporal.db
+      - --search-attribute
+      - AGWOrganizationID=Keyword
+      - --search-attribute
+      - AGWProjectID=Keyword
+      - --search-attribute
+      - AGWRunID=Keyword
+      - --search-attribute
+      - AGWWorkflowName=Keyword
+      - --search-attribute
+      - AGWStepID=Keyword
+      - --search-attribute
+      - AGWAgentRef=Keyword
+      - --search-attribute
+      - AGWStatus=Keyword
+    volumes:
+      # The image runs as UID/GID 1000. Mounting its pre-owned home directory
+      # lets Docker initialize a writable named volume without a root helper.
+      - temporal-data:/home/temporal
+    expose: ["7233"]
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks: [control]
+
+  minio:
+    image: minio/minio:latest
+    profiles: [artifacts]
+    restart: unless-stopped
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
+    volumes:
+      - minio-data:/data
+    expose: ["9000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks: [control]
+
+  minio-init:
+    image: minio/mc:latest
+    profiles: [artifacts]
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
+      AGW_S3_BUCKET: ${AGW_S3_BUCKET:-agw-artifacts}
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command: >-
+      mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}";
+      mc mb --ignore-existing "local/$${AGW_S3_BUCKET}";
+      mc anonymous set none "local/$${AGW_S3_BUCKET}"
+    networks: [control]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${AGW_OTEL_CONFIG_FILE:-./otel-collector.yaml}:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      AGW_OTEL_CONFIG_FILE: ${AGW_OTEL_CONFIG_FILE:-./otel-collector.yaml}
+      AGW_OTEL_REMOTE_ENDPOINT: ${AGW_OTEL_REMOTE_ENDPOINT:-}
+      AGW_OTEL_REMOTE_AUTH: ${AGW_OTEL_REMOTE_AUTH:-}
+    expose: ["4317", "4318", "13133"]
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [control, egress]
+
+volumes:
+  postgres-data:
+  temporal-data:
+  minio-data:
+
+networks:
+  control:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge

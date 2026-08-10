@@ -1,0 +1,61 @@
+{
+  "resources": [
+    {
+      "kind": "Agent",
+      "name": "code-validator",
+      "revision": "sha256:54a1e2198e2a0100bd005426285322ed6e38aaef8f82de546dc27058b09455da"
+    },
+    {
+      "kind": "SkillSet",
+      "name": "code-validator-skills",
+      "revision": "sha256:b863bbbbbd2d368aebaec088fb518b18400764ed6a446cfeb9713b6c386c4c53"
+    },
+    {
+      "kind": "SandboxProfile",
+      "name": "code-validator-sandbox",
+      "revision": "sha256:2e32aee78236165c924eaff1071206854178a18e12226f8e31e127ce7c1b19aa"
+    }
+  ],
+  "warnings": [
+    {
+      "code": "missing_runtime_image",
+      "field": "runtime.docker_image",
+      "message": "legacy manifest has no container image; generated v2 resources are not executable until an image is configured"
+    },
+    {
+      "code": "unsafe_legacy_runtime",
+      "field": "runtime.type",
+      "message": "legacy process execution is not carried into v2; the generated sandbox is isolated and requires an explicit image/harness migration"
+    },
+    {
+      "code": "legacy_command_not_enforced",
+      "field": "runtime.command",
+      "message": "legacy command is preserved as metadata only and will not be executed by the v2 translator"
+    },
+    {
+      "code": "missing_instructions",
+      "field": "instructions",
+      "message": "legacy manifest has no v2 instruction source; configure instructions before execution"
+    },
+    {
+      "code": "missing_skill_enforcement",
+      "field": "skills",
+      "message": "legacy skills are names only; generated SkillSet references are unpinned and must be explicitly resolved before execution"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[verification-before-completion]",
+      "message": "skill source has no legacy content digest"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[security-best-practices]",
+      "message": "skill source has no legacy content digest"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[systematic-debugging]",
+      "message": "skill source has no legacy content digest"
+    }
+  ]
+}

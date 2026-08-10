@@ -1,0 +1,51 @@
+{
+  "resources": [
+    {
+      "kind": "Agent",
+      "name": "commit-writer",
+      "revision": "sha256:265087fc00009a17611e7ae65ee029a176c8fb6560c002515fd935ea9c62e521"
+    },
+    {
+      "kind": "SkillSet",
+      "name": "commit-writer-skills",
+      "revision": "sha256:00b247bd504a832f171f6d634f07e6ec84271e05dfeff40ecc171258266fb10d"
+    },
+    {
+      "kind": "SandboxProfile",
+      "name": "commit-writer-sandbox",
+      "revision": "sha256:5482b2793516b526d70d298ddba2844ed731ac6f80109e221dbe05184131db6d"
+    }
+  ],
+  "warnings": [
+    {
+      "code": "missing_runtime_image",
+      "field": "runtime.docker_image",
+      "message": "legacy manifest has no container image; generated v2 resources are not executable until an image is configured"
+    },
+    {
+      "code": "unsafe_legacy_runtime",
+      "field": "runtime.type",
+      "message": "legacy process execution is not carried into v2; the generated sandbox is isolated and requires an explicit image/harness migration"
+    },
+    {
+      "code": "legacy_command_not_enforced",
+      "field": "runtime.command",
+      "message": "legacy command is preserved as metadata only and will not be executed by the v2 translator"
+    },
+    {
+      "code": "missing_instructions",
+      "field": "instructions",
+      "message": "legacy manifest has no v2 instruction source; configure instructions before execution"
+    },
+    {
+      "code": "missing_skill_enforcement",
+      "field": "skills",
+      "message": "legacy skills are names only; generated SkillSet references are unpinned and must be explicitly resolved before execution"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[writing-guidelines]",
+      "message": "skill source has no legacy content digest"
+    }
+  ]
+}

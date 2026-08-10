@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=busybox:latest
+FROM ${BASE_IMAGE}
+
+COPY runtime.sh /usr/local/bin/agw-runtime-fixture
+RUN chmod 0555 /usr/local/bin/agw-runtime-fixture
+
+ENTRYPOINT ["/usr/local/bin/agw-runtime-fixture"]

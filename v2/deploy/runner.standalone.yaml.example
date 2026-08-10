@@ -1,0 +1,16 @@
+# Standalone runner: owner-operated host, rootless Podman, local Unix socket.
+# Run the service as the dedicated unprivileged agw-runner identity.
+backend: podman
+workspaceRoot: /var/lib/agw-runner/workspaces
+
+secrets:
+  sourceRoot: /var/lib/agw-runner/secrets
+  materializationRoot: /run/agw-runner/materialized
+
+podman:
+  binary: /usr/bin/podman
+  brokerRoot: /run/agw-broker
+
+server:
+  transport: unix
+  socketPath: /run/agw-runner/runner.sock

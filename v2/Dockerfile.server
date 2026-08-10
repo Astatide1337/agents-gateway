@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:latest AS builder
+
+WORKDIR /src
+ENV GOTOOLCHAIN=auto
+COPY v2/go.mod v2/go.sum ./
+RUN go mod download
+COPY v2/cmd/ ./cmd/
+COPY v2/pkg/ ./pkg/
+COPY v2/proto/ ./proto/
+
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" \
+    -o /out/agw-server ./cmd/agw-server && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" \
+    -o /out/agw-healthcheck ./cmd/agw-healthcheck
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /out/agw-server /usr/local/bin/agw-server
+COPY --from=builder /out/agw-healthcheck /usr/local/bin/agw-healthcheck
+
+USER 65532:65532
+EXPOSE 8094
+ENTRYPOINT ["/usr/local/bin/agw-server"]

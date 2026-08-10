@@ -1,0 +1,46 @@
+[Unit]
+Description=Agents Gateway v2 sandbox runner
+Documentation=https://github.com/Astatide1337/agents-gateway/tree/main/v2/deploy
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=agw-runner
+Group=agw-runner
+WorkingDirectory=/var/lib/agw-runner
+Environment=HOME=/var/lib/agw-runner
+EnvironmentFile=/etc/agw/runner-service.env
+ExecStartPre=/usr/bin/test -S ${XDG_RUNTIME_DIR}/bus
+ExecStart=/usr/local/bin/agw-runner serve --config /etc/agw/runner.yaml
+Restart=on-failure
+RestartSec=5s
+PrivateTmp=yes
+# NoNewPrivileges and PrivateDevices are intentionally not applied to this
+# trusted host-side runner: rootless Podman may require the setuid
+# newuidmap/newgidmap helpers and /dev/fuse. The runner itself remains
+# unprivileged; every sandbox enforces no-new-privileges and drops all caps.
+# runner-service.env must point XDG_RUNTIME_DIR at /run/user/<runner UID>, and
+# loginctl lingering must be enabled so Podman's systemd cgroup manager can
+# enforce per-sandbox resource limits without an interactive login.
+ProtectSystem=strict
+# `yes` also hides /run/user, which rootless Podman's systemd cgroup manager
+# needs. Home trees remain read-only and only the dedicated runtime is writable.
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+Delegate=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# AF_NETLINK is required by the OCI runtime to initialize isolated namespaces.
+# Sandbox egress remains disabled by the per-run --network=none contract.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RuntimeDirectory=agw-runner agw-broker
+RuntimeDirectoryMode=0700
+StateDirectory=agw-runner
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/agw-runner /run/agw-runner /run/agw-broker /run/user
+
+[Install]
+WantedBy=multi-user.target

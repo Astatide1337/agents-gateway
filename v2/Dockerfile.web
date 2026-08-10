@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1
+
+FROM node:latest AS builder
+
+WORKDIR /src
+COPY v2/web/package.json v2/web/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY v2/web/ ./
+RUN npm run build
+
+FROM nginxinc/nginx-unprivileged:latest
+COPY v2/deploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /src/dist /usr/share/nginx/html
+EXPOSE 8080

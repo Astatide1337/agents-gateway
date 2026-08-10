@@ -108,12 +108,7 @@ class OpencodeJsonDriver:
         state = self._get(ref)
         self._reap(state)
         events = self._read_events(state.log_path)
-        if not state.opencode_session_id:
-            for e in events:
-                sid = e.get("sessionID") or (e.get("part") or {}).get("sessionID")
-                if sid:
-                    state.opencode_session_id = sid
-                    break
+        self._rehydrate_session_id(state, events)
         text = self._render(events)
         internal_errors = self._tail_internal_log_errors(state)
         if internal_errors:
@@ -206,6 +201,24 @@ class OpencodeJsonDriver:
             raise OpencodeJsonDriverError(f"unknown session {ref.session!r}")
         return state
 
+    def _rehydrate_session_id(
+        self, state: _JsonSessionState, events: list[dict] | None = None,
+    ) -> None:
+        """Recover the opencode session ID from the persisted transcript.
+
+        A liveness poll can observe a clean process exit immediately after
+        an earlier capture read the log, so the in-memory ID may still be
+        empty when a reply starts the next turn. Re-read the append-only
+        transcript before deciding whether to pass --continue.
+        """
+        if state.opencode_session_id:
+            return
+        for event in events if events is not None else self._read_events(state.log_path):
+            session_id = event.get("sessionID") or (event.get("part") or {}).get("sessionID")
+            if session_id:
+                state.opencode_session_id = session_id
+                return
+
     def _reap(self, state: _JsonSessionState) -> None:
         if state.exit_code is not None:
             return
@@ -226,6 +239,8 @@ class OpencodeJsonDriver:
         if state.proc is None and state.pid is not None and _pid_alive(state.pid):
             raise OpencodeJsonDriverError(
                 f"session {session_name!r} already has a running (reattached) process")
+
+        self._rehydrate_session_id(state)
 
         # --dir is required, not just cwd=: opencode resolves its own
         # tool-call working directory independently of the process cwd

@@ -1,0 +1,71 @@
+{
+  "resources": [
+    {
+      "kind": "Agent",
+      "name": "code-reviewer",
+      "revision": "sha256:6dc263c431eb9bfc34a055e206ba8bdebf822e4620c2d670af277343bb3fb535"
+    },
+    {
+      "kind": "SkillSet",
+      "name": "code-reviewer-skills",
+      "revision": "sha256:cb7c208f12dc7ebf98dc8328414380bce6d227a9dc9576bc803b2e78dd0eea21"
+    },
+    {
+      "kind": "SandboxProfile",
+      "name": "code-reviewer-sandbox",
+      "revision": "sha256:357f7720374f319eea91577a09b2181425c739371e7443f759661bab5275d98e"
+    }
+  ],
+  "warnings": [
+    {
+      "code": "missing_runtime_image",
+      "field": "runtime.docker_image",
+      "message": "legacy manifest has no container image; generated v2 resources are not executable until an image is configured"
+    },
+    {
+      "code": "unsafe_legacy_runtime",
+      "field": "runtime.type",
+      "message": "legacy process execution is not carried into v2; the generated sandbox is isolated and requires an explicit image/harness migration"
+    },
+    {
+      "code": "legacy_command_not_enforced",
+      "field": "runtime.command",
+      "message": "legacy command is preserved as metadata only and will not be executed by the v2 translator"
+    },
+    {
+      "code": "missing_instructions",
+      "field": "instructions",
+      "message": "legacy manifest has no v2 instruction source; configure instructions before execution"
+    },
+    {
+      "code": "missing_skill_enforcement",
+      "field": "skills",
+      "message": "legacy skills are names only; generated SkillSet references are unpinned and must be explicitly resolved before execution"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[requesting-code-review]",
+      "message": "skill source has no legacy content digest"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[security-best-practices]",
+      "message": "skill source has no legacy content digest"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[react-best-practices]",
+      "message": "skill source has no legacy content digest"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[web-design-guidelines]",
+      "message": "skill source has no legacy content digest"
+    },
+    {
+      "code": "unpinned_skill",
+      "field": "skills[writing-guidelines]",
+      "message": "skill source has no legacy content digest"
+    }
+  ]
+}

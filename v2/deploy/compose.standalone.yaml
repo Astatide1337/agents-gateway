@@ -1,0 +1,194 @@
+name: agents-gateway-v2-standalone
+
+# This file is intentionally limited to the owner-operated profile. It runs
+# the PostgreSQL-backed local engine in agw-server and starts no optional
+# distributed services.
+
+services:
+  postgres:
+    image: ${AGW_POSTGRES_IMAGE:-postgres:latest}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
+    volumes:
+      # PostgreSQL 18+ stores versioned data below this parent directory.
+      - postgres-data:/var/lib/postgresql
+    expose: ["5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [control]
+
+  postgres-init:
+    image: ${AGW_POSTGRES_IMAGE:-postgres:latest}
+    restart: "no"
+    user: postgres
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_ADMIN_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
+      AGW_DB_NAME: ${AGW_DB_NAME:-agents_gateway}
+      AGW_DB_USER: ${AGW_DB_USER:-agw}
+      AGW_DB_PASSWORD: ${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - sh
+      - -ec
+      - |
+        psql --dbname=postgres \
+          --set=agw_db="$${AGW_DB_NAME}" \
+          --set=agw_user="$${AGW_DB_USER}" \
+          --set=agw_password="$${AGW_DB_PASSWORD}" <<'SQL'
+        SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'agw_user', :'agw_password')
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'agw_user') \gexec
+        SELECT format('ALTER ROLE %I LOGIN PASSWORD %L', :'agw_user', :'agw_password') \gexec
+        SELECT format('CREATE DATABASE %I OWNER %I', :'agw_db', :'agw_user')
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'agw_db') \gexec
+        SQL
+    networks: [control]
+
+  agw-migrate:
+    image: ${AGW_POSTGRES_IMAGE:-postgres:latest}
+    restart: "no"
+    user: postgres
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${AGW_DB_USER:-agw}
+      PGPASSWORD: ${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}
+      PGDATABASE: ${AGW_DB_NAME:-agents_gateway}
+      AGW_AUTH_MODE: local
+      AGW_LOCAL_ORGANIZATION_ID: ${AGW_LOCAL_ORGANIZATION_ID:-00000000-0000-4000-8000-000000000001}
+      AGW_LOCAL_PROJECT_ID: ${AGW_LOCAL_PROJECT_ID:-00000000-0000-4000-8000-000000000002}
+    volumes:
+      - ../migrations:/migrations:ro
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -ec
+      - |
+        psql --set=ON_ERROR_STOP=1 --command "CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
+        for file in /migrations/*.sql; do
+          [ -f "$${file}" ] || continue
+          version=$$(basename "$${file}" .sql)
+          case "$${version}" in *[!A-Za-z0-9_.-]*) echo "invalid migration filename: $${version}" >&2; exit 1;; esac
+          checksum=$$(sha256sum "$${file}" | awk '{print $$1}')
+          applied=$$(psql --tuples-only --no-align --command "SELECT checksum FROM schema_migrations WHERE version = '$${version}'")
+          if [ -n "$${applied}" ]; then
+            [ "$${applied}" = "$${checksum}" ] || { echo "migration checksum changed: $${version}" >&2; exit 1; }
+            continue
+          fi
+          psql --set=ON_ERROR_STOP=1 --file "$${file}"
+          psql --command "INSERT INTO schema_migrations(version, checksum) VALUES ('$${version}', '$${checksum}')"
+        done
+        psql --set=ON_ERROR_STOP=1 --set=org_id="$${AGW_LOCAL_ORGANIZATION_ID}" --set=project_id="$${AGW_LOCAL_PROJECT_ID}" <<'SQL'
+        BEGIN;
+        SELECT set_config('agw.organization_id', :'org_id', true), set_config('agw.project_id', :'project_id', true);
+        INSERT INTO organizations (id,name) VALUES (:'org_id'::uuid,'local') ON CONFLICT (id) DO NOTHING;
+        INSERT INTO projects (id,organization_id,name) VALUES (:'project_id'::uuid,:'org_id'::uuid,'default') ON CONFLICT (id) DO NOTHING;
+        COMMIT;
+        SQL
+    networks: [control]
+
+  agw-server:
+    build:
+      context: ../..
+      dockerfile: v2/Dockerfile.server
+    image: ${AGW_SERVER_IMAGE:-agents-gateway-v2-server:local}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "${AGW_SERVER_UID:-65532}:${AGW_RUNNER_GID:-65532}"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    expose: ["8094"]
+    environment:
+      AGW_ENVIRONMENT: ${AGW_ENVIRONMENT:-production}
+      AGW_SERVER_ADDR: ":8094"
+      AGW_DATABASE_URL: postgres://${AGW_DB_USER:-agw}:${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}@postgres:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable
+      AGW_AUTH_MODE: local
+      AGW_AUTH_TOKEN: ${AGW_AUTH_TOKEN:?set AGW_AUTH_TOKEN}
+      AGW_AUTH_PRINCIPAL_ID: ${AGW_AUTH_PRINCIPAL_ID:-local-owner}
+      AGW_LOCAL_ORGANIZATION_ID: ${AGW_LOCAL_ORGANIZATION_ID:-00000000-0000-4000-8000-000000000001}
+      AGW_LOCAL_PROJECT_ID: ${AGW_LOCAL_PROJECT_ID:-00000000-0000-4000-8000-000000000002}
+      AGW_ORCHESTRATION_MODE: ${AGW_ORCHESTRATION_MODE:-local}
+      AGW_EXECUTION_MODE: ${AGW_EXECUTION_MODE:-standalone}
+      AGW_RUNNER_TRANSPORT: unix
+      AGW_RUNNER_UID: ${AGW_RUNNER_UID:-65532}
+      AGW_RUNNER_SOCKET: ${AGW_RUNNER_SOCKET:-/run/agw-runner/runner.sock}
+      AGW_BROKER_ROOT: /run/agw-broker
+      AGW_ARTIFACT_ROOT: /var/lib/agw/artifacts
+      AGW_SKILLS_GATEWAY_URL: ${AGW_SKILLS_GATEWAY_URL:-}
+      AGW_SKILLS_GATEWAY_TOKEN_ENV: SKILLS_GATEWAY_AUTH_TOKEN
+      SKILLS_GATEWAY_AUTH_TOKEN: ${SKILLS_GATEWAY_AUTH_TOKEN:-}
+      MCP_GATEWAY_AUTH_TOKEN: ${MCP_GATEWAY_AUTH_TOKEN:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AGW_OPENAI_RESPONSES_URL: ${AGW_OPENAI_RESPONSES_URL:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      AGW_OPENROUTER_RESPONSES_URL: ${AGW_OPENROUTER_RESPONSES_URL:-}
+      AGW_TELEMETRY_DISABLED: "true"
+    volumes:
+      - ${AGW_RUNNER_SOCKET_DIR:-/run/agw-runner}:/run/agw-runner:ro
+      - ${AGW_BROKER_ROOT:-/run/agw-broker}:/run/agw-broker:rw
+      - ${AGW_ARTIFACT_HOST_ROOT:-/var/lib/agents-gateway/artifacts}:/var/lib/agw/artifacts:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      agw-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agw-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [control, egress]
+
+  agw-console:
+    build:
+      context: ../..
+      dockerfile: v2/Dockerfile.web
+    image: ${AGW_CONSOLE_IMAGE:-agents-gateway-v2-console:local}
+    restart: unless-stopped
+    read_only: true
+    user: "101:101"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m
+      - /var/run:rw,noexec,nosuid,size=4m
+      - /tmp:rw,noexec,nosuid,size=32m
+    ports:
+      - "127.0.0.1:${AGW_CONSOLE_PORT:-8080}:8080"
+    depends_on:
+      agw-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [control]
+
+volumes:
+  postgres-data:
+
+networks:
+  control:
+    driver: bridge
+    internal: true
+  # Only the trusted control plane joins this network. Sandboxes stay on
+  # --network=none and reach providers through their scoped Unix broker.
+  egress:
+    driver: bridge

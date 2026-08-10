@@ -1,0 +1,306 @@
+name: Agents Gateway v2 CI
+
+on:
+  push:
+    branches: [main, master, "epic/**"]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-ci.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: stable
+  NODE_VERSION: node
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: v2/go.sum
+      - name: Test
+        run: go test ./...
+      - name: Race test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: v2/web/package-lock.json
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Test
+        run: npm test -- --passWithNoTests
+      - name: Build
+        run: npm run build
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  browser-e2e:
+    name: Artifact browser E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: v2/web/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: v2/web
+        run: npm ci --ignore-scripts
+      - name: Install latest browser harness and Linux runtime dependencies
+        run: npx --yes agent-browser@latest install --with-deps
+      - name: Exercise the artifact workspace in a real browser
+        env:
+          AGW_BROWSER_NO_SANDBOX: "1"
+          AGW_BROWSER_E2E_OUTPUT_DIR: ${{ runner.temp }}/agw-artifact-browser
+        run: ./v2/scripts/e2e-artifacts-browser.sh
+      - name: Upload browser evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifact-browser-e2e
+          path: ${{ runner.temp }}/agw-artifact-browser
+
+  contracts:
+    name: Contracts and deployment checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: v2/go.sum
+      - name: Validate manifests and compatibility fixtures
+        working-directory: v2
+        run: go test ./pkg/spec ./pkg/compat ./pkg/runtimeproto ./pkg/runner
+      - name: Check deployment documentation links and whitespace
+        run: |
+          test -s v2/deploy/README.md
+          test -s v2/deploy/.env.example
+          test -s v2/deploy/.env.standalone.example
+          bash -n v2/scripts/*.sh
+          git diff --check
+      - name: Validate Compose configuration
+        env:
+          POSTGRES_ADMIN_PASSWORD: ci-postgres-admin
+          AGW_DB_PASSWORD: ci-agw
+          AGW_AUTH_TOKEN: "ci-owner-token-ci-owner-token-1234"
+          AGW_RUNNER_UID: "1000"
+          AGW_SERVER_UID: "1000"
+          AGW_RUNNER_GID: "1000"
+          AGW_RUNNER_SOCKET_DIR: /run/agw-runner
+          AGW_BROKER_ROOT: /run/agw-broker
+          AGW_ARTIFACT_HOST_ROOT: /var/lib/agents-gateway/artifacts
+          MCP_GATEWAY_AUTH_TOKEN: ci-mcp-token
+          AGW_AUTH_DB_PASSWORD: ci-auth
+          AGW_MIGRATION_DATABASE_URL: postgres://migrator:secret@db.example/agents_gateway
+          MINIO_ROOT_USER: ci-minio
+          MINIO_ROOT_PASSWORD: ci-minio-password
+        run: |
+          docker compose -f v2/deploy/compose.yaml --profile bundled config
+          docker compose -f v2/deploy/compose.yaml --profile migrate config
+          docker compose -f v2/deploy/compose.yaml --profile artifacts config
+          docker compose -f v2/deploy/compose.standalone.yaml config
+          docker compose -f v2/deploy/compose.coolify.yaml config
+
+  images:
+    name: Production image builds
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            dockerfile: v2/Dockerfile.server
+            tag: agents-gateway-v2-server:ci
+          - name: worker
+            dockerfile: v2/Dockerfile.worker
+            tag: agents-gateway-v2-worker:ci
+          - name: cli
+            dockerfile: v2/Dockerfile.cli
+            tag: agents-gateway-v2-cli:ci
+          - name: console
+            dockerfile: v2/Dockerfile.web
+            tag: agents-gateway-v2-console:ci
+          - name: runtime-codex
+            dockerfile: v2/Dockerfile.runtime-codex
+            tag: agents-gateway-v2-runtime-codex:ci
+          - name: migrate
+            dockerfile: v2/deploy/Dockerfile.migrate
+            tag: agents-gateway-v2-migrate:ci
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build ${{ matrix.name }} image
+        run: docker build --pull --file ${{ matrix.dockerfile }} --tag ${{ matrix.tag }} .
+
+  postgres-e2e:
+    name: PostgreSQL migration and RLS
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:latest
+        env:
+          POSTGRES_PASSWORD: ci-admin-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      PGPASSWORD: ci-admin-password
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: v2/go.sum
+      - name: Create and migrate database
+        run: |
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE agw_test LOGIN PASSWORD 'ci-app-password';
+          CREATE DATABASE agents_gateway_test;
+          SQL
+          for migration in v2/migrations/*.sql; do
+            psql -h 127.0.0.1 -U postgres -d agents_gateway_test -v ON_ERROR_STOP=1 -f "$migration"
+          done
+          psql -h 127.0.0.1 -U postgres -d agents_gateway_test -v ON_ERROR_STOP=1 <<'SQL'
+          GRANT USAGE ON SCHEMA public TO agw_test;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO agw_test;
+          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO agw_test;
+          INSERT INTO organizations(id, name)
+          VALUES ('00000000-0000-0000-0000-000000000001', 'live-test');
+          INSERT INTO projects(id, organization_id, name) VALUES
+            ('00000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000001', 'one'),
+            ('00000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000001', 'two');
+          SQL
+      - name: Test real PostgreSQL store and tenant isolation
+        working-directory: v2
+        env:
+          AGW_TEST_DATABASE_URL: postgres://agw_test:ci-app-password@127.0.0.1:5432/agents_gateway_test?sslmode=disable
+        run: go test -count=1 -run '^TestPostgreSQL(Live|LocalEngineLive)$' -v ./pkg/store ./pkg/localengine
+      - name: Inject durable-state and ambiguous-write failures
+        working-directory: v2
+        env:
+          AGW_TEST_DATABASE_URL: postgres://agw_test:ci-app-password@127.0.0.1:5432/agents_gateway_test?sslmode=disable
+        run: ./scripts/e2e-fault-injection.sh
+
+  standalone-e2e:
+    name: Standalone API and local engine E2E
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:latest
+        env:
+          POSTGRES_PASSWORD: ci-admin-password
+          POSTGRES_DB: agw_standalone_live
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d agw_standalone_live"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: v2/go.sum
+      - name: Exercise authenticated API through the local durable engine
+        working-directory: v2
+        env:
+          AGW_POSTGRES_TEST_URL: postgres://postgres:ci-admin-password@127.0.0.1:5432/agw_standalone_live?sslmode=disable
+        run: go test -race -count=1 -run '^TestStandaloneLocalEngineLive$' -v ./cmd/agw-server
+
+  rootless-podman-e2e:
+    name: Rootless Podman isolation and quota E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: v2/go.sum
+      - name: Install rootless Podman prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman uidmap slirp4netns fuse-overlayfs ripgrep
+          sudo loginctl enable-linger "$USER"
+          runtime_dir="/run/user/$(id -u)"
+          for attempt in {1..20}; do
+            test -S "$runtime_dir/bus" && break
+            sleep 1
+          done
+          test -S "$runtime_dir/bus"
+          mkdir -p "$HOME/.config/containers"
+          printf '[engine]\ncgroup_manager = "systemd"\nevents_logger = "file"\n' > "$HOME/.config/containers/containers.conf"
+          printf 'XDG_RUNTIME_DIR=%s\n' "$runtime_dir" >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="$runtime_dir" podman info --format '{{.Host.Security.Rootless}} {{.Host.CgroupManager}} {{.Host.CgroupsVersion}}' | grep -Fx 'true systemd v2'
+      - name: Build the runner and preload the current fixture base
+        working-directory: v2
+        run: |
+          go build -o "$RUNNER_TEMP/agw-runner" ./cmd/agw-runner
+          podman pull docker.io/library/busybox:latest
+      - name: Exercise concurrent isolation, cancellation, and disk exhaustion
+        env:
+          AGW_RUNNER_BINARY: ${{ runner.temp }}/agw-runner
+          AGW_FIXTURE_BASE_IMAGE: docker.io/library/busybox:latest
+        run: ./v2/scripts/e2e-standalone.sh
+
+  security:
+    name: Dependency security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Scan committed source for credentials
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro"
+          ghcr.io/gitleaks/gitleaks:latest git /repo
+          --redact --no-banner
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: v2/web/package-lock.json
+      - name: Scan Go and npm dependency locks with OSV
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/src:ro"
+          ghcr.io/google/osv-scanner:latest scan source
+          -L /src/v2/go.mod -L /src/v2/web/package-lock.json
+      - name: Audit npm dependencies
+        working-directory: v2/web
+        run: npm audit --audit-level=high

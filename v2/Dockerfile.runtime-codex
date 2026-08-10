@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+FROM docker.io/library/golang:latest AS adapter-build
+WORKDIR /src/v2
+COPY v2/go.mod v2/go.sum ./
+RUN go mod download
+COPY v2/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/agw-codex-adapter ./cmd/agw-codex-adapter
+
+FROM docker.io/library/node:latest AS codex-install
+RUN npm install --global @openai/codex@latest \
+    && mkdir -p /out \
+    && vendor_dir="$(find /usr/local/lib/node_modules/@openai/codex/node_modules/@openai -path '*/vendor/*' -mindepth 3 -maxdepth 3 -type d -print -quit)" \
+    && test -n "$vendor_dir" \
+    && cp -a "$vendor_dir"/. /out/
+
+FROM docker.io/library/debian:stable-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=codex-install /out/ /opt/codex/
+COPY --from=adapter-build /out/agw-codex-adapter /usr/local/bin/agw-codex-adapter
+RUN chmod 0755 /usr/local/bin/agw-codex-adapter \
+    && ln -s /opt/codex/bin/codex /usr/local/bin/codex \
+    && mkdir -p /workspace \
+    && chown 65532:65532 /workspace
+USER 65532:65532
+WORKDIR /workspace
+ENV AGW_CODEX_WORKSPACE=/workspace \
+    AGW_BROKER_CLIENT_CONFIG=/run/agw/client.json \
+    AGW_BROKER_SOCKET=/run/agw/broker.sock
+ENTRYPOINT ["/usr/local/bin/agw-codex-adapter"]

@@ -54,7 +54,7 @@ check "metrics" "$BASE_URL/metrics" "200"
 check "agents" "$BASE_URL/agents" "200"
 
 echo "Checking task lifecycle..."
-TASK_RESP=$(curl -s -X POST "$BASE_URL/tasks" -H "Content-Type: application/json" -d '{"agent_id":"repo-reviewer","input":"test"}')
+TASK_RESP=$(curl -s -X POST "$BASE_URL/tasks" -H "Content-Type: application/json" -d '{"agent_id":"code-reviewer","input":"test"}')
 TASK_ID=$(echo "$TASK_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
 if [ -n "$TASK_ID" ]; then
     check "get task" "$BASE_URL/tasks/$TASK_ID" "200"
