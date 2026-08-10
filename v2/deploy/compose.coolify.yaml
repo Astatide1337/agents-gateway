@@ -28,10 +28,10 @@ services:
     restart: "no"
     user: postgres
     environment:
-      # Coolify suffixes Compose service names for PR previews (for example,
-      # postgres-pr-20).  Its generated SERVICE_NAME_POSTGRES variable keeps
-      # the init path valid in both production and preview deployments.
-      PGHOST: ${SERVICE_NAME_POSTGRES:-postgres}
+      # Coolify injects SERVICE_NAME_POSTGRES after Compose interpolation.
+      # The command exports it before invoking psql so PR previews resolve
+      # postgres-pr-<id> while production continues to use postgres.
+      PGHOST: postgres
       PGPORT: "5432"
       PGUSER: ${POSTGRES_ADMIN_USER:-postgres}
       PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
@@ -45,6 +45,7 @@ services:
       - sh
       - -ec
       - |
+        export PGHOST="$${SERVICE_NAME_POSTGRES:-postgres}"
         psql --dbname=postgres \
           --set=agw_db="$${AGW_DB_NAME}" \
           --set=agw_user="$${AGW_DB_USER}" \
@@ -68,7 +69,7 @@ services:
     restart: "no"
     user: postgres
     environment:
-      PGHOST: ${SERVICE_NAME_POSTGRES:-postgres}
+      PGHOST: postgres
       PGPORT: "5432"
       PGUSER: ${AGW_DB_USER:-agw}
       PGPASSWORD: ${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}
@@ -82,6 +83,7 @@ services:
       - sh
       - -ec
       - |
+        export PGHOST="$${SERVICE_NAME_POSTGRES:-postgres}"
         psql --set=ON_ERROR_STOP=1 --command "CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
         for file in /migrations/*.sql; do
           [ -f "$${file}" ] || continue
@@ -121,7 +123,9 @@ services:
     environment:
       AGW_ENVIRONMENT: ${AGW_ENVIRONMENT:-production}
       AGW_SERVER_ADDR: ":8094"
-      AGW_DATABASE_URL: postgres://${AGW_DB_USER:-agw}:${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}@${SERVICE_NAME_POSTGRES:-postgres}:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable
+      # The server resolves SERVICE_NAME_POSTGRES at runtime because Coolify
+      # injects that variable after Compose interpolation for PR previews.
+      AGW_DATABASE_URL: postgres://${AGW_DB_USER:-agw}:${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}@postgres:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable
       AGW_AUTH_MODE: local
       AGW_AUTH_TOKEN: ${AGW_AUTH_TOKEN:?set AGW_AUTH_TOKEN}
       AGW_AUTH_PRINCIPAL_ID: ${AGW_AUTH_PRINCIPAL_ID:-local-owner}

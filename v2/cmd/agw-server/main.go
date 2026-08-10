@@ -14,7 +14,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -381,6 +383,11 @@ func configureStore(ctx context.Context) (store.Store, *sql.DB, error) {
 		}
 		return nil, nil, errors.New("AGW_DATABASE_URL is required outside development")
 	}
+	var err error
+	databaseURL, err = resolveCoolifyPreviewDatabaseURL(databaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
 	database, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open PostgreSQL: %w", err)
@@ -398,6 +405,32 @@ func configureStore(ctx context.Context) (store.Store, *sql.DB, error) {
 		return nil, nil, err
 	}
 	return postgres, database, nil
+}
+
+// resolveCoolifyPreviewDatabaseURL adapts the database hostname that Coolify
+// assigns to Compose services during PR deployments. Coolify exposes the
+// generated name as SERVICE_NAME_POSTGRES (for example, postgres-pr-20), but
+// injects it after Compose interpolation has already built AGW_DATABASE_URL.
+func resolveCoolifyPreviewDatabaseURL(databaseURL string) (string, error) {
+	serviceName := strings.TrimSpace(os.Getenv("SERVICE_NAME_POSTGRES"))
+	if serviceName == "" || serviceName == "postgres" {
+		return databaseURL, nil
+	}
+
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse AGW_DATABASE_URL: %w", err)
+	}
+	if parsed.Hostname() == "" {
+		return "", errors.New("AGW_DATABASE_URL has no database host")
+	}
+	if port := parsed.Port(); port != "" {
+		parsed.Host = net.JoinHostPort(serviceName, port)
+	} else {
+		parsed.Host = serviceName
+	}
+
+	return parsed.String(), nil
 }
 
 func configureAuthenticator(ctx context.Context, database *sql.DB) (httpapi.Authenticator, *sql.DB, http.Handler, error) {
