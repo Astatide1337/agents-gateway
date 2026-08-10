@@ -126,7 +126,8 @@ services:
       AGW_SERVER_ADDR: ":8094"
       # The server resolves SERVICE_NAME_POSTGRES at runtime because Coolify
       # injects that variable after Compose interpolation for PR previews.
-      AGW_DATABASE_URL: postgres://${AGW_DB_USER:-agw}:${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}@postgres:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable
+      AGW_DATABASE_URL: postgres://${AGW_DB_USER:-agw}@postgres:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable
+      AGW_DB_PASSWORD: ${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}
       AGW_AUTH_MODE: local
       AGW_AUTH_TOKEN: ${AGW_AUTH_TOKEN:?set AGW_AUTH_TOKEN}
       AGW_AUTH_PRINCIPAL_ID: ${AGW_AUTH_PRINCIPAL_ID:-local-owner}

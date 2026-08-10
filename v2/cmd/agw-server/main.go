@@ -413,7 +413,8 @@ func configureStore(ctx context.Context) (store.Store, *sql.DB, error) {
 // injects it after Compose interpolation has already built AGW_DATABASE_URL.
 func resolveCoolifyPreviewDatabaseURL(databaseURL string) (string, error) {
 	serviceName := strings.TrimSpace(os.Getenv("SERVICE_NAME_POSTGRES"))
-	if serviceName == "" || serviceName == "postgres" {
+	password := strings.TrimSpace(os.Getenv("AGW_DB_PASSWORD"))
+	if (serviceName == "" || serviceName == "postgres") && password == "" {
 		return databaseURL, nil
 	}
 
@@ -424,13 +425,15 @@ func resolveCoolifyPreviewDatabaseURL(databaseURL string) (string, error) {
 	if parsed.Hostname() == "" {
 		return "", errors.New("AGW_DATABASE_URL has no database host")
 	}
-	if password := strings.TrimSpace(os.Getenv("AGW_DB_PASSWORD")); password != "" && parsed.User != nil {
+	if password != "" && parsed.User != nil {
 		parsed.User = url.UserPassword(parsed.User.Username(), password)
 	}
-	if port := parsed.Port(); port != "" {
-		parsed.Host = net.JoinHostPort(serviceName, port)
-	} else {
-		parsed.Host = serviceName
+	if serviceName != "" && serviceName != "postgres" {
+		if port := parsed.Port(); port != "" {
+			parsed.Host = net.JoinHostPort(serviceName, port)
+		} else {
+			parsed.Host = serviceName
+		}
 	}
 
 	return parsed.String(), nil
