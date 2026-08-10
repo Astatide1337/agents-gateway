@@ -28,7 +28,10 @@ services:
     restart: "no"
     user: postgres
     environment:
-      PGHOST: postgres
+      # Coolify suffixes Compose service names for PR previews (for example,
+      # postgres-pr-20).  Its generated SERVICE_NAME_POSTGRES variable keeps
+      # the init path valid in both production and preview deployments.
+      PGHOST: ${SERVICE_NAME_POSTGRES:-postgres}
       PGPORT: "5432"
       PGUSER: ${POSTGRES_ADMIN_USER:-postgres}
       PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
@@ -65,7 +68,7 @@ services:
     restart: "no"
     user: postgres
     environment:
-      PGHOST: postgres
+      PGHOST: ${SERVICE_NAME_POSTGRES:-postgres}
       PGPORT: "5432"
       PGUSER: ${AGW_DB_USER:-agw}
       PGPASSWORD: ${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}
@@ -118,7 +121,7 @@ services:
     environment:
       AGW_ENVIRONMENT: ${AGW_ENVIRONMENT:-production}
       AGW_SERVER_ADDR: ":8094"
-      AGW_DATABASE_URL: postgres://${AGW_DB_USER:-agw}:${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}@postgres:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable
+      AGW_DATABASE_URL: postgres://${AGW_DB_USER:-agw}:${AGW_DB_PASSWORD:?set AGW_DB_PASSWORD}@${SERVICE_NAME_POSTGRES:-postgres}:5432/${AGW_DB_NAME:-agents_gateway}?sslmode=disable
       AGW_AUTH_MODE: local
       AGW_AUTH_TOKEN: ${AGW_AUTH_TOKEN:?set AGW_AUTH_TOKEN}
       AGW_AUTH_PRINCIPAL_ID: ${AGW_AUTH_PRINCIPAL_ID:-local-owner}
