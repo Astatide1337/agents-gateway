@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agents Gateway — System Artifact</title>
+  <style>
+    :root{--bg:#0b0f14;--panel:#111821;--panel2:#151f2b;--line:#263342;--text:#e8eef5;--muted:#9baabd;--faint:#66778c;--cyan:#69d6e8;--green:#8fe0b7;--amber:#f1c878;--red:#f18b94;--purple:#bda5f5;--shadow:0 18px 60px #0007}
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 80% 0,#17344755,transparent 35%),var(--bg);color:var(--text);font:14px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif} a{color:var(--cyan)} .shell{display:grid;grid-template-columns:230px 1fr;min-height:100vh}.side{border-right:1px solid var(--line);padding:28px 20px;position:sticky;top:0;height:100vh;background:#0d131bdb}.brand{font-weight:750;letter-spacing:.02em;font-size:15px}.mark{display:inline-grid;place-items:center;width:28px;height:28px;margin-right:9px;border:1px solid #69d6e866;border-radius:8px;color:var(--cyan);vertical-align:middle}.side small{display:block;color:var(--faint);margin:8px 0 34px}.nav{display:grid;gap:8px;color:var(--muted);font-size:12px}.nav span{padding:8px 10px;border-radius:6px}.nav .active{background:#173241;color:var(--cyan)}.side-note{position:absolute;bottom:24px;color:var(--faint);font-size:11px}.main{max-width:1180px;width:100%;padding:44px 6vw 80px}.eyebrow{color:var(--cyan);font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700}.hero{display:flex;justify-content:space-between;gap:30px;align-items:end;margin-bottom:32px}.hero h1{font-size:clamp(32px,5vw,58px);line-height:1.02;letter-spacing:-.055em;margin:12px 0}.hero p{max-width:650px;color:var(--muted);font-size:16px;margin:0}.badge{border:1px solid #8fe0b744;background:#8fe0b711;color:var(--green);border-radius:999px;padding:7px 11px;white-space:nowrap;font-size:11px}.grid{display:grid;gap:14px}.stats{grid-template-columns:repeat(4,1fr);margin:24px 0 42px}.card{background:linear-gradient(145deg,#141e29,#0f161e);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:0 8px 28px #0002}.stat strong{font-size:25px;display:block;margin:7px 0 1px}.stat span{font-size:11px;color:var(--muted)}.section{margin-top:42px}.section h2{font-size:21px;letter-spacing:-.025em;margin:0 0 7px}.section>p{color:var(--muted);max-width:760px;margin:0 0 18px}.flow{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;align-items:stretch}.node{position:relative;min-height:130px}.node:not(:last-child):after{content:"→";position:absolute;right:-17px;top:47px;color:var(--cyan);font-size:20px;z-index:2}.node .num{color:var(--faint);font:11px ui-monospace,monospace}.node h3{font-size:14px;margin:12px 0 5px}.node p{color:var(--muted);font-size:12px;margin:0}.accent-cyan{border-top:2px solid var(--cyan)}.accent-purple{border-top:2px solid var(--purple)}.accent-green{border-top:2px solid var(--green)}.accent-amber{border-top:2px solid var(--amber)}.accent-red{border-top:2px solid var(--red)}.modules{grid-template-columns:repeat(3,1fr)}.module h3{margin:0 0 7px;font-size:14px}.module p{margin:0;color:var(--muted);font-size:12px}.tag{display:inline-block;margin-top:14px;color:var(--faint);font:10px ui-monospace,monospace}.split{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}.code{background:#090d12;border:1px solid #1f2c3a;border-radius:8px;padding:15px;color:#c6d3df;overflow:auto;font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}.key{color:var(--cyan)}.value{color:var(--green)}.comment{color:#637386}.security{grid-template-columns:repeat(3,1fr)}.security .card{min-height:160px}.icon{font-size:21px}.card h3{margin:10px 0 6px;font-size:14px}.card p{margin:0;color:var(--muted);font-size:12px}.truth{border-left:3px solid var(--amber);background:#f1c8780b}.truth strong{color:var(--amber)}.footer{margin-top:55px;border-top:1px solid var(--line);padding-top:18px;color:var(--faint);font-size:11px;display:flex;justify-content:space-between;gap:20px}@media(max-width:900px){.shell{display:block}.side{height:auto;position:relative;border-right:0;border-bottom:1px solid var(--line);padding:18px 20px}.side small,.side-note{display:none}.nav{display:flex;overflow:auto;margin-top:15px}.main{padding:32px 20px 60px}.hero{display:block}.badge{display:inline-block;margin-top:18px}.stats,.modules,.security{grid-template-columns:repeat(2,1fr)}.flow{grid-template-columns:1fr}.node:not(:last-child):after{content:"↓";right:auto;left:50%;top:auto;bottom:-18px}.split{grid-template-columns:1fr}}@media(max-width:560px){.stats,.modules,.security{grid-template-columns:1fr}.hero h1{font-size:39px}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand"><span class="mark">AG</span>Agents Gateway</div>
+      <small>personal agent runtime · v2</small>
+      <nav class="nav" aria-label="Artifact sections"><span class="active">System overview</span><span>Modularity</span><span>Execution lifecycle</span><span>Security boundaries</span><span>Current limits</span></nav>
+      <div class="side-note">Artifact · owner-operated profile<br>Updated after PR #18</div>
+    </aside>
+    <main class="main">
+      <header class="hero">
+        <div><div class="eyebrow">Architecture artifact / 01</div><h1>A file becomes<br>an agent run.</h1><p>Agents Gateway is a declarative execution layer for running a Codex agent inside a bounded sandbox with only the skills, MCP tools, model route, filesystem, and network access described by its bundle.</p></div>
+        <div class="badge">● production release · main</div>
+      </header>
+
+      <section class="grid stats" aria-label="System facts">
+        <div class="card stat"><span>Authoring surface</span><strong>1 file</strong><span>YAML or JSON AgentBundle</span></div>
+        <div class="card stat"><span>Launch surface</span><strong>1 command</strong><span>agw run -f bundle.yaml</span></div>
+        <div class="card stat"><span>Sandbox runtime</span><strong>Podman</strong><span>rootless, ephemeral, bounded</span></div>
+        <div class="card stat"><span>Result surface</span><strong>Artifacts</strong><span>primary + supporting outputs</span></div>
+      </section>
+
+      <section class="section"><h2>What happens when you run a bundle?</h2><p>The CLI is a thin convenience layer. It compiles the friendly file into the same immutable resources used by the lower-level API, then follows one durable run.</p>
+        <div class="flow">
+          <div class="card node accent-cyan"><span class="num">01 / AUTHOR</span><h3>AgentBundle</h3><p>Prompt, model, skills, MCP grants, sandbox limits, verification, artifact preferences.</p></div>
+          <div class="card node accent-purple"><span class="num">02 / COMPILE</span><h3>Immutable plan</h3><p>Strict decode, path containment, digest validation, deterministic resource revisions.</p></div>
+          <div class="card node accent-amber"><span class="num">03 / APPLY</span><h3>Control plane</h3><p>Agent, SkillSet, ToolSet, ModelRoute, SandboxProfile, and credential references.</p></div>
+          <div class="card node accent-red"><span class="num">04 / EXECUTE</span><h3>Sandbox + brokers</h3><p>Codex runs in rootless Podman. Model, MCP, Skills, and artifacts cross loopback brokers.</p></div>
+          <div class="card node accent-green"><span class="num">05 / PRESENT</span><h3>Run workspace</h3><p>Redacted activity, terminal status, primary artifact, supporting outputs, cleanup.</p></div>
+        </div>
+      </section>
+
+      <section class="section"><h2>How modular is it?</h2><p>Each concern is a replaceable boundary. The personal profile is intentionally small, but the interfaces leave room for stronger runners and providers later.</p>
+        <div class="grid modules">
+          <div class="card module"><h3>Authoring</h3><p><b>AgentBundle</b> is the human-facing contract. It can reference inline or reusable model, sandbox, skill, and tool definitions without embedding secrets.</p><span class="tag">v2/pkg/spec</span></div>
+          <div class="card module"><h3>Control plane</h3><p><b>Immutable resources + revisions</b> make a run reproducible and auditable. The CLI can be replaced by an API, UI, or CI job.</p><span class="tag">v2/pkg/httpapi · store</span></div>
+          <div class="card module"><h3>Harness</h3><p><b>Codex adapter</b> is behind a runtime protocol. A future Claude, OpenCode, or another harness can implement the same boundary.</p><span class="tag">v2/pkg/codexadapter</span></div>
+          <div class="card module"><h3>Model routing</h3><p><b>Responses broker</b> exposes a loopback-only endpoint to the sandbox and resolves OpenAI/OpenRouter credentials outside it.</p><span class="tag">v2/pkg/brokerfactory</span></div>
+          <div class="card module"><h3>Tool routing</h3><p><b>MCP broker + policy ledger</b> exposes only selected servers/tools and records authorization and outcome events.</p><span class="tag">v2/pkg/toolbroker</span></div>
+          <div class="card module"><h3>Artifact system</h3><p><b>Catalog + content API</b> validates descriptors, hashes bytes, stores immutable versions, and renders safe previews in the console.</p><span class="tag">artifactcatalog · console</span></div>
+          <div class="card module"><h3>Runner boundary</h3><p><b>Host-side runner</b> owns sandbox lifecycle over a Unix socket or authenticated transport. The control plane never receives a container-runtime socket.</p><span class="tag">cmd/agw-runner · runnerdispatch</span></div>
+          <div class="card module"><h3>Persistence</h3><p><b>PostgreSQL + RLS</b> stores tenant-scoped resources, revisions, runs, events, audit records, and artifact catalog metadata.</p><span class="tag">pkg/store · migrations</span></div>
+          <div class="card module"><h3>Identity + console</h3><p><b>Owner auth and React console</b> provide scoped API access, SSE activity, artifact previews, and run troubleshooting without putting tokens in artifacts.</p><span class="tag">identity · authz · web</span></div>
+        </div>
+      </section>
+
+      <section class="section split"><div><h2>The mental model</h2><p>A bundle is closer to infrastructure-as-code than to a chat prompt. The file describes an execution contract; the run is a concrete instance of that contract.</p><div class="code"><span class="key">apiVersion</span>: agents.astatide.com/v1alpha1
+<span class="key">kind</span>: AgentBundle
+<span class="key">metadata</span>:
+  <span class="key">name</span>: repository-reviewer
+<span class="key">spec</span>:
+  <span class="key">prompt</span>: prompts/review.md
+  <span class="key">model</span>: <span class="value">OpenAI Responses route</span>
+  <span class="key">skills</span>: <span class="value">pinned revisions</span>
+  <span class="key">mcp</span>: <span class="value">explicit grants only</span>
+  <span class="key">sandbox</span>: <span class="value">rootless + brokered</span>
+  <span class="key">artifacts</span>: <span class="value">required</span></div></div>
+        <div class="card truth"><strong>What is deterministic?</strong><p style="margin-top:10px">The selected tools, skill digests, runtime image, limits, prompt inputs, resource digests, event history, and artifact contract.</p><p style="margin-top:12px">The model’s wording and tool-use quality are not deterministic. That is why the system validates outputs, keeps an auditable event trail, and fails closed on malformed artifacts.</p></div>
+      </section>
+
+      <section class="section"><h2>Security boundaries</h2><p>Secrets and privileged integrations stop at the broker boundary. The sandbox receives capabilities, not raw credentials.</p>
+        <div class="grid security">
+          <div class="card"><div class="icon">◈</div><h3>Sandbox</h3><p>Rootless Podman, ephemeral workspace, read-only root, bounded CPU/memory/disk/PIDs, no direct internet, no-new-privileges.</p></div>
+          <div class="card"><div class="icon">↗</div><h3>Broker</h3><p>OpenAI/OpenRouter, MCP, Skills Gateway, and artifact access are loopback endpoints. Host-side services resolve credentials.</p></div>
+          <div class="card"><div class="icon">▣</div><h3>Output</h3><p>Events redact sensitive material. Artifact descriptors reject traversal and unknown fields; content is hashed and previewed defensively.</p></div>
+        </div>
+      </section>
+
+      <section class="section"><h2>What exists today vs. what is later?</h2><div class="split"><div class="card"><h3 style="color:var(--green)">Ready now</h3><p>Personal declarative bundles · Codex sandbox runtime · OpenAI/OpenRouter model routes · Skills Gateway references · scoped MCP tools · artifacts · activity logs · cancellation · cleanup · console run/artifact views.</p></div><div class="card"><h3 style="color:var(--faint)">Deliberately deferred</h3><p>Public multi-tenant hostile-code isolation · Kubernetes · distributed workflow orchestration · collaboration/sharing · artifact remix APIs · cursor pagination · subscription/OAuth entitlement brokering.</p></div></div></section>
+
+      <section class="section"><h2>Start here</h2><div class="code"><span class="comment"># build the CLI</span>
+go build -o /tmp/agw ./v2/cmd/agw
+
+<span class="comment"># compile, apply, launch, follow, and clean up</span>
+AGW_TOKEN="$AGW_TOKEN" /tmp/agw run -f agent.yaml \
+  --server https://agents.astatide.com \
+  --organization "$AGW_ORGANIZATION" \
+  --project "$AGW_PROJECT"
+
+<span class="comment"># inspect the human-facing result</span>
+https://agents.astatide.com</div></section>
+
+      <footer class="footer"><span>Agents Gateway · owner-operated personal profile</span><span>Source: docs/v2 · release merged to main</span></footer>
+    </main>
+  </div>
+</body>
+</html>
