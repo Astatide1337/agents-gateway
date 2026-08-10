@@ -14,11 +14,17 @@ final CI/release-complete status or a general public/hostile multi-tenant
 execution service.
 
 Release evidence is anchored to commit
-`4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a`, Coolify deployment
-`yf0tuzljbgjwn0otluqpyhbb`, and production run
+`9a61a65da0920b6beab760906a2dad716af4bbc9`, Coolify deployment
+`p6ribksrqvjmh4x1adtyuje8`, and production run
 `run-3686c06ef7ead0b0a1a5b13b7220df7ff0bb282ad1ebda5fe0b4506acbf6d937` in
 the `Gateways` project. The deployed `/healthz` and `/readyz` endpoints both
 returned 200.
+
+The focused personal workflow is documented in
+[personal-agent.md](personal-agent.md), with a runnable `AgentBundle` example
+at [../../v2/examples/personal-agent.yaml](../../v2/examples/personal-agent.yaml).
+The current CLI compiles and launches it with `agw run -f`; lower-level
+`validate`, `plan`, `apply`, and `run` operations remain available.
 
 ## Operational today
 
@@ -204,8 +210,8 @@ exercises the bundled Temporal development server.
 The Coolify Git-backed profile is deployed as a Compose Application in the
 `Gateways` project and keeps the runner outside the Coolify Docker daemon. The
 owner-operated alpha is live at `https://agents.astatide.com`; release commit
-`4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a` was deployed as
-`yf0tuzljbgjwn0otluqpyhbb`.
+`9a61a65da0920b6beab760906a2dad716af4bbc9` was deployed as
+`p6ribksrqvjmh4x1adtyuje8`.
 
 Optional distributed-profile values include:
 

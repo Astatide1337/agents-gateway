@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -167,6 +169,116 @@ spec:
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"validate", "-production", "-f", manifest}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "sha256") {
 		t.Fatalf("expected production digest error, code=%d stderr=%s", code, stderr.String())
+	}
+}
+
+func TestRunAgentBundleAppliesStartsAndFollows(t *testing.T) {
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer runtime-token" {
+			t.Fatalf("missing runtime authorization")
+		}
+		methods = append(methods, request.Method+" "+request.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPut:
+			_, _ = w.Write([]byte(`{"data":{"revision":1}}`))
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/runs"):
+			_, _ = w.Write([]byte(`{"data":{"id":"run-bundle-1","status":"Succeeded"}}`))
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/events"):
+			_, _ = w.Write([]byte(`{"data":{"events":[{"sequence":1,"type":"run.completed"}]}}`))
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/run-bundle-1"):
+			_, _ = w.Write([]byte(`{"data":{"id":"run-bundle-1","status":"Succeeded"}}`))
+		default:
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AGW_TOKEN", "runtime-token")
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(bundle, []byte(`apiVersion: agents.astatide.com/v1alpha1
+kind: AgentBundle
+metadata:
+  name: bundle-runner
+spec:
+  prompt: |
+    Produce a review.
+  runtime:
+    harness: codex
+    image: ghcr.io/astatide/runtime@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  model:
+    provider: openrouter
+    model: cohere/north-mini-code:free
+    credentialRef: openrouter-api
+  sandbox:
+    backend: podman
+    resources:
+      cpu: "1"
+      memory: 1Gi
+      disk: 2Gi
+      pids: 128
+    network:
+      mode: brokered
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"run", "-f", bundle, "-server", server.URL, "-organization", "org-a", "-project", "project-a"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("bundle run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if len(methods) != 6 || !strings.Contains(stdout.String(), "run-bundle-1") || !strings.Contains(stdout.String(), "run.completed") {
+		t.Fatalf("methods=%#v stdout=%s", methods, stdout.String())
+	}
+	if !strings.HasSuffix(methods[0], "/resources/Agent/bundle-runner") || !strings.HasSuffix(methods[len(methods)-1], "/events") {
+		t.Fatalf("unexpected bundle request order: %#v", methods)
+	}
+}
+
+func TestRunAgentBundleInputChangesRequestDefinition(t *testing.T) {
+	var runBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/runs") {
+			body, _ := io.ReadAll(request.Body)
+			runBody = string(body)
+			_, _ = w.Write([]byte(`{"data":{"id":"run-input","status":"Succeeded"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"revision":1}}`))
+	}))
+	defer server.Close()
+	t.Setenv("AGW_TOKEN", "runtime-token")
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "agent.yaml")
+	input := filepath.Join(dir, "input.txt")
+	if err := os.WriteFile(bundle, []byte(`apiVersion: agents.astatide.com/v1alpha1
+kind: AgentBundle
+metadata:
+  name: input-agent
+spec:
+  prompt: review
+  runtime:
+    harness: codex
+    image: ghcr.io/astatide/runtime@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  model:
+    provider: openrouter
+    model: cohere/north-mini-code:free
+    credentialRef: openrouter-api
+  sandbox:
+    backend: podman
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("inspect issue 42"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"run", bundle, "-server", server.URL, "-organization", "org-a", "-project", "project-a", "-input", input, "-follow=false"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("bundle input run failed: %d %s", code, stderr.String())
+	}
+	if !strings.Contains(runBody, "input-agent") {
+		t.Fatalf("run request did not reach server: %s", runBody)
 	}
 }
 

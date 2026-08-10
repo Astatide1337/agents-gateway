@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -699,6 +700,10 @@ func (h *Handler) handleArtifact(w http.ResponseWriter, r *http.Request, request
 		writeError(w, requestID, http.StatusServiceUnavailable, "artifact_catalog_unavailable", "the artifact catalog is not configured")
 		return
 	}
+	if route.runArtifacts {
+		h.handleRunArtifacts(w, r, requestID, route)
+		return
+	}
 	if route.artifactID == "" {
 		records, err := h.artifacts.ListArtifactVersions(r.Context(), route.scope, "")
 		if err != nil {
@@ -779,6 +784,135 @@ func (h *Handler) handleArtifact(w http.ResponseWriter, r *http.Request, request
 	_, _ = io.CopyN(w, verified, opened.SizeBytes)
 }
 
+// runArtifactOutput is a transport projection rather than a new catalog
+// contract. outputRole is derived from the existing artifact.created event
+// association when available; older artifacts receive a deterministic role
+// so the run page can still present a useful primary output.
+type runArtifactOutput struct {
+	artifactcatalog.Version
+	OutputRole string `json:"outputRole"`
+}
+
+func (output runArtifactOutput) MarshalJSON() ([]byte, error) {
+	data, err := json.Marshal(output.Version)
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, err
+	}
+	object["outputRole"] = output.OutputRole
+	return json.Marshal(object)
+}
+
+func (h *Handler) handleRunArtifacts(w http.ResponseWriter, r *http.Request, requestID string, route parsedRoute) {
+	records, err := h.artifacts.ListArtifactVersions(r.Context(), route.scope, "")
+	if err != nil {
+		writeStoreError(w, requestID, err)
+		return
+	}
+	filtered := records[:0]
+	for _, record := range records {
+		if record.RunID == route.runID {
+			filtered = append(filtered, record)
+		}
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].CreatedAt.Equal(filtered[j].CreatedAt) {
+			if filtered[i].VersionNumber == filtered[j].VersionNumber {
+				return filtered[i].VersionID < filtered[j].VersionID
+			}
+			return filtered[i].VersionNumber < filtered[j].VersionNumber
+		}
+		return filtered[i].CreatedAt.Before(filtered[j].CreatedAt)
+	})
+
+	roles := map[string]string{}
+	if events, eventErr := h.storage.ListEvents(r.Context(), route.scope, route.runID, 0); eventErr == nil {
+		for _, event := range events {
+			if event.Type != "artifact.created" {
+				continue
+			}
+			var payload struct {
+				ArtifactID string `json:"artifact_id"`
+				OutputRole string `json:"output_role"`
+				Role       string `json:"role"`
+				Artifact   struct {
+					ID         string `json:"id"`
+					OutputRole string `json:"output_role"`
+					Role       string `json:"role"`
+				} `json:"artifact"`
+			}
+			if json.Unmarshal(event.Payload, &payload) != nil {
+				continue
+			}
+			id := payload.ArtifactID
+			if id == "" {
+				id = payload.Artifact.ID
+			}
+			role := payload.OutputRole
+			if role == "" {
+				role = payload.Role
+			}
+			if role == "" {
+				role = payload.Artifact.OutputRole
+			}
+			if role == "" {
+				role = payload.Artifact.Role
+			}
+			if id != "" && (role == "primary" || role == "supporting") {
+				roles[id] = role
+			}
+		}
+	}
+
+	outputs := make([]runArtifactOutput, 0, len(filtered))
+	primaryAssigned := false
+	for _, record := range filtered {
+		version, decodeErr := decodeArtifactVersion(record)
+		if decodeErr != nil {
+			writeError(w, requestID, http.StatusInternalServerError, "artifact_catalog_invalid", "the artifact catalog contains an invalid version")
+			return
+		}
+		role := roles[record.ArtifactID]
+		if role == "" {
+			// Legacy runs did not persist a role. Authored artifacts are the
+			// useful primary output; the generated generic run output is a
+			// supporting fallback when both are present.
+			if !primaryAssigned && !strings.Contains(strings.ToLower(version.Manifest.Title), "run output") {
+				role = "primary"
+			} else {
+				role = "supporting"
+			}
+		}
+		if role == "primary" {
+			primaryAssigned = true
+		}
+		outputs = append(outputs, runArtifactOutput{Version: version, OutputRole: role})
+	}
+	if len(outputs) > 0 && !primaryAssigned {
+		outputs[0].OutputRole = "primary"
+	}
+	primary := make([]runArtifactOutput, 0, 1)
+	supporting := make([]runArtifactOutput, 0, len(outputs))
+	for _, output := range outputs {
+		if output.OutputRole == "primary" && len(primary) == 0 {
+			primary = append(primary, output)
+		} else {
+			output.OutputRole = "supporting"
+			supporting = append(supporting, output)
+		}
+	}
+	var primaryOutput any
+	if len(primary) == 1 {
+		primaryOutput = primary[0]
+	}
+	writeJSON(w, http.StatusOK, requestID, map[string]any{
+		"runId": route.runID, "primary": primaryOutput, "supporting": supporting, "artifacts": outputs,
+	})
+}
+
 // stageVerifiedArtifact prevents corrupted or replaced object bytes from
 // reaching a browser. A private temporary file keeps memory use bounded and
 // lets the handler verify the complete digest before committing headers.
@@ -857,6 +991,7 @@ type parsedRoute struct {
 	signal                string
 	artifactID, versionID string
 	artifactContent       bool
+	runArtifacts          bool
 	collection            string
 	collectionKinds       string
 }
@@ -903,6 +1038,9 @@ func (r parsedRoute) resourceID() string {
 		}
 		return "run/" + r.runID
 	case routeArtifact:
+		if r.runArtifacts {
+			return "run/" + r.runID + "/artifacts"
+		}
 		if r.artifactID == "" {
 			return "artifact"
 		}
@@ -946,6 +1084,10 @@ func parseRoute(path string) (parsedRoute, bool) {
 		}
 		if len(parts) == 9 && parts[8] == "events" && validIdentifier(parts[7]) {
 			route.kind, route.runID = routeEvents, parts[7]
+			return route, true
+		}
+		if len(parts) == 9 && parts[8] == "artifacts" && validIdentifier(parts[7]) {
+			route.kind, route.runID, route.runArtifacts = routeArtifact, parts[7], true
 			return route, true
 		}
 		if len(parts) == 9 && validIdentifier(parts[7]) {

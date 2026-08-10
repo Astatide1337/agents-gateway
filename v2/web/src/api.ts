@@ -116,6 +116,19 @@ export interface ApiArtifactDetail {
   versions: ApiArtifactVersion[];
 }
 
+export type ApiOutputRole = 'primary' | 'supporting';
+
+export interface ApiRunArtifact extends ApiArtifactVersion {
+  outputRole: ApiOutputRole;
+}
+
+export interface ApiRunArtifacts {
+  runId: string;
+  primary?: ApiRunArtifact;
+  supporting: ApiRunArtifact[];
+  artifacts: ApiRunArtifact[];
+}
+
 export interface ApiArtifactContent {
   body: string;
   mediaType: string;
@@ -275,6 +288,15 @@ export class ApiClient {
     return this.request<ApiEvent[] | { events?: ApiEvent[] }>(`${this.scope(organization, project)}/runs/${encodeURIComponent(runId)}/events?after=${after}`).then((result) => Array.isArray(result) ? result : result.events ?? []);
   }
 
+  getRunArtifacts(organization: string, project: string, runId: string): Promise<ApiRunArtifacts> {
+    return this.request<ApiRunArtifacts>(`${this.scope(organization, project)}/runs/${encodeURIComponent(runId)}/artifacts`).then((result) => ({
+      runId: result.runId,
+      primary: result.primary,
+      supporting: result.supporting ?? [],
+      artifacts: result.artifacts ?? [],
+    }));
+  }
+
   private async collection<T>(organization: string, project: string, path: string): Promise<ApiCollection<T>> {
     return this.request<ApiCollection<T>>(`${this.scope(organization, project)}/${path}`);
   }
@@ -351,31 +373,60 @@ export class ApiClient {
     return response.blob();
   }
 
-  subscribeToEvents(organization: string, project: string, runId: string, listener: EventListener, onError?: (error: unknown) => void, after = 0): () => void {
+  subscribeToEvents(organization: string, project: string, runId: string, listener: EventListener, onError?: (error: unknown) => void, after = 0, onStatus?: (status: 'connecting' | 'connected' | 'reconnecting' | 'closed') => void): () => void {
     const controller = new AbortController();
-    const url = joinUrl(this.baseUrl, `${this.scope(organization, project)}/runs/${encodeURIComponent(runId)}/events?stream=1&after=${after}`);
+    let lastSequence = after;
+    let stopped = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    const url = () => joinUrl(this.baseUrl, `${this.scope(organization, project)}/runs/${encodeURIComponent(runId)}/events?stream=1&after=${lastSequence}`);
 
-    void this.headers('text/event-stream').then((headers) => this.fetcher(url, { headers, signal: controller.signal, credentials: 'same-origin' })).then(async (response) => {
-      if (!response.ok || !response.body) throw new ApiError('Event stream failed', response.status);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (!controller.signal.aborted) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-        for (const frame of frames) {
-          const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
-          if (data) listener(JSON.parse(data) as ApiEvent);
+    const scheduleReconnect = (error?: unknown) => {
+      if (stopped) return;
+      if (error) onError?.(error);
+      onStatus?.('reconnecting');
+      reconnectTimer = setTimeout(() => { reconnectTimer = undefined; void connect(); }, 1000);
+    };
+    const connect = async () => {
+      if (stopped) return;
+      onStatus?.(lastSequence === after ? 'connecting' : 'reconnecting');
+      try {
+        const headers = await this.headers('text/event-stream');
+        const response = await this.fetcher(url(), { headers, signal: controller.signal, credentials: 'same-origin' });
+        if (!response.ok || !response.body) throw new ApiError('Event stream failed', response.status);
+        onStatus?.('connected');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!stopped) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() ?? '';
+          for (const frame of frames) {
+            const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
+            if (!data) continue;
+            const event = JSON.parse(data) as ApiEvent;
+            if (event.sequence > lastSequence) {
+              lastSequence = event.sequence;
+              listener(event);
+            }
+          }
         }
+        await reader.cancel().catch(() => undefined);
+        scheduleReconnect();
+      } catch (error: unknown) {
+        if (!stopped && !controller.signal.aborted) scheduleReconnect(error);
       }
-    }).catch((error: unknown) => {
-      if (!controller.signal.aborted) onError?.(error);
-    });
+    };
+    void connect();
 
-    return () => controller.abort();
+    return () => {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      controller.abort();
+      onStatus?.('closed');
+    };
   }
 }
 

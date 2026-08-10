@@ -1,0 +1,103 @@
+# Personal owner-operated AgentBundle.
+#
+# This is one declarative file. `agw run -f` validates and compiles it into
+# immutable Agent, SkillSet, ToolSet, ModelRoute, and SandboxProfile
+# revisions, applies those revisions, and launches one AgentRun. Credential
+# resources are intentionally referenced by name; secret values never belong
+# in this file.
+
+apiVersion: agents.astatide.com/v1alpha1
+kind: AgentBundle
+metadata:
+  name: personal-agent
+spec:
+  prompt: |
+    You are running a personal Agents Gateway acceptance task.
+
+    Work only inside the current workspace. Before doing the task, wait a few
+    seconds so an operator can test cancellation. Use the mounted skill without
+    printing its contents. If /skills contains a SKILL.md, compute its sha256
+    and include only this proof marker in your final response:
+    AGW_PERSONAL_SKILL_PROOF___AGW_PERSONAL_SKILL_FILE_SHA256__. Never print
+    credentials, environment values, raw tool arguments, or skill contents.
+
+    If the configured MCP server is available, call only get_me once. Do not
+    call any other MCP tool. Do not attempt writes.
+
+    Create a polished Markdown report at personal-agent-report.md. It is the
+    primary human-facing output and must include the exact marker
+    __AGW_PERSONAL_RUN_MARKER__ plus a concise summary
+    of the work, selected skill, and permitted tool result.
+
+    Create personal-agent-verification.txt with bounded verification facts and
+    the same run marker. Create these two descriptors under .agw/artifacts/:
+
+    - personal-agent-report.json: title "Personal agent primary report",
+      description "Primary report produced by the personal agent",
+      content_kind document, media_type text/markdown, source
+      personal-agent-report.md, capabilities [].
+    - personal-agent-verification.json: title "Personal agent supporting
+      verification", description "Supporting checks for the personal run",
+      content_kind text, media_type text/plain, source
+      personal-agent-verification.txt, capabilities [].
+
+    Read both files and both descriptors back before finishing. The primary
+    and supporting roles are inferred by the run-artifacts API from authored
+    artifact order; do not add unsupported descriptor fields.
+
+    Finish with a concise summary containing the run marker and skill proof
+    marker, without exposing secrets.
+  runtime:
+    harness: codex
+    # Replace this operator-local placeholder before a live run.
+    image: ghcr.io/astatide/agents-gateway-runtime-codex@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  model:
+    provider: openrouter
+    kind: openrouter-responses
+    model: cohere/north-mini-code:free
+    credentialRef: personal-openrouter
+    priority: 1
+  sandbox:
+    backend: podman
+    resources:
+      cpu: "2"
+      memory: 2Gi
+      disk: 4Gi
+      pids: 256
+    filesystem:
+      root: read-only
+      workspace: writable
+    network:
+      mode: brokered
+      directInternet: false
+  skills:
+    - name: codebase-design
+      ref: agent-manager/matt-pocock/codebase-design
+      digest: sha256:d77fbf5456e10c0d323312b65ca54d462f975ab2e5867b9958ebed6b607a9af0
+  mcp:
+    servers:
+      - name: github
+        ref: https://dockermcp.astatide.com/mcp
+        credentialsRef: personal-mcp
+        tools:
+          - name: get_me
+            effect: read
+            approval: allow
+  limits:
+    timeout: 12m
+    maxToolCalls: 2
+    maxCostUsd: 0
+  verification:
+    commands:
+      - test -s personal-agent-report.md
+      - test -s personal-agent-verification.txt
+      - test -s .agw/artifacts/personal-agent-report.json
+      - test -s .agw/artifacts/personal-agent-verification.json
+  artifacts:
+    enabled: true
+    required: true
+    primaryKind: document
+    primaryMediaType: text/markdown
+    preferredKinds:
+      - document
+      - text

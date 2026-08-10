@@ -11,8 +11,8 @@ exists but a required live or profile-specific test is still outstanding.
 Current gate ledger: gates 1 through 6 are passed for the owner-operated alpha,
 including connected gate 2. Evidence is anchored to production run
 `run-3686c06ef7ead0b0a1a5b13b7220df7ff0bb282ad1ebda5fe0b4506acbf6d937`,
-release commit `4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a`, and Coolify
-deployment `yf0tuzljbgjwn0otluqpyhbb` in the `Gateways` project. This ledger
+release commit `9a61a65da0920b6beab760906a2dad716af4bbc9`, and Coolify
+deployment `p6ribksrqvjmh4x1adtyuje8` in the `Gateways` project. This ledger
 does not claim final CI/cleanup completion or public multi-tenant readiness;
 those remain separate final-release gates.
 
@@ -86,3 +86,9 @@ The authoritative current feature ledger is
 [implementation-status.md](implementation-status.md). The target design is
 [architecture-plan.md](architecture-plan.md), and its security assumptions are
 [threat-model.md](threat-model.md).
+
+The personal owner-operated acceptance path is documented in
+[personal-agent.md](personal-agent.md). It covers the current `AgentBundle`
+compiler/launch surface, durable event troubleshooting, primary/supporting
+artifact output, and cancellation/cleanup checks without broadening the
+owner-operated shared-kernel threat model.

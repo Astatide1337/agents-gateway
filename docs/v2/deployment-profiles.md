@@ -40,8 +40,8 @@ Application in the `Gateways` project and `production` environment, with:
 
 This profile is live and verified for the owner-operated alpha. It is not a
 claim of public multi-tenant readiness. Release commit
-`4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a` is deployed as Coolify deployment
-`yf0tuzljbgjwn0otluqpyhbb` in `Gateways`; `/healthz` and `/readyz` both
+`9a61a65da0920b6beab760906a2dad716af4bbc9` is deployed as Coolify deployment
+`p6ribksrqvjmh4x1adtyuje8` in `Gateways`; `/healthz` and `/readyz` both
 returned 200. Final CI/release completion and all cleanup automation are not
 claimed here.
 

@@ -6,6 +6,7 @@ package spec
 
 const (
 	APIVersion         = "agents.astatide.com/v1alpha1"
+	KindAgentBundle    = "AgentBundle"
 	KindOrganization   = "Organization"
 	KindProject        = "Project"
 	KindAgent          = "Agent"
@@ -91,6 +92,7 @@ type AgentSpec struct {
 	SandboxProfileRef string                `json:"sandboxProfileRef,omitempty" yaml:"sandboxProfileRef,omitempty"`
 	Limits            RunLimits             `json:"limits,omitempty" yaml:"limits,omitempty"`
 	Verification      VerificationSpec      `json:"verification,omitempty" yaml:"verification,omitempty"`
+	Artifacts         *ArtifactPreferences  `json:"artifacts,omitempty" yaml:"artifacts,omitempty"`
 	Environment       []EnvironmentVariable `json:"environment,omitempty" yaml:"environment,omitempty"`
 }
 
@@ -253,6 +255,17 @@ type RunLimits struct {
 
 type VerificationSpec struct {
 	Commands []string `json:"commands,omitempty" yaml:"commands,omitempty"`
+}
+
+// ArtifactPreferences are execution hints carried with an Agent revision. The
+// runtime may use them when selecting the primary authored artifact; they are
+// deliberately declarative and contain no content or credentials.
+type ArtifactPreferences struct {
+	Enabled          bool     `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Required         bool     `json:"required,omitempty" yaml:"required,omitempty"`
+	PrimaryKind      string   `json:"primaryKind,omitempty" yaml:"primaryKind,omitempty"`
+	PrimaryMediaType string   `json:"primaryMediaType,omitempty" yaml:"primaryMediaType,omitempty"`
+	PreferredKinds   []string `json:"preferredKinds,omitempty" yaml:"preferredKinds,omitempty"`
 }
 
 type EnvironmentVariable struct {

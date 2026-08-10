@@ -782,3 +782,75 @@ func TestArtifactContentIntegrityIsVerifiedBeforeResponse(t *testing.T) {
 		t.Fatalf("verified content=%q err=%v", read, err)
 	}
 }
+
+func TestRunArtifactsExposeScopedPrimaryAndSupportingOutputs(t *testing.T) {
+	storage := store.NewMemory()
+	scope := store.Scope{OrganizationID: "org-a", ProjectID: "project-a"}
+	if _, err := storage.CreateRun(context.Background(), store.Run{
+		Scope: scope, ID: "run-artifact-outputs", Kind: "AgentRun",
+		DefinitionDigest: "sha256:" + strings.Repeat("a", 64), RequestedBy: "user-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	newVersion := func(t *testing.T, id, title string, number int64) artifactcatalog.Version {
+		t.Helper()
+		version, err := artifactcatalog.NewRunOutput(artifactcatalog.PublishInput{
+			ArtifactID: id, VersionID: id + "-v1", Title: title,
+			URI: "artifact://catalog/" + id, Digest: "sha256:" + strings.Repeat("b", 64),
+			MediaType: "text/markdown", SizeBytes: 11, CreatedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := storage.PutArtifactVersion(context.Background(), store.ArtifactVersion{
+			Scope: scope, ArtifactID: id, VersionID: version.VersionID, RunID: "run-artifact-outputs",
+			VersionNumber: number, Document: mustJSON(t, version), ContentObjectKey: id, SourceObjectKey: id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
+	primary := newVersion(t, "artifact-primary", "Acceptance report", 1)
+	supporting := newVersion(t, "artifact-supporting", "Run output", 1)
+	if _, err := storage.AppendEvent(context.Background(), store.Event{Scope: scope, RunID: "run-artifact-outputs", Type: "artifact.created", Payload: mustJSON(t, map[string]any{"artifact_id": primary.ArtifactID, "output_role": "primary"})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.AppendEvent(context.Background(), store.Event{Scope: scope, RunID: "run-artifact-outputs", Type: "artifact.created", Payload: mustJSON(t, map[string]any{"artifact_id": supporting.ArtifactID, "output_role": "supporting"})}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := New(storage, viewer(), Options{})
+	response := request(t, handler, http.MethodGet, "/api/v1alpha1/organizations/org-a/projects/project-a/runs/run-artifact-outputs/artifacts", "", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("run artifacts status=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			RunID      string           `json:"runId"`
+			Primary    map[string]any   `json:"primary"`
+			Supporting []map[string]any `json:"supporting"`
+			Artifacts  []map[string]any `json:"artifacts"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.RunID != "run-artifact-outputs" || envelope.Data.Primary["artifact_id"] != primary.ArtifactID || envelope.Data.Primary["outputRole"] != "primary" {
+		t.Fatalf("unexpected primary output: %+v", envelope.Data.Primary)
+	}
+	if len(envelope.Data.Supporting) != 1 || envelope.Data.Supporting[0]["artifact_id"] != supporting.ArtifactID || envelope.Data.Supporting[0]["outputRole"] != "supporting" {
+		t.Fatalf("unexpected supporting outputs: %+v", envelope.Data.Supporting)
+	}
+	if len(envelope.Data.Artifacts) != 2 {
+		t.Fatalf("expected two scoped artifacts, got %d", len(envelope.Data.Artifacts))
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}

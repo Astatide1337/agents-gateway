@@ -119,6 +119,45 @@ describe('ApiClient', () => {
     await expect(client.listEvents('org', 'project', 'run-1')).resolves.toEqual([expect.objectContaining({ sequence: 3, type: 'run.started' })]);
   });
 
+  it('loads run-scoped primary and supporting artifact outputs', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({ data: {
+      runId: 'run-1',
+      primary: { artifact_id: 'artifact-1', version_id: 'v1', outputRole: 'primary', manifest: { title: 'Report' }, content: { digest: 'sha256:report', size_bytes: 12, media_type: 'text/markdown' } },
+      supporting: [{ artifact_id: 'artifact-2', version_id: 'v1', outputRole: 'supporting', manifest: { title: 'Logs' }, content: { digest: 'sha256:logs', size_bytes: 8, media_type: 'text/plain' } }],
+    } }));
+    const client = new ApiClient({ baseUrl: 'https://gateway.test/api/v1alpha1', fetcher });
+
+    await expect(client.getRunArtifacts('org', 'project', 'run-1')).resolves.toMatchObject({ runId: 'run-1', primary: { outputRole: 'primary' }, supporting: [{ outputRole: 'supporting' }] });
+    expect(fetcher.mock.calls[0]?.[0]).toBe('https://gateway.test/api/v1alpha1/organizations/org/projects/project/runs/run-1/artifacts');
+  });
+
+  it('reconnects the event stream from the last observed sequence', async () => {
+    const stream = (sequence: number) => new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`id: ${sequence}\ndata: ${JSON.stringify({ sequence, type: 'tool.completed', payload: {}, createdAt: '2026-08-08T14:00:00Z' })}\n\n`));
+        controller.close();
+      },
+    });
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(stream(8), { status: 200 }))
+      .mockResolvedValueOnce(new Response(stream(9), { status: 200 }));
+    const listener = vi.fn();
+    const status = vi.fn();
+    vi.useFakeTimers();
+    try {
+      const client = new ApiClient({ baseUrl: 'https://gateway.test/api/v1alpha1', fetcher });
+      const stop = client.subscribeToEvents('org', 'project', 'run-1', listener, undefined, 7, status);
+      await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(expect.objectContaining({ sequence: 8 })), { timeout: 1000 });
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(expect.objectContaining({ sequence: 9 })), { timeout: 1000 });
+      expect(String(fetcher.mock.calls[1]?.[0])).toContain('/runs/run-1/events?stream=1&after=8');
+      expect(status).toHaveBeenCalledWith('reconnecting');
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('loads authenticated tenant collections without configured resource references', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => response({ data: { items: [{ kind: 'Agent', name: 'live-agent' }], hasMore: false, nextOffset: null, limit: 100, offset: 0 } }));
     const client = new ApiClient({ baseUrl: 'https://gateway.test/api/v1alpha1', tokenProvider: () => 'runtime-token', fetcher });

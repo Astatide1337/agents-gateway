@@ -4,6 +4,11 @@ Agents Gateway is a self-hosted agent catalog and task runtime gateway. It expos
 
 **Not** a general-purpose API gateway, not a Kubernetes operator, not an LLM proxy.
 
+For the focused owner-operated workflow, start with the [personal agent
+guide](docs/v2/personal-agent.md) and [personal example](v2/examples/personal-agent.yaml).
+It documents the current file-based `AgentBundle` and the `agw run -f`
+compiler/launch flow.
+
 > **Two implementation tracks:** the Python service documented below is the
 > existing v1 gateway. The standalone Go v2 control plane and sandbox runner
 > are an active, security-first rewrite—not yet a general production release.
@@ -34,8 +39,8 @@ not advertise silent model fallback.
 
 Connected gate-2 evidence is persisted under run
 `run-3686c06ef7ead0b0a1a5b13b7220df7ff0bb282ad1ebda5fe0b4506acbf6d937` and
-release commit `4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a`. It was deployed as
-Coolify deployment `yf0tuzljbgjwn0otluqpyhbb` in `Gateways`; `/healthz` and
+release commit `9a61a65da0920b6beab760906a2dad716af4bbc9`. It was deployed as
+Coolify deployment `p6ribksrqvjmh4x1adtyuje8` in `Gateways`; `/healthz` and
 `/readyz` both returned 200. Evidence includes the pinned skill digest/file
 marker, authenticated/read `get_me`, authenticated/succeeded `create_branch`
 with exactly `owner`, `repo`, `branch`, and `from_branch` arguments, persisted

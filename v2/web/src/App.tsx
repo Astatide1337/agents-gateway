@@ -8,8 +8,9 @@ import {
   Network, Package, PlayCircle, Plus, RefreshCw, Search, Server, Settings2, ShieldCheck, Sparkles,
   TerminalSquare, UserRound, Workflow, XCircle, Zap,
 } from 'lucide-react';
-import { ApiError, createApiClient, type ApiAuditEntry, type ApiEvent, type ApiResource, type ApiRun, type ApiUsage, type RemoteState, type ApiClient } from './api';
+import { ApiError, createApiClient, type ApiAuditEntry, type ApiEvent, type ApiResource, type ApiRun, type ApiRunArtifacts, type ApiRunArtifact, type ApiUsage, type RemoteState, type ApiClient } from './api';
 import ArtifactsView from './ArtifactsView';
+import ArtifactWorkspace, { type ArtifactSummary } from './ArtifactWorkspace';
 
 export const DEFAULT_ORGANIZATION = '00000000-0000-4000-8000-000000000001';
 export const DEFAULT_PROJECT = '00000000-0000-4000-8000-000000000002';
@@ -354,24 +355,108 @@ function useLiveRuns(api: ApiClient, liveMode: boolean, organization: string, pr
   return useLiveCollection(liveMode, refreshKey, () => api.listRuns(organization, project).then((items) => items.map(runFromApi)), 'No runs have been recorded for this project yet.');
 }
 
+type ActivityFilter = 'all' | 'errors' | 'tools' | 'model' | 'sandbox';
+
+function activityGroup(type: string): Exclude<ActivityFilter, 'all'> | 'all' {
+  const normalized = type.toLowerCase();
+  if (normalized.includes('error') || normalized.includes('fail')) return 'errors';
+  if (normalized.startsWith('tool.')) return 'tools';
+  if (normalized.startsWith('model.')) return 'model';
+  if (normalized.startsWith('sandbox.')) return 'sandbox';
+  return 'all';
+}
+
+function safeEventDetails(event: ApiEvent): string {
+  const allowed = ['tool', 'model', 'status', 'durationMs', 'backend', 'isolation', 'message', 'reason', 'code'];
+  return Object.entries(event.payload)
+    .filter(([key, value]) => allowed.includes(key) && (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'))
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join(' · ');
+}
+
 function LiveEventsPanel({ api, organization, project, run, refreshKey }: LiveViewScope & { run: Run }) {
   const [state, setState] = useState<RemoteState<ApiEvent[]>>({ status: 'loading' });
+  const [streamStatus, setStreamStatus] = useState<'connecting' | 'connected' | 'reconnecting' | 'closed'>('connecting');
+  const [filter, setFilter] = useState<ActivityFilter>('all');
+  const [expanded, setExpanded] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
+    let stop: (() => void) | undefined;
     setState({ status: 'loading' });
     api.listEvents(organization, project, run.id).then((data) => {
-      if (!cancelled) setState(data.length === 0 ? { status: 'empty', message: 'This run has not emitted any events yet.' } : { status: 'ready', data });
+      if (cancelled) return;
+      setState(data.length === 0 ? { status: 'empty', message: 'This run has not emitted any events yet.' } : { status: 'ready', data });
+      const after = data.reduce((last, event) => Math.max(last, event.sequence), 0);
+      stop = api.subscribeToEvents(organization, project, run.id, (event) => {
+        if (cancelled) return;
+        setState((current) => {
+          const previous = current.status === 'ready' ? current.data : [];
+          if (previous.some((item) => item.sequence === event.sequence)) return current;
+          return { status: 'ready', data: [...previous, event].sort((left, right) => left.sequence - right.sequence) };
+        });
+      }, undefined, after, setStreamStatus);
     }).catch((error: unknown) => {
       if (!cancelled) setState(error instanceof ApiError && (error.status === 401 || error.status === 403) ? { status: 'permission', message: 'Your session cannot read this run event stream.' } : { status: 'error', message: apiErrorMessage(error) });
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; stop?.(); };
   }, [api, organization, project, refreshKey, run.id]);
   if (state.status !== 'ready') return <SectionCard title="Event timeline" eyebrow="Live run events" className="events-card"><StatePanel state={state} /></SectionCard>;
-  return <SectionCard title="Event timeline" eyebrow={`Live event history · ${run.id}`} action={<span className="stream-state"><span className="online-dot" /> API stream</span>} className="events-card"><div className="event-list">{state.data.map((event, index) => <div className="event-row" key={event.sequence}><div className="event-rail"><span className={`event-dot event-${event.type.split('.')[0]}`} />{index < state.data.length - 1 ? <span className="event-line" /> : null}</div><div className="event-content"><div className="event-meta"><strong>{event.type}</strong><span>{formatTime(event.createdAt)}</span><span className="mono-text">#{event.sequence}</span></div><p>{eventSummary(event)}</p></div></div>)}</div></SectionCard>;
+  const visible = state.data.filter((event) => filter === 'all' || activityGroup(event.type) === filter);
+  return <SectionCard title="Activity" eyebrow={`Live run activity · ${run.id}`} action={<span className={`stream-state stream-${streamStatus}`}><span className="online-dot" /> {streamStatus === 'connected' ? 'Live stream' : streamStatus === 'reconnecting' ? 'Reconnecting' : streamStatus === 'closed' ? 'Stopped' : 'Connecting'}</span>} className="events-card"><div className="activity-filters" role="group" aria-label="Activity filters">{(['all', 'errors', 'tools', 'model', 'sandbox'] as ActivityFilter[]).map((item) => <button key={item} type="button" className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</div><div className="event-list">{visible.length === 0 ? <div className="state-panel"><Activity size={18} /><strong>No matching activity</strong><span>Try another activity filter.</span></div> : visible.map((event, index) => <div className="event-row" key={event.sequence}><div className="event-rail"><span className={`event-dot event-${event.type.split('.')[0]}`} />{index < visible.length - 1 ? <span className="event-line" /> : null}</div><div className="event-content"><button type="button" className="event-summary-button" onClick={() => setExpanded((current) => current === event.sequence ? null : event.sequence)} aria-expanded={expanded === event.sequence}><span className="event-meta"><strong>{event.type}</strong><span>{formatTime(event.createdAt)}</span><span className="mono-text">#{event.sequence}</span></span><span>{eventSummary(event)}</span></button>{expanded === event.sequence && safeEventDetails(event) ? <div className="event-details" role="note">{safeEventDetails(event)}</div> : null}</div></div>)}</div></SectionCard>;
 }
 
+function runArtifactSummary(output: ApiRunArtifact): ArtifactSummary {
+  const version = {
+    id: output.version_id,
+    version: output.version_id,
+    createdAt: output.created_at,
+    digest: output.content.digest,
+    sizeBytes: output.content.size_bytes,
+    mediaType: output.content.media_type,
+    contentKind: output.manifest.content_kind,
+    capabilities: output.manifest.security.allow as ArtifactSummary['versions'][number]['capabilities'],
+  };
+  return { id: output.artifact_id, title: output.manifest.title, description: output.manifest.description, contentKind: output.manifest.content_kind, mediaType: output.manifest.media_type, currentVersionId: output.version_id, versions: [version] };
+}
+
+function LiveRunArtifacts({ api, organization, project, run }: Pick<LiveViewScope, 'api' | 'organization' | 'project'> & { run: Run }) {
+  const [state, setState] = useState<RemoteState<ApiRunArtifacts>>({ status: 'loading' });
+  const [content, setContent] = useState<RemoteState<ApiArtifactContentState>>({ status: 'loading' });
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: 'loading' });
+    setContent({ status: 'loading' });
+    api.getRunArtifacts(organization, project, run.id).then((data) => {
+      if (cancelled) return;
+      setState(data.artifacts.length === 0 ? { status: 'empty', message: 'This run has not published any artifacts.' } : { status: 'ready', data });
+      if (!data.primary) {
+        setContent({ status: 'empty', message: 'No primary artifact was associated with this run.' });
+        return;
+      }
+      return api.getArtifactContent(organization, project, data.primary.artifact_id, data.primary.version_id).then((artifactContent) => {
+        if (!cancelled) setContent({ status: 'ready', data: artifactContent });
+      });
+    }).catch((error: unknown) => {
+      if (!cancelled) {
+        const message = apiErrorMessage(error);
+        setState({ status: 'error', message });
+        setContent({ status: 'error', message });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [api, organization, project, run.id]);
+  if (state.status === 'loading') return <SectionCard title="Primary output" eyebrow="Run result"><StatePanel state={state} /></SectionCard>;
+  if (state.status !== 'ready') return <SectionCard title="Primary output" eyebrow="Run result"><StatePanel state={state} /></SectionCard>;
+  const primary = state.data.primary;
+  if (!primary) return <SectionCard title="Primary output" eyebrow="Run result"><div className="state-panel"><Package size={18} /><strong>No primary artifact</strong><span>{run.status.toLowerCase().includes('fail') ? 'The run failed before producing a primary output.' : 'The run completed without a primary output.'}</span></div></SectionCard>;
+  const contentState = content.status === 'ready' ? { status: 'ready' as const, data: { source: content.data.body } } : content.status === 'error' ? { status: 'error' as const, message: content.message } : content.status === 'empty' ? { status: 'empty' as const, message: content.message } : { status: 'loading' as const };
+  return <SectionCard title="Primary output" eyebrow={`Artifact result · ${primary.outputRole}`} className="run-output-card"><ArtifactWorkspace artifact={runArtifactSummary(primary)} content={contentState.status === 'ready' ? contentState.data : undefined} contentStatus={contentState.status} errorMessage={'message' in contentState ? contentState.message : undefined} /><div className="supporting-outputs"><div className="section-eyebrow">Supporting outputs</div>{state.data.supporting.length === 0 ? <span className="muted-text">None published.</span> : state.data.supporting.map((output) => <span className="supporting-output" key={`${output.artifact_id}-${output.version_id}`}><Package size={13} />{output.manifest.title}</span>)}</div></SectionCard>;
+}
+
+type ApiArtifactContentState = { body: string };
+
 function LiveRunDetail({ api, liveMode, organization, project, refreshKey, run }: LiveViewScope & { run: Run }) {
-  return <div className="run-detail-stack"><SectionCard title="Run detail" eyebrow="Live control-plane state"><div className="run-detail-head"><div className={`run-type large ${run.kind === 'WorkflowRun' ? 'workflow' : 'agent'}`}>{run.kind === 'WorkflowRun' ? <Workflow size={20} /> : <Bot size={20} />}</div><div><h3>{run.name}</h3><p className="mono-text">{run.id}</p></div><StatusPill status={run.status} /></div><div className="run-facts"><Fact label="Definition" value={run.definition} /><Fact label="Owner" value={run.owner} /><Fact label="Started" value={run.started} /><Fact label="Duration" value={run.duration} mono /></div></SectionCard><LiveEventsPanel api={api} liveMode={liveMode} organization={organization} project={project} refreshKey={refreshKey} run={run} /></div>;
+  return <div className="run-detail-stack"><SectionCard title="Run detail" eyebrow="Live control-plane state"><div className="run-detail-head"><div className={`run-type large ${run.kind === 'WorkflowRun' ? 'workflow' : 'agent'}`}>{run.kind === 'WorkflowRun' ? <Workflow size={20} /> : <Bot size={20} />}</div><div><h3>{run.name}</h3><p className="mono-text">{run.id}</p></div><StatusPill status={run.status} /></div><div className="run-facts"><Fact label="Definition" value={run.definition} /><Fact label="Owner" value={run.owner} /><Fact label="Started" value={run.started} /><Fact label="Duration" value={run.duration} mono /></div></SectionCard><LiveRunArtifacts api={api} organization={organization} project={project} run={run} /><LiveEventsPanel api={api} liveMode={liveMode} organization={organization} project={project} refreshKey={refreshKey} run={run} /></div>;
 }
 
 function LiveRunsView({ api, liveMode, organization, project, refreshKey }: LiveViewScope) {
@@ -398,7 +483,11 @@ function RunDetail({ run }: { run: Run }) { return <div className="run-detail-st
 function DAG() { const nodes = [{ label: 'Investigate', status: 'Succeeded', icon: Search }, { label: 'Implement', status: 'Running', icon: Code2 }, { label: 'Review', status: 'Pending', icon: FileCheck2 }]; return <div className="dag"><div className="dag-label">Workflow progress</div><div className="dag-flow">{nodes.map((node, index) => <div className="dag-wrap" key={node.label}><div className={`dag-node dag-${node.status.toLowerCase()}`}><span><node.icon size={15} /></span><div><strong>{node.label}</strong><small>{node.status}</small></div></div>{index < nodes.length - 1 ? <div className={`dag-line ${index === 0 ? 'complete' : ''}`} /> : null}</div>)}</div></div>; }
 
 function EventsPanel() { const [visibleEvents, setVisibleEvents] = useState(events); return <SectionCard title="Event timeline" eyebrow="Demo SSE stream · run-fix-issue-0842" action={<span className="stream-state"><span className="online-dot" /> Demo stream</span>} className="events-card"><div className="event-list">{visibleEvents.map((event) => <div className="event-row" key={event.sequence}><div className="event-rail"><span className={`event-dot event-${event.type.split('.')[0]}`} />{event.sequence !== visibleEvents[visibleEvents.length - 1].sequence ? <span className="event-line" /> : null}</div><div className="event-content"><div className="event-meta"><strong>{event.type}</strong><span>{formatTime(event.createdAt)}</span><span className="mono-text">#{event.sequence}</span></div><p>{eventSummary(event)}</p></div></div>)}</div><button className="load-more" onClick={() => setVisibleEvents((current) => current.length === events.length ? current : [...current, ...events.slice(current.length)])}>{visibleEvents.length === events.length ? 'All events loaded' : 'Load more events'}</button></SectionCard>; }
-function eventSummary(event: ApiEvent) { const values = Object.entries(event.payload).filter(([key]) => key !== 'preview').map(([key, value]) => `${key}: ${String(value)}`); return event.payload.preview ? String(event.payload.preview) : values.join(' · '); }
+function eventSummary(event: ApiEvent) {
+  if (typeof event.payload.preview === 'string') return event.payload.preview;
+  const details = safeEventDetails(event);
+  return details || (event.type.includes('failed') || event.type.includes('error') ? 'The run reported an error.' : 'Activity recorded.');
+}
 
 function approvalFromResource(resource: ApiResource<Record<string, unknown>>): LiveApproval | null {
   const document = resource.document;

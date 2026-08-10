@@ -60,8 +60,8 @@ The current owner-operated alpha uses this profile through a Coolify Git-backed
 Compose Application in the `Gateways` project. Its live console/API is
 `https://agents.astatide.com`. This is an operational deployment of the alpha,
 not a claim that the platform is ready for hostile public multi-tenancy.
-Release commit `4d05ed12a17e5e40a0ab4d7a6bc6c63ac97a754a` is deployed as
-Coolify deployment `yf0tuzljbgjwn0otluqpyhbb`; `/healthz` and `/readyz` both
+Release commit `9a61a65da0920b6beab760906a2dad716af4bbc9` is deployed as
+Coolify deployment `p6ribksrqvjmh4x1adtyuje8`; `/healthz` and `/readyz` both
 returned 200.
 
 ### Distributed (optional)

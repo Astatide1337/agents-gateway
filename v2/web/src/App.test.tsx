@@ -133,6 +133,44 @@ describe('Agents Gateway console', () => {
     expect(screen.queryByText('Demo execution')).not.toBeInTheDocument();
   });
 
+  it('renders the primary run artifact and redacted live activity details', async () => {
+    vi.stubEnv('VITE_AGW_MODE', 'live');
+    vi.stubEnv('VITE_AGW_ORGANIZATION', 'org');
+    vi.stubEnv('VITE_AGW_PROJECT', 'project');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/ready')) return new Response(JSON.stringify({ data: { status: 'ready' } }), { status: 200 });
+      if (url.endsWith('/organizations/org/projects/project/runs')) return new Response(JSON.stringify({ data: { items: [{ id: 'run-output-1', kind: 'AgentRun', status: 'Succeeded', definitionDigest: 'sha256:definition', requestedBy: 'soham', createdAt: '2026-08-09T14:00:00Z', updatedAt: '2026-08-09T14:01:00Z' }], hasMore: false, nextOffset: null, limit: 100, offset: 0 } }), { status: 200 });
+      if (url.endsWith('/organizations/org/projects/project/runs/run-output-1/artifacts')) return new Response(JSON.stringify({ data: {
+        runId: 'run-output-1',
+        primary: { artifact_id: 'artifact-report', version_id: 'report-v1', outputRole: 'primary', created_at: '2026-08-09T14:01:00Z', manifest: { title: 'Acceptance report', description: 'The completed report.', content_kind: 'document', media_type: 'text/markdown', security: { allow: [] } }, content: { digest: 'sha256:report', size_bytes: 23, media_type: 'text/markdown' } },
+        supporting: [{ artifact_id: 'artifact-log', version_id: 'log-v1', outputRole: 'supporting', created_at: '2026-08-09T14:01:00Z', manifest: { title: 'Execution log', content_kind: 'document', media_type: 'text/plain', security: { allow: [] } }, content: { digest: 'sha256:log', size_bytes: 5, media_type: 'text/plain' } }],
+        artifacts: [
+          { artifact_id: 'artifact-report', version_id: 'report-v1', outputRole: 'primary', created_at: '2026-08-09T14:01:00Z', manifest: { title: 'Acceptance report', description: 'The completed report.', content_kind: 'document', media_type: 'text/markdown', security: { allow: [] } }, content: { digest: 'sha256:report', size_bytes: 23, media_type: 'text/markdown' } },
+          { artifact_id: 'artifact-log', version_id: 'log-v1', outputRole: 'supporting', created_at: '2026-08-09T14:01:00Z', manifest: { title: 'Execution log', content_kind: 'document', media_type: 'text/plain', security: { allow: [] } }, content: { digest: 'sha256:log', size_bytes: 5, media_type: 'text/plain' } },
+        ],
+      } }), { status: 200 });
+      if (url.endsWith('/artifacts/artifact-report/versions/report-v1/content')) return new Response('# Finished report\n\nAll checks passed.', { status: 200, headers: { 'Content-Type': 'text/markdown', 'Content-Length': '35' } });
+      if (url.endsWith('/organizations/org/projects/project/runs/run-output-1/events?after=0')) return new Response(JSON.stringify({ data: { events: [
+        { sequence: 1, type: 'run.started', payload: {}, createdAt: '2026-08-09T14:00:00Z' },
+        { sequence: 2, type: 'tool.completed', payload: { tool: 'github.get_me', arguments: { secret: 'must-not-render' }, status: 'ok' }, createdAt: '2026-08-09T14:00:10Z' },
+      ] } }), { status: 200 });
+      if (url.includes('/organizations/org/projects/project/runs/run-output-1/events?stream=1')) return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(': heartbeat\n\n')); controller.close(); } }), { status: 200 });
+      return new Response(JSON.stringify({ data: { items: [], hasMore: false, nextOffset: null, limit: 100, offset: 0 } }), { status: 200 });
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await connectToLive(user);
+    await user.click(screen.getByRole('button', { name: /Runs & workflows/ }));
+
+    expect(await screen.findByRole('heading', { name: 'Acceptance report' })).toBeInTheDocument();
+    expect(screen.getByText('Execution log')).toBeInTheDocument();
+    expect(screen.getByText('tool.completed')).toBeInTheDocument();
+    expect(screen.queryByText('must-not-render')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Tools' }));
+    expect(screen.getByText('tool.completed')).toBeInTheDocument();
+  });
+
   it('renders live audit entries from the authenticated audit collection', async () => {
     vi.stubEnv('VITE_AGW_MODE', 'live');
     vi.stubEnv('VITE_AGW_ORGANIZATION', 'Astatide');

@@ -67,6 +67,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "agw - Agents Gateway v2 contract CLI")
 	fmt.Fprintln(w, "usage: agw <validate|plan|apply|run|cancel|approve|reply|migrate-manifest|generate-signing-key|generate-local-token> [options]")
+	fmt.Fprintln(w, "       agw run -f agent-bundle.yaml [--input FILE]")
 }
 
 func generateLocalTokenCommand(args []string, stdout, stderr io.Writer) int {
@@ -145,24 +146,20 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 		left, right := resources[i].Meta(), resources[j].Meta()
 		return spec.ResourceKind(resources[i])+"/"+left.Metadata.Name < spec.ResourceKind(resources[j])+"/"+right.Metadata.Name
 	})
-	for _, resource := range resources {
-		body, err := spec.AsJSON(resource)
-		if err != nil {
-			fmt.Fprintf(stderr, "agw apply: encode resource: %v\n", err)
-			return 1
-		}
-		path := fmt.Sprintf("/api/v1alpha1/organizations/%s/projects/%s/resources/%s/%s", url.PathEscape(*organization), url.PathEscape(*project), url.PathEscape(spec.ResourceKind(resource)), url.PathEscape(resource.Meta().Metadata.Name))
-		if _, err := client.request(context.Background(), http.MethodPut, path, body); err != nil {
-			fmt.Fprintf(stderr, "agw apply: %s/%s: %v\n", spec.ResourceKind(resource), resource.Meta().Metadata.Name, err)
-			return 1
-		}
-		digest, _ := spec.RevisionDigest(resource)
-		fmt.Fprintf(stdout, "applied %s/%s revision=%s\n", spec.ResourceKind(resource), resource.Meta().Metadata.Name, digest)
+	if err := applyResources(client, *organization, *project, resources, stdout); err != nil {
+		fmt.Fprintf(stderr, "agw apply: %v\n", err)
+		return 1
 	}
 	return 0
 }
 
 func runCommand(args []string, stdout, stderr io.Writer) int {
+	// Accept the ergonomic `agw run FILE` spelling. Pulling the positional
+	// bundle path before flag parsing also lets callers put flags after it.
+	positionalBundle := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		positionalBundle, args = args[0], args[1:]
+	}
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	server := flags.String("server", envOr("AGW_SERVER_URL", ""), "Agents Gateway server origin")
@@ -172,9 +169,34 @@ func runCommand(args []string, stdout, stderr io.Writer) int {
 	ref := flags.String("ref", "", "applied agent or workflow name")
 	digest := flags.String("revision", "", "applied sha256 revision")
 	inputRef := flags.String("input-ref", "", "immutable external input reference")
+	inputFile := flags.String("input", "", "input file, or - to read stdin (bundle runs only)")
+	bundleFile := flags.String("f", "", "AgentBundle YAML/JSON file")
+	follow := flags.Bool("follow", true, "follow a bundle run until it reaches a terminal state")
 	idempotencyKey := flags.String("idempotency-key", "", "safe retry key")
 	if err := flags.Parse(args); err != nil {
 		return 2
+	}
+	if positionalBundle == "" && flags.NArg() > 0 {
+		if flags.NArg() != 1 {
+			fmt.Fprintln(stderr, "agw run: expected one AgentBundle file")
+			return 2
+		}
+		positionalBundle = flags.Arg(0)
+	}
+	if *bundleFile != "" || positionalBundle != "" {
+		if *bundleFile != "" && positionalBundle != "" {
+			fmt.Fprintln(stderr, "agw run: use either -f or a positional AgentBundle file, not both")
+			return 2
+		}
+		if *ref != "" || *digest != "" || *kind != spec.KindAgentRun {
+			fmt.Fprintln(stderr, "agw run: bundle runs cannot combine with low-level ref, revision, or non-AgentRun flags")
+			return 2
+		}
+		path := positionalBundle
+		if path == "" {
+			path = *bundleFile
+		}
+		return runBundleCommand(path, *server, *organization, *project, *inputRef, *inputFile, *idempotencyKey, *follow, stdout, stderr)
 	}
 	if *organization == "" || *project == "" || *ref == "" || *digest == "" || (*kind != spec.KindAgentRun && *kind != spec.KindWorkflowRun) {
 		fmt.Fprintln(stderr, "agw run: organization, project, ref, valid kind, and revision are required")
@@ -216,6 +238,184 @@ func runCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "run %s status=%s\n", envelope.Data.ID, envelope.Data.Status)
 	return 0
+}
+
+func runBundleCommand(path, server, organization, project, inputRef, inputFile, idempotencyKey string, follow bool, stdout, stderr io.Writer) int {
+	if strings.TrimSpace(organization) == "" || strings.TrimSpace(project) == "" {
+		fmt.Fprintln(stderr, "agw run: organization and project are required for AgentBundle runs")
+		return 2
+	}
+	if inputRef != "" && inputFile != "" {
+		fmt.Fprintln(stderr, "agw run: --input and --input-ref are mutually exclusive")
+		return 2
+	}
+	bundle, baseDir, err := spec.LoadAgentBundle(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "agw run: %v\n", err)
+		return 1
+	}
+	input, err := readBundleInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "agw run: %v\n", err)
+		return 1
+	}
+	compiled, err := spec.CompileAgentBundle(bundle, spec.BundleCompileOptions{BaseDir: baseDir, Input: input})
+	if err != nil {
+		fmt.Fprintf(stderr, "agw run: compile AgentBundle: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "bundle %s digest=%s\n", bundle.Metadata.Name, compiled.BundleDigest)
+	client, err := newAPIClient(server, os.Getenv("AGW_TOKEN"))
+	if err != nil {
+		fmt.Fprintf(stderr, "agw run: %v\n", err)
+		return 2
+	}
+	if err := applyResources(client, organization, project, compiled.Resources, stdout); err != nil {
+		fmt.Fprintf(stderr, "agw run: apply AgentBundle: %v\n", err)
+		return 1
+	}
+	request := map[string]any{"kind": spec.KindAgentRun, "agentRef": compiled.Agent.Metadata.Name, "definitionDigest": compiled.AgentDigest}
+	if inputRef != "" {
+		request["inputRef"] = inputRef
+	}
+	if idempotencyKey != "" {
+		request["idempotencyKey"] = idempotencyKey
+	}
+	body, _ := json.Marshal(request)
+	runPath := fmt.Sprintf("/api/v1alpha1/organizations/%s/projects/%s/runs", url.PathEscape(organization), url.PathEscape(project))
+	response, err := client.request(context.Background(), http.MethodPost, runPath, body)
+	if err != nil {
+		fmt.Fprintf(stderr, "agw run: start AgentBundle: %v\n", err)
+		return 1
+	}
+	run, err := decodeRunResponse(response)
+	if err != nil {
+		fmt.Fprintf(stderr, "agw run: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "run %s status=%s\n", run.ID, run.Status)
+	if !follow {
+		return 0
+	}
+	status, err := followBundleRun(client, organization, project, run.ID, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "agw run: follow run: %v\n", err)
+		return 1
+	}
+	if status != "Succeeded" && status != "Completed" {
+		fmt.Fprintf(stderr, "agw run: run %s finished with status %s\n", run.ID, status)
+		return 1
+	}
+	return 0
+}
+
+type cliRunResponse struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func decodeRunResponse(response []byte) (cliRunResponse, error) {
+	var envelope struct {
+		Data cliRunResponse `json:"data"`
+	}
+	if err := json.Unmarshal(response, &envelope); err != nil || envelope.Data.ID == "" {
+		return cliRunResponse{}, errors.New("server returned an invalid run response")
+	}
+	return envelope.Data, nil
+}
+
+func followBundleRun(client *apiClient, organization, project, runID string, stdout io.Writer) (string, error) {
+	base := fmt.Sprintf("/api/v1alpha1/organizations/%s/projects/%s/runs/%s", url.PathEscape(organization), url.PathEscape(project), url.PathEscape(runID))
+	lastSequence := int64(0)
+	for {
+		statusBody, err := client.request(context.Background(), http.MethodGet, base, nil)
+		if err != nil {
+			return "", err
+		}
+		current, err := decodeRunResponse(statusBody)
+		if err != nil {
+			return "", err
+		}
+		eventsPath := base + "/events?after=" + fmt.Sprintf("%d", lastSequence) + "&follow=false"
+		eventsBody, err := client.request(context.Background(), http.MethodGet, eventsPath, nil)
+		if err != nil {
+			return "", err
+		}
+		var eventsEnvelope struct {
+			Data struct {
+				Events []struct {
+					Sequence int64  `json:"sequence"`
+					Type     string `json:"type"`
+				} `json:"events"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(eventsBody, &eventsEnvelope); err != nil {
+			return "", errors.New("server returned invalid run events")
+		}
+		for _, event := range eventsEnvelope.Data.Events {
+			if event.Sequence > lastSequence {
+				lastSequence = event.Sequence
+			}
+			fmt.Fprintf(stdout, "  · %s\n", event.Type)
+		}
+		if isTerminalCLIStatus(current.Status) {
+			return current.Status, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func isTerminalCLIStatus(status string) bool {
+	switch status {
+	case "Succeeded", "Completed", "Failed", "Cancelled", "Canceled", "Terminated":
+		return true
+	default:
+		return false
+	}
+}
+
+func readBundleInput(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	var reader io.Reader
+	if path == "-" {
+		reader = io.LimitReader(os.Stdin, 1<<20+1)
+	} else {
+		file, err := os.Open(path)
+		if err != nil {
+			return "", fmt.Errorf("read input %q: %w", path, err)
+		}
+		defer file.Close()
+		reader = io.LimitReader(file, 1<<20+1)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", errors.New("read input")
+	}
+	if len(data) > 1<<20 {
+		return "", errors.New("input exceeds the 1 MiB limit")
+	}
+	return string(data), nil
+}
+
+func applyResources(client *apiClient, organization, project string, resources []spec.Resource, stdout io.Writer) error {
+	for _, resource := range resources {
+		body, err := spec.AsJSON(resource)
+		if err != nil {
+			return fmt.Errorf("encode %s/%s: %w", spec.ResourceKind(resource), resource.Meta().Metadata.Name, err)
+		}
+		path := fmt.Sprintf("/api/v1alpha1/organizations/%s/projects/%s/resources/%s/%s", url.PathEscape(organization), url.PathEscape(project), url.PathEscape(spec.ResourceKind(resource)), url.PathEscape(resource.Meta().Metadata.Name))
+		if _, err := client.request(context.Background(), http.MethodPut, path, body); err != nil {
+			return fmt.Errorf("%s/%s: %w", spec.ResourceKind(resource), resource.Meta().Metadata.Name, err)
+		}
+		digest, err := spec.RevisionDigest(resource)
+		if err != nil {
+			return fmt.Errorf("digest %s/%s: %w", spec.ResourceKind(resource), resource.Meta().Metadata.Name, err)
+		}
+		fmt.Fprintf(stdout, "applied %s/%s revision=%s\n", spec.ResourceKind(resource), resource.Meta().Metadata.Name, digest)
+	}
+	return nil
 }
 
 type runControlFlags struct {
