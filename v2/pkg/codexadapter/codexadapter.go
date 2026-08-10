@@ -550,12 +550,16 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diagnostics io.
 		if authoredErr != nil || endpoint == "" {
 			return emitRunFailure(e, "artifact_upload_unavailable", errors.New("authored artifact upload capability is unavailable"), diagnostics)
 		}
-		for _, generated := range authored {
+		for index, generated := range authored {
 			reference, uploadErr := uploadAuthoredArtifact(childCtx, endpoint, generated)
 			if uploadErr != nil {
 				return emitRunFailure(e, "artifact_upload_failed", uploadErr, diagnostics)
 			}
-			if err := e.emit(proto.EventArtifactCreated, false, map[string]any{"artifact_id": reference.ID, "artifact": reference}); err != nil {
+			role := "supporting"
+			if index == 0 {
+				role = "primary"
+			}
+			if err := e.emit(proto.EventArtifactCreated, false, map[string]any{"artifact_id": reference.ID, "output_role": role, "artifact": reference}); err != nil {
 				return fmt.Errorf("emit artifact.created: %w", err)
 			}
 		}
@@ -567,7 +571,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diagnostics io.
 			return emitRunFailure(e, "artifact_upload_failed", uploadErr, diagnostics)
 		}
 		outputArtifact = &artifact
-		if err := e.emit(proto.EventArtifactCreated, false, map[string]any{"artifact_id": artifact.ID, "artifact": artifact}); err != nil {
+		if err := e.emit(proto.EventArtifactCreated, false, map[string]any{"artifact_id": artifact.ID, "output_role": "supporting", "artifact": artifact}); err != nil {
 			return fmt.Errorf("emit artifact.created: %w", err)
 		}
 	} else if cfg.RequireArtifact {

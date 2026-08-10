@@ -295,6 +295,7 @@ func validateEventData(typ string, raw json.RawMessage) error {
 		schema = objectSchema{
 			"artifact_id": requiredField(validateIdentifier),
 			"artifact":    optionalField(validateArtifact),
+			"output_role": optionalField(validateIdentifier),
 		}
 	case proto.EventRunCompleted:
 		schema = objectSchema{

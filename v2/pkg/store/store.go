@@ -113,6 +113,7 @@ type ArtifactVersion struct {
 type ArtifactCatalog interface {
 	PutArtifactVersion(context.Context, ArtifactVersion) (ArtifactVersion, error)
 	ListArtifactVersions(context.Context, Scope, string) ([]ArtifactVersion, error)
+	ListArtifactVersionsByRun(context.Context, Scope, string) ([]ArtifactVersion, error)
 	GetArtifactVersion(context.Context, Scope, string, string) (ArtifactVersion, error)
 }
 
@@ -360,6 +361,36 @@ func (m *Memory) ListArtifactVersions(_ context.Context, scope Scope, artifactID
 	if len(result) > ArtifactCatalogListLimit {
 		result = result[:ArtifactCatalogListLimit]
 	}
+	return result, nil
+}
+
+func (m *Memory) ListArtifactVersionsByRun(_ context.Context, scope Scope, runID string) ([]ArtifactVersion, error) {
+	if err := scope.Validate(); err != nil {
+		return nil, err
+	}
+	if runID == "" {
+		return nil, errors.New("run id is required")
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []ArtifactVersion
+	prefix := scope.OrganizationID + "/" + scope.ProjectID + "/"
+	for key, versions := range m.artifacts {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		for _, version := range versions {
+			if version.RunID == runID {
+				result = append(result, cloneArtifactVersion(version))
+			}
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].VersionID < result[j].VersionID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
 	return result, nil
 }
 

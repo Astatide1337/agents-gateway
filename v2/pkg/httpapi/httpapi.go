@@ -807,7 +807,7 @@ func (output runArtifactOutput) MarshalJSON() ([]byte, error) {
 }
 
 func (h *Handler) handleRunArtifacts(w http.ResponseWriter, r *http.Request, requestID string, route parsedRoute) {
-	records, err := h.artifacts.ListArtifactVersions(r.Context(), route.scope, "")
+	records, err := h.artifacts.ListArtifactVersionsByRun(r.Context(), route.scope, route.runID)
 	if err != nil {
 		writeStoreError(w, requestID, err)
 		return

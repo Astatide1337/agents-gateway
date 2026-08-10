@@ -726,6 +726,33 @@ func (p *PostgreSQL) ListArtifactVersions(ctx context.Context, scope Scope, arti
 	return result, err
 }
 
+func (p *PostgreSQL) ListArtifactVersionsByRun(ctx context.Context, scope Scope, runID string) (result []ArtifactVersion, err error) {
+	if runID == "" {
+		return nil, errors.New("run id is required")
+	}
+	err = p.tenantTx(ctx, scope, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT artifact_id,version_id,run_id,version_number,document::text,
+			       content_object_key,source_object_key,created_at
+			FROM artifact_versions
+			WHERE organization_id=$1 AND project_id=$2 AND run_id=$3
+			ORDER BY created_at ASC,version_id ASC`, scope.OrganizationID, scope.ProjectID, runID)
+		if err != nil {
+			return fmt.Errorf("list run artifact versions: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			version := ArtifactVersion{Scope: scope}
+			if err := scanArtifactVersion(rows, &version); err != nil {
+				return err
+			}
+			result = append(result, version)
+		}
+		return rows.Err()
+	})
+	return result, err
+}
+
 func (p *PostgreSQL) GetArtifactVersion(ctx context.Context, scope Scope, artifactID, versionID string) (result ArtifactVersion, err error) {
 	if artifactID == "" {
 		return ArtifactVersion{}, errors.New("artifact id is required")
