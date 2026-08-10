@@ -424,6 +424,9 @@ func resolveCoolifyPreviewDatabaseURL(databaseURL string) (string, error) {
 	if parsed.Hostname() == "" {
 		return "", errors.New("AGW_DATABASE_URL has no database host")
 	}
+	if password := strings.TrimSpace(os.Getenv("AGW_DB_PASSWORD")); password != "" && parsed.User != nil {
+		parsed.User = url.UserPassword(parsed.User.Username(), password)
+	}
 	if port := parsed.Port(); port != "" {
 		parsed.Host = net.JoinHostPort(serviceName, port)
 	} else {

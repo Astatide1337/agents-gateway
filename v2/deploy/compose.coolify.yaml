@@ -84,6 +84,7 @@ services:
       - -ec
       - |
         export PGHOST="$${SERVICE_NAME_POSTGRES:-postgres}"
+        export PGPASSWORD="$${AGW_DB_PASSWORD}"
         psql --set=ON_ERROR_STOP=1 --command "CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
         for file in /migrations/*.sql; do
           [ -f "$${file}" ] || continue

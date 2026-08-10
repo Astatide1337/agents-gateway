@@ -43,3 +43,17 @@ func TestResolveCoolifyPreviewDatabaseURLRejectsMissingHost(t *testing.T) {
 		t.Fatal("resolveCoolifyPreviewDatabaseURL() error = nil, want missing-host error")
 	}
 }
+
+func TestResolveCoolifyPreviewDatabaseURLUsesPreviewPassword(t *testing.T) {
+	t.Setenv("SERVICE_NAME_POSTGRES", "postgres-pr-20")
+	t.Setenv("AGW_DB_PASSWORD", "preview-secret")
+
+	got, err := resolveCoolifyPreviewDatabaseURL("postgres://agw:production-secret@postgres:5432/agents_gateway?sslmode=disable")
+	if err != nil {
+		t.Fatalf("resolveCoolifyPreviewDatabaseURL() error = %v", err)
+	}
+	want := "postgres://agw:preview-secret@postgres-pr-20:5432/agents_gateway?sslmode=disable"
+	if got != want {
+		t.Fatalf("resolveCoolifyPreviewDatabaseURL() = %q, want %q", got, want)
+	}
+}
