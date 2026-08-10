@@ -3,6 +3,7 @@ package main
 import "testing"
 
 func TestResolveCoolifyPreviewDatabaseURL(t *testing.T) {
+	t.Setenv("AGW_DB_PASSWORD", "")
 	tests := []struct {
 		name     string
 		service  string
