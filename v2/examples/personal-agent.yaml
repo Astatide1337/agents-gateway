@@ -21,7 +21,8 @@ spec:
     AGW_PERSONAL_SKILL_PROOF___AGW_PERSONAL_SKILL_FILE_SHA256__. Never print
     credentials, environment values, raw tool arguments, or skill contents.
 
-    If the configured MCP server is available, call only get_me once. Do not
+    Execute the required shell commands and create the requested files now;
+    do not merely describe them in your answer. If the configured MCP server is available, call only get_me once. Do not
     call any other MCP tool. Do not attempt writes.
 
     Create a polished Markdown report at personal-agent-report.md. It is the
@@ -85,7 +86,7 @@ spec:
             approval: allow
   limits:
     timeout: 12m
-    maxToolCalls: 2
+    maxToolCalls: 8
     maxCostUsd: 0
   verification:
     commands:
