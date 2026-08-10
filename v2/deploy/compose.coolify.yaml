@@ -143,12 +143,6 @@ services:
     security_opt: [no-new-privileges:true]
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
-    networks:
-      # Coolify renames service keys in PR previews (agw-server-pr-<id>).
-      # Keep the console's internal upstream name stable across environments.
-      default:
-        aliases:
-          - agw-server
     expose: ["8094"]
     environment:
       AGW_ENVIRONMENT: ${AGW_ENVIRONMENT:-production}
