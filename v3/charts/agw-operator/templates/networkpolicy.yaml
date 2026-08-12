@@ -1,0 +1,103 @@
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.runs.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-runs-default-deny
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+{{- if .Values.networkPolicy.runs.dns }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-runs-dns
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      # Lifecycle capture is intentionally offline. NetworkPolicy rules are
+      # additive, so excluding it here is required in addition to its explicit
+      # empty-egress policy in the Argo template. The second selector covers
+      # direct-backend capture Jobs, which use the shorter role label.
+      - key: agents.astatide.com/lifecycle-role
+        operator: NotIn
+        values: [capture]
+      - key: agents.astatide.com/role
+        operator: NotIn
+        values: [capture]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}
+{{- if .Values.networkPolicy.runs.publicEgress }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-runs-public-egress
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: agents.astatide.com/egress
+        operator: In
+        values: [broker-public, verify-fetch-public]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.0.0.0/24
+              - 192.0.2.0/24
+              - 192.168.0.0/16
+              - 198.18.0.0/15
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::/128
+              - ::1/128
+              - 64:ff9b:1::/48
+              - 100::/64
+              - 2001:db8::/32
+              - fc00::/7
+              - fe80::/10
+              - ff00::/8
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+{{- end }}

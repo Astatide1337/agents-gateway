@@ -1,0 +1,63 @@
+{{- if and .Values.resourceQuota.enabled .Values.resourceQuota.system.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-system
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- toYaml .Values.resourceQuota.system.hard | nindent 4 }}
+{{- end }}
+{{- if and .Values.resourceQuota.enabled .Values.resourceQuota.runs.enabled }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-runs
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- if eq .Values.sandboxBackend "job" }}
+    {{- toYaml (omit .Values.resourceQuota.runs.hard "count/sandboxes.agents.x-k8s.io") | nindent 4 }}
+    {{- else }}
+    {{- toYaml .Values.resourceQuota.runs.hard | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if and .Values.limitRange.enabled .Values.limitRange.system.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-system
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        {{- toYaml .Values.limitRange.system.container.default | nindent 8 }}
+      defaultRequest:
+        {{- toYaml .Values.limitRange.system.container.defaultRequest | nindent 8 }}
+{{- end }}
+{{- if and .Values.limitRange.enabled .Values.limitRange.runs.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-runs
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        {{- toYaml .Values.limitRange.runs.container.default | nindent 8 }}
+      defaultRequest:
+        {{- toYaml .Values.limitRange.runs.container.defaultRequest | nindent 8 }}
+{{- end }}

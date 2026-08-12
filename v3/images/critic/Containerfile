@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+
+# The critic binary is also used by the two trusted init containers in the
+# production Job: it materializes verified artifacts and renders the pinned
+# agentgateway config. It never receives the provider Secret.
+ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /src/v3
+COPY v3/go.mod v3/go.sum ./
+RUN go mod download
+COPY v3/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/agw-critic ./cmd/agw-critic
+
+FROM scratch
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="Agents Gateway Critic Runtime" \
+      org.opencontainers.image.description="Bounded canonical corroboration-input critic executable" \
+      org.opencontainers.image.source="https://github.com/Astatide1337/agents-gateway" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="MIT" \
+      com.astatide.agw.critic.output="AGW_CRITIC_INPUT_V1" \
+      com.astatide.agw.critic.model-gateway="loopback-only"
+
+COPY --from=build /out/agw-critic /agw/critic
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["/agw/critic"]

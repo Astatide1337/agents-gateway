@@ -1,0 +1,104 @@
+# Phase-0 only. This DaemonSet is intentionally privileged because it reads
+# node-local runtime facts. Apply it only in a disposable, owner-controlled
+# namespace with --apply --yes. The script captures logs without Secret data.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: agw-phase0-node-inventory
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+    agw.astatide.com/phase0-check: node-inventory
+spec:
+  selector:
+    matchLabels:
+      agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+      agw.astatide.com/phase0-check: node-inventory
+  template:
+    metadata:
+      labels:
+        agw.astatide.com/phase0: "true"
+        agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+        agw.astatide.com/phase0-check: node-inventory
+    spec:
+      automountServiceAccountToken: false
+      hostPID: false
+      hostNetwork: false
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: inventory
+          image: __PHASE0_INVENTORY_IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsNonRoot: false
+            # Kubernetes rejects allowPrivilegeEscalation=false together with
+            # privileged=true. This probe is intentionally privileged because
+            # it reads node-local runtime facts through a read-only host root.
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop: [ALL]
+              add: [DAC_READ_SEARCH]
+          command: ["/bin/sh", "-ceu"]
+          args:
+            - |
+              host=/host
+              printf 'node_name=%s\n' "${NODE_NAME:-unknown}"
+              printf 'kernel=%s\n' "$(cat "$host/proc/sys/kernel/osrelease" 2>/dev/null || printf unavailable)"
+              printf 'arch=%s\n' "$(cat "$host/proc/sys/kernel/osrelease" 2>/dev/null | sed -n 's/.*[[:space:]]\(aarch64\|x86_64\|arm64\).*/\1/p' || printf unknown)"
+              if [ -r "$host/sys/fs/cgroup/cgroup.controllers" ]; then
+                printf 'cgroup_version=2\n'
+              elif [ -d "$host/sys/fs/cgroup" ]; then
+                printf 'cgroup_version=1-or-unknown\n'
+              else
+                printf 'cgroup_version=unavailable\n'
+              fi
+              printf 'user_namespaces=%s\n' "$(cat "$host/proc/sys/user/max_user_namespaces" 2>/dev/null || printf unavailable)"
+              kubelet_root="__PHASE0_KUBELET_ROOT__"
+              if [ -d "$host$kubelet_root" ]; then
+                printf 'kubelet_root=%s\n' "$kubelet_root"
+                stat -f -c 'kubelet_fs_type=%T' "$host$kubelet_root" 2>/dev/null || true
+                stat -f -c 'pods_fs_type=%T' "$host$kubelet_root/pods" 2>/dev/null || true
+              else
+                printf 'kubelet_root=missing\n'
+              fi
+              for candidate in \
+                /usr/bin/runc \
+                /usr/sbin/runc \
+                /usr/local/bin/runc \
+                /var/lib/rancher/k3s/data/current/bin/runc \
+                /var/lib/rancher/k3s/data/current/bin/containerd; do
+                if [ -x "$host$candidate" ]; then
+                  printf 'runtime_binary=%s\n' "$candidate"
+                  chroot "$host" "$candidate" --version 2>&1 | sed -E 's/(token|secret|password|key)[=:][^[:space:]]+/\1=[REDACTED]/Ig' || true
+                fi
+              done
+              if [ -r "$host/proc/1/cgroup" ]; then
+                printf 'host_pid1_cgroup=present\n'
+              fi
+              printf 'inventory_complete=true\n'
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+              readOnly: true
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory

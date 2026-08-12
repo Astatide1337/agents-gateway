@@ -1,0 +1,276 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agw-phase0-guard
+  namespace: agw-phase0-guard
+  labels:
+    app.kubernetes.io/name: agw-phase0-guard
+    app.kubernetes.io/part-of: agents-gateway-v3
+    agw.astatide.com/phase: "0"
+    agw.astatide.com/experiment: agentgateway-guard
+spec:
+  # This is a disposable validation pod. hostUsers=false is a hard Phase 0
+  # precondition for interpreting owner-based rules as container-UID rules.
+  hostUsers: false
+  nodeSelector:
+    agw.astatide.com/agents: "true"
+  tolerations:
+    - key: agw.astatide.com/agents
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  serviceAccountName: agw-phase0-guard
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  initContainers:
+    - name: credential-fixture
+      image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+      imagePullPolicy: IfNotPresent
+      command: [sh, -ceu]
+      args:
+        - |
+          umask 077
+          printf '%s' 'phase0-only-canary' > /run/canary/token
+          echo credential-fixture:token-created
+          chmod 0400 /run/canary/token
+          echo credential-fixture:token-mode
+          chown 1338:1338 /run/canary/token
+          echo credential-fixture:token-owned
+          chmod 0700 /run/agentgateway/runtime
+          echo credential-fixture:runtime-mode
+          chown 1338:1338 /run/agentgateway/runtime
+          echo credential-fixture:runtime-owned
+          test "$(stat -c '%u:%g:%a' /run/canary/token)" = 1338:1338:400
+          test "$(stat -c '%u:%g:%a' /run/agentgateway/runtime)" = 1338:1338:700
+          echo credential-fixture:pass
+      volumeMounts:
+        - name: canary
+          mountPath: /run/canary
+        - name: agentgateway-runtime
+          mountPath: /run/agentgateway/runtime
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          add: [CHOWN, DAC_OVERRIDE]
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 5m
+          memory: 8Mi
+        limits:
+          cpu: 25m
+          memory: 32Mi
+    - name: airlock
+      image: agw-phase0-airlock:phase0
+      imagePullPolicy: Never
+      command: [sh, /opt/phase0/airlock.sh]
+      env:
+        - name: AGW_AIRLOCK_MODE
+          value: recording-only
+      volumeMounts:
+        - name: airlock-script
+          mountPath: /opt/phase0/airlock.sh
+          subPath: airlock.sh
+          readOnly: true
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          add: [NET_ADMIN, NET_RAW]
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+  containers:
+    - name: agent
+      image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+      imagePullPolicy: IfNotPresent
+      command: [sh, -ceu]
+      args:
+        - while :; do sleep 3600; done
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+    - name: agw-guard
+      image: agw-phase0-guard:phase0
+      imagePullPolicy: Never
+      env:
+        - name: AGW_GUARD_LISTEN
+          value: :8081
+        - name: AGW_GUARD_GATEWAY_URL
+          value: http://127.0.0.1:8082/mcp
+        - name: AGW_GUARD_RUN_UID
+          value: phase0-run-uid
+        - name: AGW_GUARD_SPEC_DIGEST
+          value: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        - name: AGW_GUARD_BASE_SHA
+          value: phase0-base-sha
+      ports:
+        - name: guard
+          containerPort: 8081
+          protocol: TCP
+      securityContext:
+        runAsUser: 1337
+        runAsGroup: 1337
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 25m
+          memory: 32Mi
+        limits:
+          cpu: 250m
+          memory: 128Mi
+    - name: agentgateway
+      # This zero digest is an intentional render sentinel. The source pod is
+      # never applied directly; scripts/render.sh requires a verified
+      # v1.4.1 registry digest and replaces it in a disposable output dir.
+      image: cr.agentgateway.dev/agentgateway@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      imagePullPolicy: IfNotPresent
+      args: [--file, /etc/agentgateway/agentgateway.yaml]
+      ports:
+        - name: mcp
+          containerPort: 8082
+          protocol: TCP
+      volumeMounts:
+        - name: agentgateway-config
+          mountPath: /etc/agentgateway
+          readOnly: true
+        - name: canary
+          mountPath: /run/agentgateway/canary
+          readOnly: true
+        - name: agentgateway-runtime
+          mountPath: /run/agentgateway/runtime
+      securityContext:
+        runAsUser: 1338
+        runAsGroup: 1338
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+    - name: recording
+      image: agw-phase0-recording:phase0
+      imagePullPolicy: Never
+      env:
+        - name: AGW_RECORDING_LISTEN
+          # Bind the pod interface so the observation-only evidence sidecar can
+          # reach the recorder in nested k3s/user-namespace environments. The
+          # airlock's INPUT policy still permits the recorder port only on
+          # loopback, and the data-plane target remains
+          # http://127.0.0.1:9090/mcp.
+          value: 0.0.0.0:9090
+        - name: AGW_RECORDING_CANARY
+          value: phase0-only-canary
+      ports:
+        - name: recording
+          containerPort: 9090
+          protocol: TCP
+      securityContext:
+        runAsUser: 1339
+        runAsGroup: 1339
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+    - name: evidence
+      # This disposable probe reads only the recorder's non-secret evidence
+      # endpoint. It has no canary volume or canary environment and uses the
+      # same UID that the airlock permits to reach the recorder loopback.
+      image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+      imagePullPolicy: IfNotPresent
+      command: [sh, -ceu]
+      args:
+        - while :; do sleep 3600; done
+      securityContext:
+        runAsUser: 1338
+        runAsGroup: 1338
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 5m
+          memory: 8Mi
+        limits:
+          cpu: 25m
+          memory: 32Mi
+  volumes:
+    - name: agentgateway-config
+      configMap:
+        name: agw-phase0-guard-config
+        defaultMode: 0444
+        items:
+          - key: agentgateway.yaml
+            path: agentgateway.yaml
+    - name: airlock-script
+      configMap:
+        name: agw-phase0-guard-config
+        defaultMode: 0555
+        items:
+          - key: airlock.sh
+            path: airlock.sh
+    - name: canary
+      emptyDir:
+        medium: Memory
+    - name: agentgateway-runtime
+      emptyDir:
+        medium: Memory

@@ -1,0 +1,255 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agw-operator.fullname" . }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  revisionHistoryLimit: 3
+  minReadySeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "agw-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agw-operator.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+      annotations:
+        checksum/runtime-config: {{ printf "%s|%s|%s" .Values.timezone.machine .Values.timezone.human (include "agw-operator.runtimeConfigName" .) | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "agw-operator.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: operator
+          image: {{ include "agw-operator.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: webhook
+              containerPort: {{ .Values.operator.webhookPort }}
+              protocol: TCP
+          args:
+            - {{ printf "--metrics-bind-address=%s" .Values.operator.metricsBindAddress | quote }}
+            - {{ printf "--health-probe-bind-address=%s" .Values.operator.healthProbeBindAddress | quote }}
+            - {{ printf "--webhook-port=%d" .Values.operator.webhookPort | quote }}
+            - {{ printf "--leader-elect=%t" .Values.leaderElection.enabled | quote }}
+            - {{ printf "--leader-election-namespace=%s" .Values.namespaces.system | quote }}
+            - {{ printf "--sandbox-backend=%s" .Values.sandboxBackend | quote }}
+            - {{ printf "--orchestration-backend=%s" .Values.orchestrationBackend | quote }}
+            - {{ printf "--allowed-runtime-classes=%s" (join "," .Values.placement.allowedRuntimeClasses) | quote }}
+            - {{ printf "--allowed-storage-classes=%s" (join "," .Values.placement.allowedStorageClasses) | quote }}
+            - {{ printf "--argo-workflow-template=%s" .Values.argo.workflowTemplateName | quote }}
+            - {{ printf "--argo-workflow-template-uid=%s" .Values.argo.workflowTemplateUID | quote }}
+            - {{ printf "--argo-workflow-template-digest=%s" .Values.argo.workflowTemplateDigest | quote }}
+            - {{ printf "--system-namespace=%s" .Values.namespaces.system | quote }}
+            - {{ printf "--runs-namespace=%s" .Values.namespaces.runs | quote }}
+            - {{ printf "--preflight-node-fingerprint=%s" .Values.preflight.nodeFingerprint | quote }}
+            - {{ printf "--preflight-runtime-fingerprint=%s" .Values.preflight.runtimeFingerprint | quote }}
+            - {{ printf "--preflight-ttl=%s" .Values.operator.preflightTTL | quote }}
+            - {{ printf "--object-store-bucket=%s" .Values.objectStore.bucket | quote }}
+            - {{ printf "--object-store-prefix=%s" .Values.objectStore.prefix | quote }}
+            - {{ printf "--object-store-region=%s" .Values.objectStore.region | quote }}
+            - {{ printf "--object-store-path-style=%t" .Values.objectStore.pathStyle | quote }}
+            - {{ printf "--object-store-max-bytes=%d" .Values.operator.objectStoreMaxBytes | quote }}
+            - {{ printf "--clone-image=%s@%s" .Values.runtimeImages.clone.repository .Values.runtimeImages.clone.digest | quote }}
+            - {{ printf "--skills-image=%s@%s" .Values.runtimeImages.skills.repository .Values.runtimeImages.skills.digest | quote }}
+            - {{ printf "--context-image=%s@%s" .Values.runtimeImages.context.repository .Values.runtimeImages.context.digest | quote }}
+            - {{ printf "--lockdown-image=%s@%s" .Values.runtimeImages.lockdown.repository .Values.runtimeImages.lockdown.digest | quote }}
+            - {{ printf "--broker-image=%s@%s" .Values.runtimeImages.broker.repository .Values.runtimeImages.broker.digest | quote }}
+            - {{ printf "--agentgateway-enabled=%t" .Values.agentGateway.enabled | quote }}
+            {{- if .Values.agentGateway.enabled }}
+            - {{ printf "--agentgateway-image=%s@%s" .Values.agentGateway.image.repository .Values.agentGateway.image.digest | quote }}
+            - {{ printf "--agentgateway-configmap-name=%s" .Values.agentGateway.configMapName | quote }}
+            - {{ printf "--agentgateway-capability-version=%s" .Values.agentGateway.capabilityVersion | quote }}
+            - {{ printf "--agentgateway-capability-verified=%t" .Values.agentGateway.capabilityVerified | quote }}
+            - {{ printf "--agentgateway-evidence-digest=%s" .Values.agentGateway.evidenceDigest | quote }}
+            - {{ printf "--agentgateway-config-digest=%s" .Values.agentGateway.configDigest | quote }}
+            {{- end }}
+            - {{ printf "--capture-image=%s@%s" .Values.runtimeImages.capture.repository .Values.runtimeImages.capture.digest | quote }}
+            - {{ printf "--verify-fetch-image=%s@%s" .Values.runtimeImages.verifyFetch.repository .Values.runtimeImages.verifyFetch.digest | quote }}
+            - {{ printf "--verify-apply-image=%s@%s" .Values.runtimeImages.verifyApply.repository .Values.runtimeImages.verifyApply.digest | quote }}
+            - {{ printf "--github-app-secret=%s" .Values.githubApp.existingSecret | quote }}
+            - {{ printf "--credential-secret-names=%s" (join "," .Values.argo.systemSecretNames) | quote }}
+            - {{ printf "--report-signer-secret=%s" .Values.reportSigning.existingSecret | quote }}
+            - {{ printf "--verification-attestation-enabled=%t" .Values.verificationAttestation.enabled | quote }}
+            - {{ printf "--cosign-path=%s" .Values.verificationAttestation.cosignPath | quote }}
+            - {{ printf "--cosign-timeout=%s" .Values.verificationAttestation.timeout | quote }}
+            {{- if .Values.verificationAttestation.keyRef }}
+            - {{ printf "--cosign-key-ref=%s" .Values.verificationAttestation.keyRef | quote }}
+            {{- end }}
+            {{- if .Values.verificationAttestation.verifyKeyRef }}
+            - {{ printf "--cosign-verify-key-ref=%s" .Values.verificationAttestation.verifyKeyRef | quote }}
+            {{- end }}
+            - {{ printf "--critic-enabled=%t" .Values.critic.enabled | quote }}
+            {{- if .Values.critic.enabled }}
+            - {{ printf "--critic-image=%s@%s" .Values.critic.image.repository .Values.critic.image.digest | quote }}
+            - {{ printf "--critic-agentgateway-image=%s@%s" .Values.critic.agentGateway.image.repository .Values.critic.agentGateway.image.digest | quote }}
+            - {{ printf "--critic-agentgateway-capability-verified=%t" .Values.critic.agentGateway.capabilityVerified | quote }}
+            - {{ printf "--critic-agentgateway-evidence-digest=%s" .Values.critic.agentGateway.evidenceDigest | quote }}
+            - {{ printf "--critic-gateway-endpoint=%s" .Values.critic.gateway.endpoint | quote }}
+            - {{ printf "--critic-gateway-route-ref=%s" .Values.critic.gateway.routeRef | quote }}
+            - {{ printf "--critic-gateway-service-account=%s" .Values.critic.gateway.serviceAccountName | quote }}
+            - {{ printf "--critic-gateway-token-ttl-seconds=%d" (int64 .Values.critic.gateway.tokenExpirationSeconds) | quote }}
+            - {{ printf "--critic-gateway-jwt-issuer=%s" .Values.critic.gateway.jwt.issuer | quote }}
+            - {{ printf "--critic-gateway-jwt-audience=%s" .Values.critic.gateway.jwt.audience | quote }}
+            - {{ printf "--critic-gateway-jwt-policy-ref=%s" .Values.critic.gateway.jwt.policyRef | quote }}
+            - {{ printf "--critic-gateway-jwt-verified=%t" .Values.critic.gateway.jwt.verified | quote }}
+            - {{ printf "--critic-gateway-jwt-evidence-digest=%s" .Values.critic.gateway.jwt.evidenceDigest | quote }}
+            - {{ printf "--critic-gateway-pod-selector-json=%s" (toJson .Values.critic.gateway.podSelector) | quote }}
+            - {{ printf "--critic-object-store-egress-cidrs=%s" (join "," .Values.critic.objectStoreEgressCIDRs) | quote }}
+            - {{ printf "--critic-timeout=%s" .Values.critic.timeout | quote }}
+            - {{ printf "--critic-max-output-bytes=%d" (int64 .Values.critic.maxOutputBytes) | quote }}
+            {{- end }}
+            - {{ printf "--artifact-sts-role-arn=%s" .Values.artifactSTS.roleARN | quote }}
+            - {{ printf "--artifact-credential-ttl=%s" .Values.artifactSTS.credentialTTL | quote }}
+            - {{ printf "--retention-enabled=%t" .Values.retention.enabled | quote }}
+            - {{ printf "--retention-interval=%s" .Values.retention.interval | quote }}
+            - {{ printf "--retention-artifact-days=%d" .Values.retention.artifactRetentionDays | quote }}
+            - {{ printf "--retention-workspace-days=%d" .Values.retention.workspaceRetentionDays | quote }}
+            - {{ printf "--retention-ledger-days=%d" .Values.retention.ledgerRetentionDays | quote }}
+            - {{ printf "--retention-ledger-prefix=%s" .Values.retention.ledgerPrefix | quote }}
+            - {{ printf "--retention-max-actions=%d" .Values.retention.maxActions | quote }}
+            - {{ printf "--retention-max-runs=%d" .Values.retention.maxRuns | quote }}
+            - {{ printf "--retention-max-resources=%d" .Values.retention.maxResources | quote }}
+            - {{ printf "--retention-max-objects=%d" .Values.retention.maxObjects | quote }}
+            - {{ printf "--retention-max-ledger-body-bytes=%d" .Values.retention.maxLedgerBodyBytes | quote }}
+            - {{ printf "--retention-max-events=%d" .Values.retention.maxEvents | quote }}
+            - {{ printf "--retention-dry-run=%t" .Values.retention.dryRun | quote }}
+            - {{ printf "--retention-enforce=%t" .Values.retention.enforce | quote }}
+            - {{ printf "--retention-lifecycle-attested=%t" .Values.retention.lifecycleAttested | quote }}
+            {{- if .Values.artifactSTS.externalID }}
+            - {{ printf "--artifact-sts-external-id=%s" .Values.artifactSTS.externalID | quote }}
+            {{- end }}
+            {{- if .Values.artifactSTS.endpoint }}
+            - {{ printf "--artifact-sts-endpoint=%s" .Values.artifactSTS.endpoint | quote }}
+            {{- end }}
+            {{- if .Values.skillsCredential.existingSecret }}
+            - {{ printf "--skills-token-secret=%s" .Values.skillsCredential.existingSecret | quote }}
+            - {{ printf "--skills-token-key=%s" .Values.skillsCredential.tokenKey | quote }}
+            {{- end }}
+            {{- if .Values.skillsGateway.endpoint }}
+            - {{ printf "--skills-gateway-endpoint=%s" .Values.skillsGateway.endpoint | quote }}
+            {{- end }}
+            {{- if .Values.objectStore.endpoint }}
+            - {{ printf "--object-store-endpoint=%s" .Values.objectStore.endpoint | quote }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "agw-operator.runtimeConfigName" . }}
+          env:
+            - name: AWS_REGION
+              value: {{ .Values.objectStore.region | quote }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.objectStore.region | quote }}
+            {{- with .Values.objectStore.credentials.existingSecret }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.objectStore.credentials.accessKeyIdKey }}
+                  optional: false
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.objectStore.credentials.secretAccessKeyKey }}
+                  optional: false
+            {{- if $.Values.objectStore.credentials.sessionTokenKey }}
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.objectStore.credentials.sessionTokenKey }}
+                  optional: false
+            {{- end }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: webhook-serving-cert
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+      volumes:
+        - name: webhook-serving-cert
+          secret:
+            secretName: {{ .Values.webhook.tlsSecretName }}
+            defaultMode: 0400
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

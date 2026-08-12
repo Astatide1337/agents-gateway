@@ -1,0 +1,382 @@
+# Production installs must replace every empty required value below. The
+# chart intentionally does not invent an image digest or preflight identity.
+
+namespaces:
+  system: agw-system
+  runs: agw-runs
+  createSystem: true
+  createRuns: true
+
+# agent-sandbox uses the upstream Sandbox CRD/controller. job uses only the
+# built-in batch/v1 Job plus PVC APIs and can start without agent-sandbox.
+sandboxBackend: agent-sandbox
+
+# direct is the compatibility and rollback path. argo is opt-in and only
+# sequences the lifecycle through this pinned, namespaced WorkflowTemplate.
+orchestrationBackend: direct
+
+# Caller-selected RuntimeClass and StorageClass names are rejected unless the
+# operator deployment explicitly allowlists them. Empty is the safe default and
+# means both resolved fields must remain empty.
+placement:
+  allowedRuntimeClasses: []
+  allowedStorageClasses: []
+
+# The work-pod agentgateway seam is intentionally disabled. Keep every nested
+# value empty while disabled; enabling it is rejected by the chart until the
+# guard-to-agentgateway adapter and its live capability evidence exist.
+agentGateway:
+  enabled: false
+  image:
+    repository: ""
+    digest: ""
+  configMapName: ""
+  capabilityVersion: ""
+  capabilityVerified: false
+  evidenceDigest: ""
+  configDigest: ""
+
+# The work Sandbox deliberately has no trusted phase supervisor yet. This is a
+# hard fail-closed switch: setting it to true is rejected by the schema and by
+# the chart validation helper until a supervisor image, token projection,
+# process-observation contract, and broker binding have all been implemented
+# and live-tested.
+phaseSupervisor:
+  enabled: false
+
+argo:
+  workflowTemplateName: agw-agent-run-lifecycle
+  # The operator binds this name to the exact live WorkflowTemplate UID and
+  # content digest. These remain empty for the direct backend and are required
+  # when orchestrationBackend=argo.
+  workflowTemplateUID: ""
+  workflowTemplateDigest: ""
+  serviceAccountName: agw-argo-lifecycle
+  waitServiceAccountName: agw-argo-wait
+  handoffServiceAccountName: agw-argo-handoff
+  cleanupServiceAccountName: agw-argo-cleanup
+  # Explicit allowlist of every source credential Secret that any Agent,
+  # ToolSet, ModelRoute, or skills configuration may reference. The operator
+  # and Argo prepare role both receive only this named allowlist; generated
+  # per-run Secrets are separate and are never included here.
+  systemSecretNames: []
+  # Exact Kubernetes API service port allowed to lifecycle API-only pods.
+  apiServerPort: 443
+  # Exact stable object-store destination CIDRs allowed to stage and handoff.
+  # This must be populated when orchestrationBackend=argo; an empty list fails
+  # closed at render time instead of falling back to public internet egress.
+  objectStoreEgressCIDRs: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/astatide/agw-operator
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Every executable image is immutable by construction. These helper images
+# are part of the AgentRun completion contract, so tags are never accepted.
+runtimeImages:
+  clone:
+    repository: ghcr.io/astatide/agw-clone
+    digest: ""
+  skills:
+    repository: ghcr.io/astatide/agw-skills
+    digest: ""
+  context:
+    repository: ghcr.io/astatide/agw-context
+    digest: ""
+  lockdown:
+    repository: ghcr.io/astatide/agw-lockdown
+    digest: ""
+  broker:
+    repository: ghcr.io/astatide/agw-broker
+    digest: ""
+  capture:
+    repository: ghcr.io/astatide/agw-capture
+    digest: ""
+  verifyFetch:
+    repository: ghcr.io/astatide/agw-verify-fetch
+    digest: ""
+  verifyApply:
+    repository: ghcr.io/astatide/agw-verify-apply
+    digest: ""
+  preflight:
+    repository: ghcr.io/astatide/agw-preflight
+    digest: ""
+  lifecycle:
+    # The lifecycle producer is opt-in with Argo and is digest pinned like all
+    # other execution helpers. Direct orchestration remains the default.
+    repository: ghcr.io/astatide/agw-agent-run-lifecycle
+    digest: ""
+
+skillsCredential:
+  # Optional; both values must be set together. The Secret is read by exact
+  # name from namespaces.system and only the named key is projected per run.
+  existingSecret: ""
+  tokenKey: ""
+
+skillsGateway:
+  # Optional globally; required at run time when an Agent declares skills.
+  endpoint: ""
+
+githubApp:
+  # Existing immutable Opaque Secret with app-id, installation-id, and
+  # private-key.pem. It is never mounted into agw-runs.
+  existingSecret: ""
+
+reportSigning:
+  # Existing immutable Opaque Secret containing exactly one raw Ed25519 seed
+  # or private key under the key private-key. The chart never creates key
+  # material or accepts a plaintext key value.
+  existingSecret: ""
+
+verificationAttestation:
+  # Opt-in until the selected KMS identity and key policy have been proven in
+  # the target cluster. When enabled, Gate completion fails closed unless the
+  # signed report is wrapped in a cosign v3 bundle and immediately verified.
+  enabled: false
+  cosignPath: /usr/local/bin/cosign
+  # Use a provider/KMS URI or an absolute externally managed key path. Never
+  # put private key bytes in values. The operator image contains a
+  # digest-pinned cosign binary. Relative paths and env:// or HTTP(S) key sources
+  # are rejected by the adapter and chart contract.
+  keyRef: ""
+  # Optional public-key path or verification KMS URI. Defaults to keyRef for
+  # KMS-backed keys. File-backed signing requires a separate absolute public
+  # verification path; Helm does not mount or create that external file.
+  verifyKeyRef: ""
+  timeout: 3m
+
+# The execution-free critic is optional and fails closed when a Gate requests
+# it but this integration is disabled. Enabling it requires reviewed capability
+# evidence for both the exact sidecar image and the central JWT-protected route.
+critic:
+  enabled: false
+  image:
+    repository: ghcr.io/astatide/agw-critic
+    digest: ""
+  agentGateway:
+    image:
+      repository: cr.agentgateway.dev/agentgateway
+      digest: sha256:efd79355b89094a8225a9db465d9a01dc656b377f0bab458761b935a13231d29
+    capabilityVerified: false
+    evidenceDigest: ""
+  gateway:
+    endpoint: ""
+    routeRef: ""
+    serviceAccountName: agw-critic
+    tokenExpirationSeconds: 900
+    jwt:
+      issuer: ""
+      audience: ""
+      policyRef: ""
+      verified: false
+      evidenceDigest: ""
+    podSelector: {}
+  # Kubernetes NetworkPolicy cannot select a hostname. Resolve the configured
+  # HTTPS object-store endpoint and list only its exact stable CIDRs here.
+  objectStoreEgressCIDRs: []
+  timeout: 10m
+  maxOutputBytes: 1048576
+
+replicas: 1
+
+leaderElection:
+  enabled: true
+
+operator:
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8081"
+  webhookPort: 9443
+  preflightTTL: 10m
+  objectStoreMaxBytes: 67108864
+
+retention:
+  # Retention is active as a bounded dry-run inventory by default. Deletion
+  # requires both enforce=true and dryRun=false, plus lifecycleAttested=true
+  # after the real Sandbox/PVC Phase-0 probe has passed.
+  enabled: true
+  interval: 15m
+  artifactRetentionDays: 14
+  workspaceRetentionDays: 7
+  ledgerRetentionDays: 30
+  ledgerPrefix: publish-effects
+  maxActions: 256
+  maxRuns: 256
+  maxResources: 1024
+  maxObjects: 4096
+  maxLedgerBodyBytes: 65536
+  maxEvents: 32
+  dryRun: true
+  enforce: false
+  lifecycleAttested: false
+
+objectStore:
+  bucket: ""
+  prefix: agents-gateway/v3
+  region: us-east-1
+  endpoint: ""
+  pathStyle: false
+  credentials:
+    # The Secret must already exist in namespaces.system. The chart never
+    # creates or stores AWS credential material.
+    existingSecret: ""
+    accessKeyIdKey: AWS_ACCESS_KEY_ID
+    secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+    sessionTokenKey: AWS_SESSION_TOKEN
+
+artifactSTS:
+  # The operator assumes this role to mint an exact, per-run artifact lease.
+  # The role ARN is configuration, not a credential. The role trust policy
+  # and identity policy must be provisioned outside this chart.
+  roleARN: ""
+  externalID: ""
+  endpoint: ""
+  credentialTTL: 1h
+
+preflight:
+  # The attestor is enabled by default but refuses to render until the real
+  # Phase-0 UID/iptables airlock has been reviewed. This prevents an
+  # unproven NET_ADMIN assumption from being enabled accidentally.
+  enabled: true
+  airlockProven: false
+  # Keep this safety gate true. The attestor checks the kubelet/runtime
+  # hostPath filesystem families conservatively; host /proc is validated as
+  # procfs separately. Neither check proves that the live mount can apply an
+  # idmap, so the real Phase-0 probe remains mandatory.
+  hostPathIdmapRequired: true
+  # These fingerprints are emitted by the attestor after it reads the selected
+  # node/runtime. Do not use a generic placeholder in a live release.
+  nodeName: ""
+  nodeFingerprint: ""
+  runtimeFingerprint: ""
+  schedule: "*/2 * * * *"
+  apiServerURL: https://kubernetes.default.svc:443
+  apiServerCIDR: 10.43.0.1/32
+  nodeSelector:
+    agw.astatide.com/agents: "true"
+  toleration:
+    key: agw.astatide.com/agents
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+  hostPaths:
+    kubelet: /var/lib/rancher/k3s/agent/kubelet
+    runc: /var/lib/rancher/k3s/data/current/bin/runc
+    containerd: /var/lib/rancher/k3s/data/current/bin/containerd
+    k3s: /usr/local/bin/k3s
+
+timezone:
+  # Go/Kubernetes timestamps remain UTC. This value is a display preference
+  # for future human-facing operator output and does not alter status time.
+  human: America/New_York
+  machine: UTC
+
+webhook:
+  tlsSecretName: agw-operator-webhook-tls
+  caValidityDays: 3650
+  certValidityDays: 365
+  keepCertificateSecret: true
+  timeoutSeconds: 5
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+service:
+  annotations: {}
+
+# Optional Prometheus Operator integration. The chart never installs or
+# requires the ServiceMonitor CRD; keep this disabled unless a compatible
+# Prometheus Operator is already installed in the cluster.
+serviceMonitor:
+  enabled: false
+  # Add the label required by the installed Prometheus resource's
+  # serviceMonitorSelector, for example release: kube-prometheus-stack.
+  labels: {}
+  interval: 30s
+  scrapeTimeout: 10s
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+terminationGracePeriodSeconds: 30
+
+networkPolicy:
+  # The runs namespace gets the same default-deny/DNS/public-broker boundary
+  # as config/networkpolicy. No ingress resource is created by this chart.
+  enabled: true
+  runs:
+    enabled: true
+    dns: true
+    publicEgress: true
+
+resourceQuota:
+  enabled: true
+  system:
+    enabled: true
+    hard:
+      pods: "3"
+      requests.cpu: "2"
+      requests.memory: 2Gi
+      limits.cpu: "4"
+      limits.memory: 4Gi
+  runs:
+    enabled: true
+    hard:
+      pods: "20"
+      requests.cpu: "10"
+      requests.memory: 20Gi
+      limits.cpu: "20"
+      limits.memory: 40Gi
+      requests.storage: 100Gi
+      persistentvolumeclaims: "20"
+      count/jobs.batch: "20"
+      count/sandboxes.agents.x-k8s.io: "20"
+
+limitRange:
+  enabled: true
+  system:
+    enabled: true
+    container:
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+  runs:
+    enabled: true
+    container:
+      default:
+        cpu: "2"
+        memory: 4Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+test:
+  enabled: false
+  image:
+    repository: curlimages/curl
+    digest: ""
+    pullPolicy: IfNotPresent

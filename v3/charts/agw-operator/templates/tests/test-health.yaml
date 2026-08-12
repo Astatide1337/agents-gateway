@@ -1,0 +1,44 @@
+{{- if .Values.test.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-health
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 60
+  template:
+    metadata:
+      labels:
+        {{- include "agw-operator.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: test
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: health
+          image: {{ include "agw-operator.testImage" . | quote }}
+          imagePullPolicy: {{ .Values.test.image.pullPolicy }}
+          command: ["curl"]
+          args:
+            - --fail
+            - --silent
+            - --show-error
+            - --max-time
+            - "5"
+            - http://{{ include "agw-operator.webhookServiceName" . }}:8081/healthz
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+{{- end }}

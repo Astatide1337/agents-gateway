@@ -1,0 +1,140 @@
+# Schema/admission fixture for the disposable direct lifecycle gate.
+# __NAMESPACE__ and __RUN_NAME__ are replaced by live-gate.sh. The runtime and
+# verifier image references are intentionally non-runnable: this fixture proves
+# API admission/status shape without starting a provider-backed operator run.
+apiVersion: agents.astatide.com/v1alpha1
+kind: Agent
+metadata:
+  name: direct-mock-agent
+  namespace: __NAMESPACE__
+spec:
+  runtime:
+    harness: codex
+    image: example.invalid/agw-runtime-mock@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  instructions:
+    inline: Run the offline direct lifecycle contract fixture.
+  toolSetRef: direct-mock-tools
+  modelRouteRef: direct-mock-model
+  contextStrategyRef: direct-mock-context
+  policyRefs: [direct-mock-policy]
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: Gate
+metadata:
+  name: direct-mock-gate
+  namespace: __NAMESPACE__
+spec:
+  verify:
+    image: example.invalid/agw-verifier-mock@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    fromCleanCheckout: true
+    commands:
+      - argv: ["/bin/true"]
+    timeout: 1m
+  require:
+    scopeRespected: true
+    testStrength: none
+    maxFilesChanged: 8
+    maxDiffLines: 80
+    noBinaryFiles: true
+  onFail: Rejected
+  mode: shadow
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: ToolSet
+metadata:
+  name: direct-mock-tools
+  namespace: __NAMESPACE__
+spec:
+  servers:
+    - name: mock
+      ref: https://mock.invalid/mcp
+      tools:
+        - name: read_fixture
+          effect: read
+  profiles:
+    - name: explore
+      tools: [{server: mock, tool: read_fixture}]
+    - name: edit
+      tools: [{server: mock, tool: read_fixture}]
+    - name: verify
+      tools: [{server: mock, tool: read_fixture}]
+  maxToolsPerPhase: 1
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: ModelRoute
+metadata:
+  name: direct-mock-model
+  namespace: __NAMESPACE__
+spec:
+  providers:
+    - name: mock
+      kind: openai-responses
+      model: offline-fixture
+      family: mock
+      priority: 1
+  budget:
+    maxCostUsd: "0"
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: Policy
+metadata:
+  name: direct-mock-policy
+  namespace: __NAMESPACE__
+spec:
+  rules:
+    - id: fixture-boundary
+      severity: blocking
+      context: The direct fixture must preserve its phase and identity markers.
+      check:
+        kind: script
+        script: policies/fixture-boundary.sh
+        expect: exit0
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: ContextStrategy
+metadata:
+  name: direct-mock-context
+  namespace: __NAMESPACE__
+spec:
+  repoMap:
+    kind: tree-sitter
+    budget: 128
+  conventions:
+    fromPolicy: true
+  semantic:
+    enabled: false
+  budget:
+    totalTokens: 256
+    maxBytes: 16384
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: AgentRun
+metadata:
+  name: __RUN_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    agents.astatide.com/e2e: direct-contract
+spec:
+  agentRef: direct-mock-agent
+  gateRef: direct-mock-gate
+  source:
+    repo: github.com/example/direct-fixture
+    baseRef: main
+    depth: 1
+  task:
+    inline: Exercise the offline work, capture, and clean verification boundaries.
+  scope:
+    paths: ["src/**"]
+    forbidden: [".github/**"]
+  workspace:
+    size: 64Mi
+    storageClassName: local-path
+  publish:
+    mode: none
+  output:
+    mode: patch
+  limits:
+    timeout: 5m
+    maxToolCalls: 4
+    maxCostUsd: "0"
+  cancelRequested: false

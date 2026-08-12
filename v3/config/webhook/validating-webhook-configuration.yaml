@@ -1,0 +1,43 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: agw-operator-validating-webhook
+  labels:
+    app.kubernetes.io/name: agw-operator
+    app.kubernetes.io/part-of: agents-gateway-v3
+  annotations:
+    # The base is deliberately deploy-safe but not silently trustless: a
+    # deployment overlay must replace the sentinel with the base64-encoded PEM
+    # CA that signs the operator's serving certificate.
+    agents.astatide.com/ca-bundle-source: "kustomize-replacement:agw-webhook-ca.data.caBundle"
+    agents.astatide.com/ca-bundle-required: "true"
+webhooks:
+  - name: agentrun.validation.agents.astatide.com
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        name: agw-operator-webhook
+        namespace: agw-system
+        port: 443
+        path: /validate-agents-astatide-com-v1alpha1-agentrun
+      # This is the non-empty, base64-encoded deployment sentinel. A
+      # production overlay must replace it before apply; leaving it in place
+      # causes webhook TLS validation to fail closed rather than admitting an
+      # unvalidated AgentRun.
+      caBundle: QUdXX1dFQkhPT0tfQ0FfQlVORExFX1JFUVVJUkVE
+    rules:
+      - operations:
+          - CREATE
+          - UPDATE
+        apiGroups:
+          - agents.astatide.com
+        apiVersions:
+          - v1alpha1
+        resources:
+          - agentruns
+        scope: Namespaced

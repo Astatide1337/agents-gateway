@@ -1,0 +1,305 @@
+# Phase-0 disposable two-container UID airlock. The lockdown init container is
+# the only container with namespaced NET_ADMIN. The agent and broker share a
+# network namespace but have distinct UIDs so xt_owner can be tested directly.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agw-phase0-airlock-default-deny
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+spec:
+  podSelector:
+    matchLabels:
+      agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+      agw.astatide.com/phase0-check: uid-airlock
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agw-phase0-airlock-probe-egress
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+spec:
+  podSelector:
+    matchLabels:
+      agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+      agw.astatide.com/phase0-check: uid-airlock
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: __PHASE0_DNS_CIDR__
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - __PHASE0_POD_CIDR_V4__
+              - __PHASE0_SERVICE_CIDR_V4__
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: UDP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::1/128
+              - fc00::/7
+              - fe80::/10
+              - __PHASE0_POD_CIDR_V6__
+              - __PHASE0_SERVICE_CIDR_V6__
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: UDP
+          port: 443
+    # Permit private-address probes through NetworkPolicy so a failed
+    # connection to a pod IP or Service IP exercises the UID airlock too.
+    - to:
+        - ipBlock:
+            cidr: __PHASE0_POD_CIDR_V4__
+        - ipBlock:
+            cidr: __PHASE0_SERVICE_CIDR_V4__
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8082
+        - protocol: TCP
+          port: 8083
+        - protocol: UDP
+          port: 8081
+    - to:
+        - ipBlock:
+            cidr: __PHASE0_POD_CIDR_V6__
+        - ipBlock:
+            cidr: __PHASE0_SERVICE_CIDR_V6__
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8082
+        - protocol: TCP
+          port: 8083
+        - protocol: UDP
+          port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agw-phase0-airlock-probe-ingress
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+spec:
+  podSelector:
+    matchLabels:
+      agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+      agw.astatide.com/phase0-check: uid-airlock
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: __PHASE0_POD_CIDR_V4__
+        - ipBlock:
+            cidr: __PHASE0_SERVICE_CIDR_V4__
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8082
+        - protocol: TCP
+          port: 8083
+    - from:
+        - ipBlock:
+            cidr: __PHASE0_POD_CIDR_V6__
+        - ipBlock:
+            cidr: __PHASE0_SERVICE_CIDR_V6__
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8082
+        - protocol: TCP
+          port: 8083
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: __PHASE0_AIRLOCK_SERVICE__
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+    agw.astatide.com/phase0-check: uid-airlock
+spec:
+  selector:
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+    agw.astatide.com/phase0-check: uid-airlock
+  ports:
+    - name: broker
+      port: 8081
+      targetPort: 8081
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __PHASE0_AIRLOCK_POD__
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+    agw.astatide.com/phase0-check: uid-airlock
+spec:
+  hostUsers: false
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  shareProcessNamespace: false
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  dnsPolicy: ClusterFirst
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  nodeSelector:
+    __PHASE0_NODE_SELECTOR_KEY__: "__PHASE0_NODE_SELECTOR_VALUE__"
+  tolerations:
+    - key: __PHASE0_TOLERATION_KEY__
+      operator: Equal
+      value: "__PHASE0_TOLERATION_VALUE__"
+      effect: NoSchedule
+  initContainers:
+    - name: lockdown
+      image: __PHASE0_LOCKDOWN_IMAGE__
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+          add: [NET_ADMIN]
+        seccompProfile:
+          type: RuntimeDefault
+      command: ["/bin/sh", "-ceu"]
+      args:
+        - |
+          iptables-restore --wait --noflush <<'AGW_IPV4'
+          *filter
+          -P OUTPUT DROP
+          -F OUTPUT
+          -A OUTPUT -o lo -m owner --uid-owner 1000 -p tcp -d 127.0.0.1 --dport 8081 -j ACCEPT
+          -A OUTPUT -m owner --uid-owner 1337 -j ACCEPT
+          COMMIT
+          AGW_IPV4
+          ip6tables-restore --wait --noflush <<'AGW_IPV6'
+          *filter
+          -P OUTPUT DROP
+          -F OUTPUT
+          -A OUTPUT -o lo -m owner --uid-owner 1000 -p tcp -d ::1 --dport 8081 -j ACCEPT
+          -A OUTPUT -m owner --uid-owner 1337 -j ACCEPT
+          COMMIT
+          AGW_IPV6
+          printf 'ipv6_rules=installed\n'
+          printf 'ipv4_rules=installed\n'
+          printf 'agent_ipv4_broker=127.0.0.1:8081/tcp\n'
+          printf 'agent_ipv6_broker=::1:8081/tcp\n'
+          printf 'agent_loopback_default=drop\n'
+          printf 'broker_egress=uid-1337-any\n'
+          iptables-save
+          ip6tables-save
+          printf 'lockdown_uid=%s\n' "$(id -u)"
+          printf 'lockdown_complete=true\n'
+  containers:
+    - name: agent
+      image: __PHASE0_NETWORK_IMAGE__
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      command: ["/bin/sh", "-ceu"]
+      args: ["printf 'agent_ready=true uid=%s\\n' \"$(id -u)\"; sleep 3600"]
+    - name: broker
+      image: __PHASE0_NETWORK_IMAGE__
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsUser: 1337
+        runAsGroup: 1337
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      command: ["/bin/sh", "-ceu"]
+      args:
+        - |
+          for port in 8080 8081 8082 8083; do
+            socat "TCP4-LISTEN:${port},reuseaddr,fork" EXEC:/bin/true &
+            socat "TCP6-LISTEN:${port},ipv6only=1,reuseaddr,fork" EXEC:/bin/true &
+          done
+          for port in 8080 8081 8082 8083; do
+            attempts=0
+            while ! nc -4 -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 20 ]; then
+                printf 'broker_listener_not_ready=%s/tcp4\n' "$port" >&2
+                exit 1
+              fi
+              sleep 0.1
+            done
+            attempts=0
+            while ! nc -6 -z -w 1 ::1 "$port" >/dev/null 2>&1; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 20 ]; then
+                printf 'broker_listener_not_ready=%s/tcp6\n' "$port" >&2
+                exit 1
+              fi
+              sleep 0.1
+            done
+          done
+          printf 'broker_ready=true uid=%s\\n' "$(id -u)"
+          wait

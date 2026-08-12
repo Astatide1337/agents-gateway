@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agw-operator-webhook
+  namespace: agw-system
+  labels:
+    app.kubernetes.io/name: agw-operator
+    app.kubernetes.io/component: webhook
+spec:
+  selector:
+    app.kubernetes.io/name: agw-operator
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: webhook

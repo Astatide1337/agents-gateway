@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+trap 'exit 143' TERM INT
+while :; do
+	sleep 1
+done

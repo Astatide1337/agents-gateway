@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1
+
+ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af
+ARG COSIGN_IMAGE=gcr.io/projectsigstore/cosign:v3.1.3@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /src
+COPY v3/go.mod v3/go.sum ./
+RUN go mod download
+COPY v3/ ./
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -buildvcs=false -ldflags='-s -w' \
+    -o /out/agw-operator ./cmd/agw-operator
+
+FROM ${COSIGN_IMAGE} AS cosign
+
+FROM docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="Agents Gateway operator" \
+      org.opencontainers.image.description="Kubernetes-native control plane for Agents Gateway v3" \
+      org.opencontainers.image.source="https://github.com/Astatide1337/agents-gateway" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="MIT AND Apache-2.0" \
+      com.astatide.agw.component="operator" \
+      com.astatide.agw.api="agents.astatide.com/v1alpha1"
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S -g 65532 agw \
+    && adduser -S -D -H -u 65532 -G agw -s /sbin/nologin agw \
+    && install -d -m 0755 /agw \
+    && install -d -m 0700 -o 65532 -g 65532 /tmp/k8s-webhook-server/serving-certs
+
+COPY --from=build /out/agw-operator /agw/operator
+COPY --from=cosign /ko-app/cosign /usr/local/bin/cosign
+RUN chmod 0755 /agw/operator
+
+USER 65532:65532
+WORKDIR /agw
+ENTRYPOINT ["/agw/operator"]

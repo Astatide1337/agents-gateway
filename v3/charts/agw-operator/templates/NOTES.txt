@@ -1,0 +1,32 @@
+Agents Gateway v3 operator has been rendered.
+
+Required before first install:
+
+  1. Apply the authoritative CRDs from the repository:
+       kubectl apply -k v3/config/crd
+{{- if eq .Values.sandboxBackend "agent-sandbox" }}
+  2. Install upstream kubernetes-sigs/agent-sandbox core v0.5.4
+     (agents.x-k8s.io/v1beta1) using its pinned release asset.
+{{- else }}
+  2. The selected Job backend does not require the upstream
+     agents.x-k8s.io/v1beta1 Sandbox CRD or controller.
+{{- end }}
+  3. Ensure {{ .Values.namespaces.system }}/agw-preflight exists with a
+     passing, fresh attestation matching the configured fingerprints.
+  4. If objectStore.credentials.existingSecret is set, create that Secret in
+     {{ .Values.namespaces.system }} before the operator starts.
+
+Release namespaces:
+
+  system: {{ .Values.namespaces.system }}
+  runs:   {{ .Values.namespaces.runs }}
+
+The webhook is internal ClusterIP-only; this chart creates no Ingress.
+The generated webhook Secret is {{ .Values.namespaces.system }}/{{ .Values.webhook.tlsSecretName }}.
+It is reused on upgrades and kept on uninstall by default.
+
+Useful commands:
+
+  kubectl -n {{ .Values.namespaces.system }} get deploy,svc,pdb
+  kubectl -n {{ .Values.namespaces.runs }} get agentruns
+  helm test {{ .Release.Name }} -n {{ .Values.namespaces.system }}

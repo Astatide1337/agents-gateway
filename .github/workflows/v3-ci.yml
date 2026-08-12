@@ -1,0 +1,256 @@
+name: Agents Gateway v3 CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_images:
+        description: Build all production images on hosted runners
+        required: false
+        default: false
+        type: boolean
+      run_kind_smoke:
+        description: Create a disposable Kind cluster for API-server smoke tests
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26.5'
+  HELM_VERSION: v4.2.3
+  KUBECTL_VERSION: v1.36.3
+  KIND_VERSION: v0.31.0
+  NODE_VERSION: '24.0.0'
+  CONTROLLER_GEN_VERSION: v0.21.0
+
+jobs:
+  v3:
+    name: v3 unit, manifest, and Phase-0 checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v3
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: v3/go.sum
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Check gofmt
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            printf '%s\n' "gofmt required for:" $files
+            exit 1
+          fi
+
+      - name: Check whitespace errors
+        working-directory: .
+        run: git diff --check -- v3 .github/workflows/v3-ci.yml
+
+      - name: Run unit tests
+        run: go test ./...
+
+      - name: Run race tests
+        run: go test -race ./...
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Scan reachable Go vulnerabilities
+        run: make vuln
+
+      - name: Check Bash syntax
+        run: make bash-check
+
+      - name: Set up pinned Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Validate Helm chart
+        run: make chart-check
+
+      - name: Validate static image contracts
+        run: make image-contract-check
+
+      - name: Smoke-test Phase-0 plan mode
+        run: make phase0-plan
+
+      - name: Regenerate CRD manifests with controller-gen
+        run: make generate CONTROLLER_GEN_VERSION="$CONTROLLER_GEN_VERSION"
+
+      - name: Check controller-gen regeneration drift
+        working-directory: .
+        run: git diff --exit-code -- v3/config/crd
+
+      - name: Build v3 binaries
+        run: make build
+
+  images:
+    name: Build ${{ matrix.name }} image
+    if: ${{ inputs.build_images }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: operator
+            dockerfile: v3/images/operator/Containerfile
+          - name: broker
+            dockerfile: v3/images/broker/Containerfile
+          - name: critic
+            dockerfile: v3/images/critic/Containerfile
+          - name: capture
+            dockerfile: v3/images/capture/Dockerfile
+          - name: clone
+            dockerfile: v3/images/clone/Containerfile
+          - name: context
+            dockerfile: v3/images/context/Containerfile
+          - name: lockdown
+            dockerfile: v3/images/lockdown/Containerfile
+          - name: preflight
+            dockerfile: v3/images/preflight/Containerfile
+          - name: runtime-claude
+            dockerfile: v3/images/runtime-claude/Containerfile
+          - name: runtime-codex
+            dockerfile: v3/images/runtime-codex/Containerfile
+          - name: skills
+            dockerfile: v3/images/skills/Containerfile
+          - name: agent-run-lifecycle
+            dockerfile: v3/images/agent-run-lifecycle/Containerfile
+          - name: verifier
+            dockerfile: v3/images/verifier/Containerfile
+          - name: verify-apply
+            dockerfile: v3/images/verify-apply/Containerfile
+          - name: verify-fetch
+            dockerfile: v3/images/verify-fetch/Containerfile
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+
+      - name: Set up pinned Node.js for harness resolution
+        if: startsWith(matrix.name, 'runtime-')
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build immutable production image input
+        env:
+          IMAGE: agents-gateway-v3-${{ matrix.name }}:ci
+        run: |
+          case "${{ matrix.name }}" in
+            runtime-claude)
+              ./v3/images/runtime-claude/build.sh
+              ;;
+            runtime-codex)
+              ./v3/images/runtime-codex/build.sh
+              ;;
+            *)
+              docker build --pull \
+                --file "${{ matrix.dockerfile }}" \
+                --tag "$IMAGE" \
+                .
+              ;;
+          esac
+
+      - name: Record built image identity
+        env:
+          IMAGE: agents-gateway-v3-${{ matrix.name }}:ci
+        run: docker image inspect --format '{{.Id}}' "$IMAGE"
+
+      - name: Validate built image contract
+        working-directory: v3
+        env:
+          IMAGE: agents-gateway-v3-${{ matrix.name }}:ci
+        run: bash "images/${{ matrix.name }}/validate.sh" --image "$IMAGE"
+
+  kubernetes-api:
+    name: Kubernetes API and Helm smoke
+    if: ${{ inputs.run_kind_smoke }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up pinned kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+
+      - name: Set up pinned Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install pinned Kind and create an API-server test cluster
+        run: |
+          go install sigs.k8s.io/kind@"$KIND_VERSION"
+          kind create cluster --name agw-v3-ci --wait 120s
+
+      - name: Exercise CRD schemas against the API server
+        run: |
+          kubectl apply --server-side --force-conflicts -k v3/config/crd
+          kubectl wait --for=condition=Established --timeout=60s \
+            crd/agentruns.agents.astatide.com \
+            crd/agents.agents.astatide.com \
+            crd/gates.agents.astatide.com \
+            crd/toolsets.agents.astatide.com \
+            crd/modelroutes.agents.astatide.com \
+            crd/policies.agents.astatide.com \
+            crd/contextstrategies.agents.astatide.com
+          test "$(kubectl get crd -o json | jq '[.items[] | select(.spec.group == "agents.astatide.com")] | length')" -eq 7
+          kubectl create namespace agw-runs
+          kubectl apply --server-side --dry-run=server -k v3/config/samples
+
+      - name: Exercise rendered chart objects against the API server
+        run: |
+          rendered="$RUNNER_TEMP/agw-v3-chart-agent-sandbox.yaml"
+          job_rendered="$RUNNER_TEMP/agw-v3-chart-job.yaml"
+          kubectl create namespace agw-system
+          helm template agw-operator v3/charts/agw-operator \
+            --namespace agw-system \
+            --values v3/charts/agw-operator/tests/values-ci.yaml \
+            --set namespaces.createSystem=false \
+            --set namespaces.createRuns=false > "$rendered"
+          kubectl apply --server-side --dry-run=server -f "$rendered"
+          if kubectl get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1; then
+            printf '%s\n' 'unexpected upstream Sandbox CRD in Job-backend independence test'
+            exit 1
+          fi
+          helm template agw-operator v3/charts/agw-operator \
+            --namespace agw-system \
+            --values v3/charts/agw-operator/tests/values-ci.yaml \
+            --set namespaces.createSystem=false \
+            --set namespaces.createRuns=false \
+            --set sandboxBackend=job > "$job_rendered"
+          kubectl apply --server-side --dry-run=server -f "$job_rendered"
+
+      - name: Export API-server diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get crd -o wide || true
+          kubectl get events --all-namespaces --sort-by=.lastTimestamp || true
+
+      - name: Delete Kind cluster
+        if: always()
+        run: kind delete cluster --name agw-v3-ci

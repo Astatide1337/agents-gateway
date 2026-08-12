@@ -258,6 +258,11 @@ export class ApiClient {
     return this.request<ApiResource<T>>(`${this.scope(organization, project)}/resources/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`);
   }
 
+  listResources(organization: string, project: string, kind?: ResourceKind | string): Promise<ApiResource<Record<string, unknown>>[]> {
+    const suffix = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+    return this.collection<ApiResource<Record<string, unknown>>>(organization, project, `resources${suffix}`).then((page) => page.items);
+  }
+
   applyResource<T>(organization: string, project: string, kind: ResourceKind, name: string, resource: T): Promise<ApiResource<T>> {
     return this.request<ApiResource<T>>(`${this.scope(organization, project)}/resources/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`, {
       method: 'PUT',
@@ -281,6 +286,18 @@ export class ApiClient {
       method: 'POST',
       headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(input),
+    });
+  }
+
+  cancelRun(organization: string, project: string, runId: string, reason = 'cancelled from console'): Promise<ApiRun> {
+    return this.request<ApiRun>(`${this.scope(organization, project)}/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: 'POST', headers: { 'Idempotency-Key': `console-cancel-${runId}` }, body: JSON.stringify({ reason }),
+    });
+  }
+
+  replyRun(organization: string, project: string, runId: string, input: Record<string, unknown>, idempotencyKey: string): Promise<{ run?: ApiRun; signal?: string; target?: string }> {
+    return this.request<{ run?: ApiRun; signal?: string; target?: string }>(`${this.scope(organization, project)}/runs/${encodeURIComponent(runId)}/reply`, {
+      method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(input),
     });
   }
 
@@ -330,7 +347,7 @@ export class ApiClient {
   }
 
   getUsage(organization: string, project: string): Promise<ApiUsage> {
-    return this.request<{ usage: ApiUsage }>(`${this.scope(organization, project)}/usage`).then((result) => result.usage);
+    return this.request<{ usage?: ApiUsage }>(`${this.scope(organization, project)}/usage`).then((result) => result.usage ?? { activeRuns: 0, totalRuns: 0, artifactVersions: 0, artifactBytes: 0 });
   }
 
   listAudit(organization: string, project: string): Promise<ApiAuditEntry[]> {

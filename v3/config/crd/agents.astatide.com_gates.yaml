@@ -1,0 +1,327 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: gates.agents.astatide.com
+spec:
+  group: agents.astatide.com
+  names:
+    kind: Gate
+    listKind: GateList
+    plural: gates
+    shortNames:
+    - agwgate
+    singular: gate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Gate is an independent verification and acceptance policy.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: GateSpec defines independent verification and acceptance.
+            properties:
+              mode:
+                description: GateMode controls whether a Gate is advisory or enforcing.
+                enum:
+                - shadow
+                - enforcing
+                type: string
+              onFail:
+                enum:
+                - Rejected
+                type: string
+              policyRefs:
+                items:
+                  maxLength: 253
+                  pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+                  type: string
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: set
+              require:
+                description: GateRequirements are independent machine-checkable acceptance
+                  rules.
+                properties:
+                  adapter:
+                    description: |-
+                      GateAdapter identifies the verifier-owned language adapter used for
+                      language-specific evidence. Empty means that no adapter is configured.
+                      Go is deliberately the first adapter; generic test-file or coverage
+                      inference is not a trusted fallback.
+                    enum:
+                    - go
+                    type: string
+                  baseTestCommand:
+                    description: |-
+                      BaseTestCommand is the one verifier command used by
+                      newTestsMustFailOnBase. It is intentionally separate from verify.commands
+                      so build, lint, and vet commands cannot be interpreted as test evidence.
+                    properties:
+                      argv:
+                        items:
+                          type: string
+                        maxItems: 64
+                        minItems: 1
+                        type: array
+                      shell:
+                        maxLength: 4096
+                        minLength: 1
+                        type: string
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of argv or shell must be set
+                      rule: (size(self.argv) > 0) != (has(self.shell) && size(self.shell)
+                        > 0)
+                  coverageDelta:
+                    maxLength: 64
+                    type: string
+                  maxDiffLines:
+                    format: int32
+                    maximum: 100000
+                    minimum: 0
+                    type: integer
+                  maxFilesChanged:
+                    format: int32
+                    maximum: 10000
+                    minimum: 0
+                    type: integer
+                  noBinaryFiles:
+                    type: boolean
+                  scopeRespected:
+                    type: boolean
+                  testStrength:
+                    description: TestStrength describes the minimum evidence required
+                      for newly added tests.
+                    enum:
+                    - none
+                    - newTestsMustFailOnBase
+                    type: string
+                required:
+                - maxDiffLines
+                - maxFilesChanged
+                - noBinaryFiles
+                - scopeRespected
+                - testStrength
+                type: object
+                x-kubernetes-validations:
+                - message: newTestsMustFailOnBase requires the go adapter and one
+                    explicit baseTestCommand; other testStrength values must not provide
+                    one
+                  rule: (self.testStrength == 'none' && !has(self.baseTestCommand))
+                    || (self.testStrength == 'newTestsMustFailOnBase' && has(self.adapter)
+                    && self.adapter == 'go' && has(self.baseTestCommand))
+                - message: coverageDelta requires the go verifier adapter
+                  rule: '!has(self.coverageDelta) || size(self.coverageDelta) == 0
+                    || (has(self.adapter) && self.adapter == ''go'')'
+              signals:
+                description: |-
+                  Signals is optional for compatibility with execution-only Gates. When
+                  present it is the complete fixed-point execution/critic contract; there
+                  is deliberately no mutation signal until mutation evidence is implemented.
+                properties:
+                  critic:
+                    description: Critic is omitted for an explicit execution-only
+                      signal block.
+                    properties:
+                      maxFindings:
+                        description: |-
+                          MaxFindings bounds critic output before it enters the corroboration
+                          router. It is intentionally explicit rather than silently defaulted.
+                        format: int32
+                        maximum: 256
+                        minimum: 1
+                        type: integer
+                      modelRouteRef:
+                        description: |-
+                          ModelRouteRef names a separately resolved critic route. Admission
+                          compares every provider family in this route with the worker route.
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      weightBasisPoints:
+                        description: |-
+                          WeightBasisPoints is the critic's fixed-point weight. Together with
+                          GateSignalsSpec.ExecutionWeightBasisPoints it must equal 10000.
+                        format: int32
+                        maximum: 10000
+                        minimum: 1
+                        type: integer
+                    required:
+                    - maxFindings
+                    - modelRouteRef
+                    - weightBasisPoints
+                    type: object
+                    x-kubernetes-validations:
+                    - message: critic requires a route, a positive bounded weight,
+                        and 1..256 findings
+                      rule: size(self.modelRouteRef) > 0 && self.weightBasisPoints
+                        > 0 && self.weightBasisPoints <= 10000 && self.maxFindings
+                        > 0 && self.maxFindings <= 256
+                  executionWeightBasisPoints:
+                    description: ExecutionWeightBasisPoints weights the deterministic
+                      execution signal.
+                    format: int32
+                    maximum: 10000
+                    minimum: 0
+                    type: integer
+                  minScoreBasisPoints:
+                    description: |-
+                      MinScoreBasisPoints is the minimum weighted score for a candidate that
+                      has no blocking deterministic or corroborated critic finding.
+                    format: int32
+                    maximum: 10000
+                    minimum: 0
+                    type: integer
+                required:
+                - executionWeightBasisPoints
+                - minScoreBasisPoints
+                type: object
+                x-kubernetes-validations:
+                - message: Gate signal weights and minimum score must be between 0
+                    and 10000 basis points
+                  rule: self.executionWeightBasisPoints >= 0 && self.executionWeightBasisPoints
+                    <= 10000 && self.minScoreBasisPoints >= 0 && self.minScoreBasisPoints
+                    <= 10000
+                - message: execution and critic weights must sum exactly to 10000
+                    basis points; an execution-only signal block must use execution=10000
+                    and minimum=10000
+                  rule: '!has(self.critic) ? (self.executionWeightBasisPoints == 10000
+                    && self.minScoreBasisPoints == 10000) : (self.executionWeightBasisPoints
+                    > 0 && self.critic.weightBasisPoints > 0 && self.executionWeightBasisPoints
+                    + self.critic.weightBasisPoints == 10000)'
+              verify:
+                description: VerifySpec defines the independent verification execution.
+                properties:
+                  commands:
+                    items:
+                      description: VerifyCommand is an argv command, or an explicitly
+                        requested shell command.
+                      properties:
+                        argv:
+                          items:
+                            type: string
+                          maxItems: 64
+                          minItems: 1
+                          type: array
+                        shell:
+                          maxLength: 4096
+                          minLength: 1
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exactly one of argv or shell must be set
+                        rule: (size(self.argv) > 0) != (has(self.shell) && size(self.shell)
+                          > 0)
+                    maxItems: 32
+                    minItems: 1
+                    type: array
+                  fromCleanCheckout:
+                    type: boolean
+                  image:
+                    maxLength: 512
+                    minLength: 1
+                    pattern: ^.+@sha256:[a-f0-9]{64}$
+                    type: string
+                  timeout:
+                    pattern: ^[0-9]+(s|m|h)$
+                    type: string
+                required:
+                - commands
+                - fromCleanCheckout
+                - image
+                - timeout
+                type: object
+            required:
+            - mode
+            - onFail
+            - require
+            - verify
+            type: object
+          status:
+            description: ResourceStatus is the bounded status shared by configuration
+              resources.
+            properties:
+              conditions:
+                items:
+                  description: |-
+                    Condition is a bounded status condition. Full diagnostics belong in the
+                    event stream or report artifact, not in a Kubernetes status object.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 2048
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      maxLength: 64
+                      type: string
+                    status:
+                      description: |-
+                        ConditionStatus is intentionally narrower than a free-form string and is
+                        used by every status condition in this package.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              specDigest:
+                maxLength: 71
+                pattern: ^sha256:[a-f0-9]{64}$
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

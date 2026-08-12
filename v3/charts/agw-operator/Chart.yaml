@@ -1,0 +1,17 @@
+apiVersion: v2
+name: agw-operator
+description: Kubernetes-native Agents Gateway v3 operator
+type: application
+version: 0.1.0
+appVersion: v3.0.0-alpha.0
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/Astatide1337/agents-gateway
+sources:
+  - https://github.com/Astatide1337/agents-gateway
+keywords:
+  - agents
+  - kubernetes
+  - sandbox
+  - operator
+maintainers:
+  - name: Astatide

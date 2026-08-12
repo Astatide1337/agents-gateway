@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+if [ "${OPENAI_API_KEY+x}" = x ]; then
+	printf '%s\n' '{"type":"error","error":{"message":"OPENAI_API_KEY leaked"}}'
+	exit 42
+fi
+if [ "${HOME:-}" != "${CODEX_HOME:-}" ]; then
+	printf '%s\n' '{"type":"error","error":{"message":"Codex home was not isolated"}}'
+	exit 43
+fi
+
+# The real broker owns this loopback endpoint. The fixture supplies only the
+# immutable output response so the image smoke test can run with network=none.
+node -e '
+const http = require("http");
+const server = http.createServer((request, response) => {
+  if (request.method !== "PUT" || request.url !== "/v1/artifacts/output") {
+    response.writeHead(404);
+    response.end();
+    return;
+  }
+  request.resume();
+  request.on("end", () => {
+    response.writeHead(201, {"content-type": "application/json"});
+    response.end(JSON.stringify({id: "runtime-smoke-output", uri: "artifact://local/runs/output", digest: "sha256:" + "a".repeat(64), size_bytes: 42, media_type: "application/vnd.agw.run-output+json"}));
+    server.close();
+  });
+});
+server.listen(8081, "127.0.0.1");
+' >/dev/null 2>&1 &
+sleep 1
+
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"runtime-image-ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'

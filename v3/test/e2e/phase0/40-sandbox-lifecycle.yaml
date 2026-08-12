@@ -1,0 +1,77 @@
+# Direct upstream Agent Sandbox resource for Phase 0. The controller and CRD
+# are installed separately by phase0-sandbox.sh from the pinned release asset.
+# This intentionally does not depend on SandboxTemplate, SandboxClaim, or a
+# warm pool. API: agents.x-k8s.io/v1beta1.
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: __PHASE0_SANDBOX_NAME__
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+    agw.astatide.com/phase0-check: sandbox-lifecycle
+spec:
+  operatingMode: Running
+  service: true
+  shutdownPolicy: Delete
+  shutdownTime: __PHASE0_SHUTDOWN_TIME__
+  podTemplate:
+    metadata:
+      labels:
+        agw.astatide.com/phase0: "true"
+        agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+        agw.astatide.com/phase0-check: sandbox-pod
+    spec:
+      hostUsers: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        __PHASE0_NODE_SELECTOR_KEY__: "__PHASE0_NODE_SELECTOR_VALUE__"
+      tolerations:
+        - key: __PHASE0_TOLERATION_KEY__
+          operator: Equal
+          value: "__PHASE0_TOLERATION_VALUE__"
+          effect: NoSchedule
+      containers:
+        - name: lifecycle
+          image: __PHASE0_BASE_IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          command: ["/bin/sh", "-ceu"]
+          args:
+            - |
+              printf 'sandbox_ready=true\n'
+              printf 'sandbox_uid=%s\n' "$(id -u)"
+              printf 'service_account_token=%s\n' "$(test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token && printf absent || printf present)"
+              touch /workspace/probe
+              printf 'workspace_write=true\n'
+              sleep 30
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+        labels:
+          agw.astatide.com/phase0: "true"
+          agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+          agw.astatide.com/phase0-check: sandbox-workspace
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: __PHASE0_STORAGE_CLASS__
+        resources:
+          requests:
+            storage: __PHASE0_WORKSPACE_SIZE__

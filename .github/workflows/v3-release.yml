@@ -1,0 +1,844 @@
+name: Agents Gateway v3 image release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semver-like v3 image tag to publish (for example v3.1.0-rc.1)'
+        required: true
+        type: string
+
+# Job-level permissions below are intentionally narrower than the workflow's
+# default. In particular, only the image and promotion jobs receive
+# packages:write and only the image jobs receive id-token:write.
+permissions: {}
+
+concurrency:
+  # The version input is the only release identity while this workflow is
+  # manual-only. Keep concurrent attempts for one version serialized.
+  group: agw-v3-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  # The scanner action is pinned below; this is the exact Trivy CLI release it
+  # must install, rather than a mutable action default.
+  TRIVY_VERSION: v0.70.0
+  COSIGN_VERSION: v3.1.3
+
+jobs:
+  prepare:
+    name: Validate release identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image_namespace: ${{ steps.version.outputs.image_namespace }}
+      source_revision: ${{ steps.version.outputs.source_revision }}
+      build_date: ${{ steps.version.outputs.build_date }}
+      quarantine_tag: ${{ steps.version.outputs.quarantine_tag }}
+    steps:
+      - name: Validate semver-like v3 version and derive safe outputs
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_REVISION: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          [[ "$EVENT_NAME" == workflow_dispatch ]] || {
+            echo "v3 releases must be started with workflow_dispatch" >&2
+            exit 1
+          }
+          version="$DISPATCH_VERSION"
+
+          # This value is subsequently passed to Docker, jq, and gh only via
+          # environment variables. Reject every character outside this strict
+          # grammar before it reaches any command argument or output file.
+          if [[ ! "$version" =~ ^v3\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "version must match v3.<major>.<minor>.<patch>[-|.]<identifier>" >&2
+            exit 1
+          fi
+          if [[ "${version,,}" == *latest* ]]; then
+            echo "latest is not a permitted release tag" >&2
+            exit 1
+          fi
+
+          owner="${REPOSITORY_OWNER,,}"
+          if [[ ! "$owner" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "repository owner is not a safe GHCR namespace: $owner" >&2
+            exit 1
+          fi
+          if [[ ! "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "github.sha is not a full commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ || ! "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]; then
+            echo "GitHub run identity is not numeric" >&2
+            exit 1
+          fi
+
+          # A release identity is single-use. A manual run may not recreate an
+          # existing GitHub Release or reuse an existing Git tag. The promotion
+          # job separately checks GHCR before writing any final image tag,
+          # covering interrupted runs and package-level replays.
+          api_absent() {
+            local endpoint="$1" response
+            if response="$(gh api --include --silent "$endpoint" 2>&1)"; then
+              echo "release identity already exists at $endpoint" >&2
+              return 1
+            fi
+            if grep -Eq '^HTTP/[0-9.]+ 404([[:space:]]|$)' <<<"$response"; then
+              return 0
+            fi
+            echo "GitHub API check failed for $endpoint; refusing to continue: $response" >&2
+            return 2
+          }
+          api_absent "repos/$REPOSITORY/releases/tags/$version"
+          [[ "$EVENT_NAME" == workflow_dispatch ]] && api_absent "repos/$REPOSITORY/git/ref/tags/$version"
+
+          quarantine_tag="${version}-quarantine-${RUN_ID}-${RUN_ATTEMPT}"
+
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'image_namespace=ghcr.io/%s\n' "$owner" >> "$GITHUB_OUTPUT"
+          printf 'source_revision=%s\n' "$SOURCE_REVISION" >> "$GITHUB_OUTPUT"
+          printf 'build_date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          printf 'quarantine_tag=%s\n' "$quarantine_tag" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Validate release contract
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # actions/checkout v6.0.1
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Parse workflow and validate static release invariants
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/workflows/v3-release.yml"), aliases: true); puts "workflow YAML: OK"'
+          bash v3/scripts/validate-release-contract.sh
+
+          mapfile -t dockerfiles < <(rg '^            dockerfile: v3/' .github/workflows/v3-release.yml | sed 's/.*dockerfile: //')
+          test "${#dockerfiles[@]}" -eq 15
+          for dockerfile in "${dockerfiles[@]}"; do
+            test -f "$dockerfile"
+            image_dir="$(dirname "$dockerfile")"
+            test -x "$image_dir/validate.sh"
+            bash "$image_dir/validate.sh"
+          done
+
+          # Release image tags are versioned only. This catches accidental
+          # reintroduction of a mutable latest tag without banning the word in
+          # documentation or Dockerfile dependency comments.
+          MUTABLE_TAG_WORD=latest
+          if rg -n "tags.*:${MUTABLE_TAG_WORD}|IMAGE_REF.*:${MUTABLE_TAG_WORD}|image.*:${MUTABLE_TAG_WORD}" .github/workflows/v3-release.yml; then
+            echo 'mutable latest image tag found in release workflow' >&2
+            exit 1
+          fi
+
+          test "$EXPECTED_VERSION" != latest
+          echo 'release contract: OK'
+
+  build:
+    name: Build, scan, sign ${{ matrix.component }}
+    needs: [prepare, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        # These entries intentionally mirror .github/workflows/v3-ci.yml.
+        # The seven amd64-only entries are explicit because their current
+        # Dockerfiles contain GOARCH=amd64. Removing arm64 from one entry
+        # without changing that evidence is a release-contract error.
+        include:
+          - component: operator
+            image: agw-operator
+            dockerfile: v3/images/operator/Containerfile
+            platforms: linux/amd64
+            platform_evidence: 'linux/arm64 intentionally not emitted: the Containerfile hard-codes GOARCH=amd64.'
+            chart_repository_key: image.repository
+            chart_digest_key: image.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: broker
+            image: agw-broker
+            dockerfile: v3/images/broker/Containerfile
+            platforms: linux/amd64
+            platform_evidence: 'linux/arm64 intentionally not emitted: the Containerfile hard-codes GOARCH=amd64.'
+            chart_repository_key: runtimeImages.broker.repository
+            chart_digest_key: runtimeImages.broker.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: critic
+            image: agw-critic
+            dockerfile: v3/images/critic/Containerfile
+            platforms: linux/amd64,linux/arm64
+            platform_evidence: 'The static Go binary is built for each BuildKit target and the scratch runtime is platform neutral.'
+            chart_repository_key: ''
+            chart_digest_key: ''
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: capture
+            image: agw-capture
+            dockerfile: v3/images/capture/Dockerfile
+            platforms: linux/amd64,linux/arm64
+            platform_evidence: 'TARGETOS/TARGETARCH are consumed by the Go build.'
+            chart_repository_key: runtimeImages.capture.repository
+            chart_digest_key: runtimeImages.capture.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: clone
+            image: agw-clone
+            dockerfile: v3/images/clone/Containerfile
+            platforms: linux/amd64,linux/arm64
+            platform_evidence: 'Go and Alpine stages use the BuildKit target platform.'
+            chart_repository_key: runtimeImages.clone.repository
+            chart_digest_key: runtimeImages.clone.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: context
+            image: agw-context
+            dockerfile: v3/images/context/Containerfile
+            platforms: linux/amd64,linux/arm64
+            platform_evidence: 'Go and distroless stages use the BuildKit target platform.'
+            chart_repository_key: runtimeImages.context.repository
+            chart_digest_key: runtimeImages.context.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: lockdown
+            image: agw-lockdown
+            dockerfile: v3/images/lockdown/Containerfile
+            platforms: linux/amd64,linux/arm64
+            platform_evidence: 'Alpine publishes both target platforms.'
+            chart_repository_key: runtimeImages.lockdown.repository
+            chart_digest_key: runtimeImages.lockdown.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: preflight
+            image: agw-preflight
+            dockerfile: v3/images/preflight/Containerfile
+            platforms: linux/amd64
+            platform_evidence: 'linux/arm64 intentionally not emitted: the Containerfile hard-codes GOARCH=amd64.'
+            chart_repository_key: runtimeImages.preflight.repository
+            chart_digest_key: runtimeImages.preflight.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: runtime-claude
+            image: agw-runtime-claude
+            dockerfile: v3/images/runtime-claude/Containerfile
+            platforms: linux/amd64,linux/arm64
+            platform_evidence: 'Node base and Claude package are built for each BuildKit target; arm64 failure is release-fatal.'
+            chart_repository_key: ''
+            chart_digest_key: ''
+            cli_package: '@anthropic-ai/claude-code'
+            cli_arg: CLAUDE_CODE_VERSION
+          - component: runtime-codex
+            image: agw-runtime-codex
+            dockerfile: v3/images/runtime-codex/Containerfile
+            platforms: linux/amd64,linux/arm64
+            platform_evidence: 'Containerfile verifies the x64 and arm64 Codex native package for each target.'
+            chart_repository_key: ''
+            chart_digest_key: ''
+            cli_package: '@openai/codex'
+            cli_arg: CODEX_CLI_VERSION
+          - component: skills
+            image: agw-skills
+            dockerfile: v3/images/skills/Containerfile
+            platforms: linux/amd64,linux/arm64
+            platform_evidence: 'Go and distroless stages use the BuildKit target platform.'
+            chart_repository_key: runtimeImages.skills.repository
+            chart_digest_key: runtimeImages.skills.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: agent-run-lifecycle
+            image: agw-agent-run-lifecycle
+            dockerfile: v3/images/agent-run-lifecycle/Containerfile
+            platforms: linux/amd64
+            platform_evidence: 'linux/arm64 intentionally not emitted: the Containerfile hard-codes GOARCH=amd64.'
+            chart_repository_key: ''
+            chart_digest_key: ''
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: verifier
+            image: agw-verifier
+            dockerfile: v3/images/verifier/Containerfile
+            platforms: linux/amd64
+            platform_evidence: 'linux/arm64 intentionally not emitted: the Containerfile hard-codes GOARCH=amd64.'
+            chart_repository_key: ''
+            chart_digest_key: ''
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: verify-apply
+            image: agw-verify-apply
+            dockerfile: v3/images/verify-apply/Containerfile
+            platforms: linux/amd64
+            platform_evidence: 'linux/arm64 intentionally not emitted: the Containerfile hard-codes GOARCH=amd64.'
+            chart_repository_key: runtimeImages.verifyApply.repository
+            chart_digest_key: runtimeImages.verifyApply.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+          - component: verify-fetch
+            image: agw-verify-fetch
+            dockerfile: v3/images/verify-fetch/Containerfile
+            platforms: linux/amd64
+            platform_evidence: 'linux/arm64 intentionally not emitted: the Containerfile hard-codes GOARCH=amd64.'
+            chart_repository_key: runtimeImages.verifyFetch.repository
+            chart_digest_key: runtimeImages.verifyFetch.digest
+            cli_package: ''
+            cli_arg: AGW_UNUSED_BUILD_ARG
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      QUARANTINE_TAG: ${{ needs.prepare.outputs.quarantine_tag }}
+      IMAGE_NAMESPACE: ${{ needs.prepare.outputs.image_namespace }}
+      SOURCE_REVISION: ${{ needs.prepare.outputs.source_revision }}
+      BUILD_DATE: ${{ needs.prepare.outputs.build_date }}
+      COMPONENT: ${{ matrix.component }}
+      IMAGE_NAME: ${{ matrix.image }}
+      PLATFORMS: ${{ matrix.platforms }}
+      PLATFORM_EVIDENCE: ${{ matrix.platform_evidence }}
+      CLI_PACKAGE: ${{ matrix.cli_package }}
+      CLI_ARG: ${{ matrix.cli_arg }}
+      CHART_REPOSITORY_KEY: ${{ matrix.chart_repository_key }}
+      CHART_DIGEST_KEY: ${{ matrix.chart_digest_key }}
+    steps:
+      # actions/checkout v6.0.1
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          fetch-depth: 1
+
+      # docker/setup-qemu-action v3.6.0
+      - name: Set up arm64 emulation
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.6.0
+        with:
+          platforms: arm64
+
+      # docker/setup-buildx-action v3.11.1
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.11.1
+
+      # docker/login-action v3.5.0
+      - name: Log in to GHCR with GITHUB_TOKEN
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # actions/setup-node v6
+      - name: Set up current Node.js for runtime version resolution
+        if: env.CLI_PACKAGE != ''
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: node
+
+      - name: Validate matrix platform evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PLATFORMS" in
+            linux/amd64|linux/amd64,linux/arm64) ;;
+            *) echo "unsupported platform declaration: $PLATFORMS" >&2; exit 1 ;;
+          esac
+          [[ -n "$PLATFORM_EVIDENCE" ]]
+          [[ "$IMAGE_NAME" =~ ^agw-[a-z0-9-]+$ ]]
+          [[ "$COMPONENT" =~ ^[a-z0-9-]+$ ]]
+          [[ "$VERSION" =~ ^v3\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+
+      - name: Resolve current runtime CLI version
+        id: runtime-version
+        if: env.CLI_PACKAGE != ''
+        shell: bash
+        env:
+          PACKAGE: ${{ matrix.cli_package }}
+        run: |
+          set -euo pipefail
+          version="$(npm view "${PACKAGE}@latest" version --json | jq -r 'if type == "string" then . else .version end')"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "registry returned an invalid $PACKAGE version: $version" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push the quarantine image
+        id: build-image
+        # docker/build-push-action v6.18.0
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.18.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ env.QUARANTINE_TAG }}
+          build-args: |
+            VCS_REF=${{ env.SOURCE_REVISION }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            ${{ matrix.cli_arg }}=${{ steps.runtime-version.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=agw-v3-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=agw-v3-${{ matrix.component }}
+
+      - name: Resolve quarantine image index digest and platform evidence
+        id: image
+        shell: bash
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ env.QUARANTINE_TAG }}
+          BUILDX_DIGEST: ${{ steps.build-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          [[ "$BUILDX_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "Buildx did not return a valid digest: $BUILDX_DIGEST" >&2
+            exit 1
+          }
+
+          raw="$(docker buildx imagetools inspect --raw "$IMAGE_REF")"
+          media_type="$(jq -r '.mediaType // empty' <<<"$raw")"
+          case "$media_type" in
+            application/vnd.oci.image.index.v1+json|application/vnd.docker.distribution.manifest.list.v2+json)
+              ;;
+            application/vnd.oci.image.manifest.v1+json|application/vnd.docker.distribution.manifest.v2+json)
+              # A one-platform BuildKit result may be a plain image manifest.
+              # Wrap it as a one-entry index so every release manifest has the
+              # same digest contract and chart consumers can use one field.
+              docker buildx imagetools create --tag "$IMAGE_REF" "$IMAGE_REF@$BUILDX_DIGEST"
+              ;;
+            *)
+              echo "unexpected top-level media type: $media_type" >&2
+              exit 1
+              ;;
+          esac
+
+          inspect="$(docker buildx imagetools inspect "$IMAGE_REF")"
+          digest="$(awk '$1 == "Digest:" { print $2; exit }' <<<"$inspect")"
+          final_media_type="$(awk '$1 == "MediaType:" { print $2; exit }' <<<"$inspect")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "final registry digest is invalid: $digest" >&2
+            exit 1
+          }
+          case "$final_media_type" in
+            application/vnd.oci.image.index.v1+json|application/vnd.docker.distribution.manifest.list.v2+json)
+              ;;
+            *) echo "final reference is not an image index: $final_media_type" >&2; exit 1 ;;
+          esac
+
+          raw_final="$(docker buildx imagetools inspect --raw "$IMAGE_REF")"
+          actual_platforms="$(jq -r '[.manifests[]? | select(.platform != null) | "\(.platform.os)/\(.platform.architecture)"] | unique | sort | join(",")' <<<"$raw_final")"
+          case "$PLATFORMS" in
+            linux/amd64) expected_platforms=linux/amd64 ;;
+            linux/amd64,linux/arm64) expected_platforms=linux/amd64,linux/arm64 ;;
+            *) echo "unexpected declared platforms: $PLATFORMS" >&2; exit 1 ;;
+          esac
+          [[ "$actual_platforms" == "$expected_platforms" ]] || {
+            echo "platform set changed unexpectedly: expected=$expected_platforms actual=$actual_platforms" >&2
+            exit 1
+          }
+
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          printf 'platforms=%s\n' "$actual_platforms" >> "$GITHUB_OUTPUT"
+
+      - name: Scan quarantined image for fixable HIGH and CRITICAL vulnerabilities
+        id: trivy
+        # aquasecurity/trivy-action v0.36.0 (annotated tag dereferenced to commit)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ env.QUARANTINE_TAG }}@${{ steps.image.outputs.digest }}
+          format: json
+          output: ${{ runner.temp }}/trivy-${{ matrix.component }}.json
+          vuln-type: os,library
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          timeout: 10m
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Upload vulnerability report
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agw-v3-scan-${{ matrix.component }}
+          path: ${{ runner.temp }}/trivy-${{ matrix.component }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Generate SPDX JSON SBOM
+        id: sbom-spdx
+        # anchore/sbom-action v0.24.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ env.QUARANTINE_TAG }}@${{ steps.image.outputs.digest }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/agw-v3-${{ matrix.component }}.spdx.json
+          artifact-name: ''
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate CycloneDX JSON SBOM
+        id: sbom-cyclonedx
+        # anchore/sbom-action v0.24.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ env.QUARANTINE_TAG }}@${{ steps.image.outputs.digest }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: cyclonedx-json
+          output-file: ${{ runner.temp }}/agw-v3-${{ matrix.component }}.cyclonedx.json
+          artifact-name: ''
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Install pinned Cosign
+        # sigstore/cosign-installer v4.1.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Sign image and attach keyless SBOM attestations
+        shell: bash
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ env.QUARANTINE_TAG }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          SPDX_FILE: ${{ runner.temp }}/agw-v3-${{ matrix.component }}.spdx.json
+          CYCLONEDX_FILE: ${{ runner.temp }}/agw-v3-${{ matrix.component }}.cyclonedx.json
+          IDENTITY_REGEXP: ^https://github.com/${{ github.repository }}/.github/workflows/v3-release.yml@refs/
+        run: |
+          set -euo pipefail
+          image="$IMAGE_REF@$IMAGE_DIGEST"
+          cosign sign --yes "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-sign.txt"
+          cosign attest --yes --type spdxjson --predicate "$SPDX_FILE" "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-spdx-attest.txt"
+          cosign attest --yes --type cyclonedx --predicate "$CYCLONEDX_FILE" "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-cyclonedx-attest.txt"
+
+          # Verify the just-created keyless signature against this repository's
+          # workflow identity and the public Fulcio issuer before recording the
+          # component as releasable.
+          cosign verify \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp="$IDENTITY_REGEXP" \
+            "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-verify.txt"
+
+          # Verify both attestations before the image becomes eligible for
+          # promotion. They are bound to the same immutable digest that was
+          # scanned and signed above.
+          cosign verify-attestation \
+            --type spdxjson \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp="$IDENTITY_REGEXP" \
+            "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-spdx-verify.txt"
+          cosign verify-attestation \
+            --type cyclonedx \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp="$IDENTITY_REGEXP" \
+            "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-cyclonedx-verify.txt"
+
+      - name: Write release manifest fragment
+        shell: bash
+        env:
+          QUARANTINE_REF: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ env.QUARANTINE_TAG }}
+          IMAGE_REPOSITORY: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          ACTUAL_PLATFORMS: ${{ steps.image.outputs.platforms }}
+          RUNTIME_VERSION: ${{ steps.runtime-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          fragment="$RUNNER_TEMP/release-fragment.json"
+          jq -n \
+            --arg component "$COMPONENT" \
+            --arg quarantine_image "$QUARANTINE_REF" \
+            --arg image_repository "$IMAGE_REPOSITORY" \
+            --arg digest "$IMAGE_DIGEST" \
+            --arg platforms "$ACTUAL_PLATFORMS" \
+            --arg evidence "$PLATFORM_EVIDENCE" \
+            --arg repository_key "$CHART_REPOSITORY_KEY" \
+            --arg digest_key "$CHART_DIGEST_KEY" \
+            --arg cli_package "$CLI_PACKAGE" \
+            --arg cli_version "$RUNTIME_VERSION" \
+            '{
+              component: $component,
+              quarantineImage: $quarantine_image,
+              imageRepository: $image_repository,
+              imageIndexDigest: $digest,
+              platforms: ($platforms | split(",")),
+              platformEvidence: $evidence,
+              chartValues: (if $repository_key != "" then {repositoryKey: $repository_key, digestKey: $digest_key} else null end),
+              runtimeDependency: (if $cli_package != "" then {package: $cli_package, version: $cli_version} else null end),
+              keylessSignature: true,
+              sbomFormats: ["spdx-json", "cyclonedx-json"],
+              vulnerabilityPolicy: {scanner: "trivy", fixableOnly: true, severities: ["HIGH", "CRITICAL"]}
+            }' >"$fragment"
+          jq -e '
+            .component and
+            (.quarantineImage | test(":v3\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?-quarantine-[0-9]+-[0-9]+$")) and
+            (.imageRepository | test("^ghcr\\.io/[a-z0-9][a-z0-9-]*/agw-[a-z0-9-]+$")) and
+            (.imageIndexDigest | test("^sha256:[0-9a-f]{64}$")) and
+            (.platforms | length > 0) and
+            (.keylessSignature == true)
+          ' "$fragment" >/dev/null
+
+      - name: Upload image evidence and SBOMs
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agw-v3-fragment-${{ matrix.component }}
+          path: |
+            ${{ runner.temp }}/release-fragment.json
+            ${{ runner.temp }}/agw-v3-${{ matrix.component }}.spdx.json
+            ${{ runner.temp }}/agw-v3-${{ matrix.component }}.cyclonedx.json
+            ${{ runner.temp }}/cosign-${{ matrix.component }}-sign.txt
+            ${{ runner.temp }}/cosign-${{ matrix.component }}-spdx-attest.txt
+            ${{ runner.temp }}/cosign-${{ matrix.component }}-cyclonedx-attest.txt
+            ${{ runner.temp }}/cosign-${{ matrix.component }}-verify.txt
+            ${{ runner.temp }}/cosign-${{ matrix.component }}-spdx-verify.txt
+            ${{ runner.temp }}/cosign-${{ matrix.component }}-cyclonedx-verify.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  manifest:
+    name: Assemble quarantine manifest
+    needs: [prepare, build]
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_name: ${{ steps.manifest.outputs.artifact_name }}
+    steps:
+      # actions/download-artifact v8.0.1
+      - name: Download image fragments
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: agw-v3-fragment-*
+          path: fragments
+          merge-multiple: false
+
+      - name: Assemble and validate one machine-readable manifest
+        id: manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_REVISION: ${{ needs.prepare.outputs.source_revision }}
+          BUILD_DATE: ${{ needs.prepare.outputs.build_date }}
+          IMAGE_NAMESPACE: ${{ needs.prepare.outputs.image_namespace }}
+        run: |
+          set -euo pipefail
+          mapfile -t fragments < <(find fragments -type f -name release-fragment.json -print | sort)
+          test "${#fragments[@]}" -eq 15
+          jq -s \
+            --arg version "$VERSION" \
+            --arg source_revision "$SOURCE_REVISION" \
+            --arg created "$BUILD_DATE" \
+            --arg namespace "$IMAGE_NAMESPACE" \
+            'if (length != 15) then error("expected fifteen image fragments")
+             elif ([.[].component] | unique | length) != 15 then error("duplicate or missing image component")
+             elif any(.[]; (.imageIndexDigest | test("^sha256:[0-9a-f]{64}$")) | not) then error("invalid image index digest")
+             else . as $rows |
+               {
+                 schemaVersion: 1,
+                 kind: "AgentsGatewayV3ImageRelease",
+                 version: $version,
+                 sourceRevision: $source_revision,
+                 created: $created,
+                 registry: $namespace,
+                 components: (reduce $rows[] as $row ({}; .[$row.component] = $row)),
+                 chartValues: (reduce $rows[] as $row ({};
+                   if ($row.chartValues != null) then
+                     .[$row.chartValues.repositoryKey] = $row.imageRepository
+                     | .[$row.chartValues.digestKey] = $row.imageIndexDigest
+                   else . end)),
+                 releasePolicy: {
+                   imageTags: "quarantine tag during verification; version tag promoted only after all gates",
+                   digestField: "components.<component>.imageIndexDigest",
+                   sbom: ["spdx-json", "cyclonedx-json"],
+                   keylessSigning: {
+                     issuer: "https://token.actions.githubusercontent.com",
+                     workflow: ".github/workflows/v3-release.yml"
+                   },
+                   vulnerabilityScan: {
+                     scanner: "Trivy",
+                     fixableOnly: true,
+                     failOn: ["HIGH", "CRITICAL"]
+                   }
+                 }
+               }
+             end' "${fragments[@]}" > release-manifest.json
+
+          jq -e '
+            .kind == "AgentsGatewayV3ImageRelease" and
+            (.version | test("^v3\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")) and
+            ([.components | to_entries[] | .value.imageIndexDigest | test("^sha256:[0-9a-f]{64}$")] | all) and
+            ([.components | to_entries[] | .value.quarantineImage | test(":v3\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?-quarantine-[0-9]+-[0-9]+$")] | all) and
+            ([.components | to_entries[] | .value.imageRepository | test("^ghcr\\.io/[a-z0-9][a-z0-9-]*/agw-[a-z0-9-]+$")] | all) and
+            (.chartValues["image.repository"] != null) and
+            (.chartValues["image.repository"] | contains(":" ) | not) and
+            (.chartValues["image.digest"] | test("^sha256:[0-9a-f]{64}$"))
+          ' release-manifest.json >/dev/null
+          jq . release-manifest.json
+          printf 'artifact_name=agw-v3-release-candidate-%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload quarantine release manifest artifact
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agw-v3-release-candidate-${{ needs.prepare.outputs.version }}
+          path: release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  promote:
+    name: Promote verified image digests
+    needs: [prepare, manifest]
+    if: needs.manifest.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      # actions/download-artifact v8.0.1
+      - name: Download quarantine manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agw-v3-release-candidate-${{ needs.prepare.outputs.version }}
+          path: candidate
+
+      # docker/setup-buildx-action v3.11.1
+      - name: Set up Buildx for digest promotion
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.11.1
+
+      # docker/login-action v3.5.0
+      - name: Log in to GHCR with GITHUB_TOKEN
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # sigstore/cosign-installer v4.1.2
+      - name: Install pinned Cosign for post-promotion verification
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Reject replays and promote only verified digests
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_REVISION: ${{ needs.prepare.outputs.source_revision }}
+          IMAGE_NAMESPACE: ${{ needs.prepare.outputs.image_namespace }}
+          CANDIDATE: candidate/release-manifest.json
+          IDENTITY_REGEXP: ^https://github.com/${{ github.repository }}/.github/workflows/v3-release.yml@refs/
+        run: |
+          set -euo pipefail
+          test -f "$CANDIDATE"
+          jq -e --arg version "$VERSION" --arg revision "$SOURCE_REVISION" \
+            '.version == $version and .sourceRevision == $revision and
+             ([.components | to_entries[] | .value.imageIndexDigest | test("^sha256:[0-9a-f]{64}$")] | all)' \
+            "$CANDIDATE" >/dev/null
+
+          mapfile -t components < <(jq -r '.components | to_entries[] | [.key, .value.quarantineImage, .value.imageRepository, .value.imageIndexDigest] | @tsv' "$CANDIDATE" | sort)
+          test "${#components[@]}" -eq 15
+
+          # Check every destination before changing any tag. A prior successful
+          # promotion, or a manually pre-created tag, makes this version
+          # permanently consumed rather than something this workflow overwrites.
+          for row in "${components[@]}"; do
+            IFS=$'\t' read -r component quarantine_image image_repository digest <<<"$row"
+            final_image="${image_repository}:${VERSION}"
+            if docker buildx imagetools inspect "$final_image" >/dev/null 2>&1; then
+              echo "final image tag already exists for $component: $final_image" >&2
+              exit 1
+            fi
+            [[ "$quarantine_image" == *-quarantine-* ]] || {
+              echo "candidate is not quarantine-only for $component" >&2
+              exit 1
+            }
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "invalid candidate digest for $component: $digest" >&2
+              exit 1
+            }
+          done
+
+          for row in "${components[@]}"; do
+            IFS=$'\t' read -r component quarantine_image image_repository digest <<<"$row"
+            final_image="${image_repository}:${VERSION}"
+            docker buildx imagetools create --tag "$final_image" "$quarantine_image@$digest"
+
+            promoted_digest="$(docker buildx imagetools inspect "$final_image" | awk '$1 == "Digest:" { print $2; exit }')"
+            [[ "$promoted_digest" == "$digest" ]] || {
+              echo "promotion changed digest for $component: expected=$digest actual=$promoted_digest" >&2
+              exit 1
+            }
+
+            image="$final_image@$promoted_digest"
+            cosign verify \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp="$IDENTITY_REGEXP" \
+              "$image" >/dev/null
+            cosign verify-attestation \
+              --type spdxjson \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp="$IDENTITY_REGEXP" \
+              "$image" >/dev/null
+            cosign verify-attestation \
+              --type cyclonedx \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp="$IDENTITY_REGEXP" \
+              "$image" >/dev/null
+          done
+
+          jq --arg version "$VERSION" '
+            .components |= with_entries(
+              .value.image = (.value.imageRepository + ":" + $version)
+            ) |
+            .releasePolicy.imageTags = "version-only; promoted from a scanned and attested quarantine digest" |
+            .releasePolicy.promotion = "digest-first; final tags are immutable and never overwritten"
+          ' "$CANDIDATE" > release-manifest.json
+
+          jq -e --arg version "$VERSION" '
+            .version == $version and
+            ([.components | to_entries[] | .value.image | test(":v3\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")] | all) and
+            ([.components | to_entries[] | .value.imageIndexDigest | test("^sha256:[0-9a-f]{64}$")] | all) and
+            ([.chartValues | to_entries[] | select(.key | endswith(".repository")) | .value | contains(":") | not] | all)
+          ' release-manifest.json >/dev/null
+
+      - name: Upload final release manifest artifact
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agw-v3-release-manifest-${{ needs.prepare.outputs.version }}
+          path: release-manifest.json
+          if-no-files-found: error
+          retention-days: 90

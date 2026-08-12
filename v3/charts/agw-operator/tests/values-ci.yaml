@@ -1,0 +1,130 @@
+namespaces:
+  system: agw-system
+  runs: agw-runs
+  createSystem: true
+  createRuns: true
+
+sandboxBackend: agent-sandbox
+orchestrationBackend: direct
+placement:
+  allowedRuntimeClasses:
+    - gvisor
+  allowedStorageClasses:
+    - local-path
+agentGateway:
+  enabled: false
+  image:
+    repository: ""
+    digest: ""
+  configMapName: ""
+  capabilityVersion: ""
+  capabilityVerified: false
+  evidenceDigest: ""
+  configDigest: ""
+argo:
+  workflowTemplateName: agw-agent-run-lifecycle
+  workflowTemplateUID: template-uid-ci
+  workflowTemplateDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  serviceAccountName: agw-argo-lifecycle
+  waitServiceAccountName: agw-argo-wait
+  handoffServiceAccountName: agw-argo-handoff
+  cleanupServiceAccountName: agw-argo-cleanup
+  systemSecretNames:
+    - github-app
+    - agw-objectstore-credentials
+    - skills-credentials
+  apiServerPort: 443
+  objectStoreEgressCIDRs:
+    - 203.0.113.10/32
+
+image:
+  repository: ghcr.io/astatide/agw-operator
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+runtimeImages:
+  clone:
+    repository: ghcr.io/astatide/agw-clone
+    digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+  skills:
+    repository: ghcr.io/astatide/agw-skills
+    digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+  context:
+    repository: ghcr.io/astatide/agw-context
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  lockdown:
+    repository: ghcr.io/astatide/agw-lockdown
+    digest: sha256:4444444444444444444444444444444444444444444444444444444444444444
+  broker:
+    repository: ghcr.io/astatide/agw-broker
+    digest: sha256:5555555555555555555555555555555555555555555555555555555555555555
+  capture:
+    repository: ghcr.io/astatide/agw-capture
+    digest: sha256:6666666666666666666666666666666666666666666666666666666666666666
+  verifyFetch:
+    repository: ghcr.io/astatide/agw-verify-fetch
+    digest: sha256:7777777777777777777777777777777777777777777777777777777777777777
+  verifyApply:
+    repository: ghcr.io/astatide/agw-verify-apply
+    digest: sha256:8888888888888888888888888888888888888888888888888888888888888888
+  preflight:
+    repository: ghcr.io/astatide/agw-preflight
+    digest: sha256:9999999999999999999999999999999999999999999999999999999999999999
+  lifecycle:
+    repository: ghcr.io/astatide/agw-agent-run-lifecycle
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+skillsGateway:
+  endpoint: https://skills.example.test/mcp
+
+githubApp:
+  existingSecret: github-app
+
+reportSigning:
+  existingSecret: agw-report-signer
+
+objectStore:
+  bucket: agw-v3-ci-artifacts
+  prefix: agents-gateway/v3
+  region: us-east-1
+  endpoint: ""
+  pathStyle: false
+  credentials:
+    existingSecret: agw-objectstore-credentials
+    accessKeyIdKey: AWS_ACCESS_KEY_ID
+    secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+    sessionTokenKey: AWS_SESSION_TOKEN
+
+artifactSTS:
+  roleARN: arn:aws:iam::123456789012:role/agw-v3-artifacts
+  externalID: synthetic-external-id
+  endpoint: ""
+  credentialTTL: 1h
+
+preflight:
+  enabled: true
+  airlockProven: true
+  hostPathIdmapRequired: true
+  nodeName: node-agents-ci
+  nodeFingerprint: synthetic-node-fingerprint
+  runtimeFingerprint: synthetic-runtime-fingerprint
+  schedule: "*/2 * * * *"
+  apiServerURL: https://kubernetes.default.svc:443
+  apiServerCIDR: 10.43.0.1/32
+  nodeSelector:
+    agw.astatide.com/agents: "true"
+  toleration:
+    key: agw.astatide.com/agents
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+  hostPaths:
+    kubelet: /var/lib/rancher/k3s/agent/kubelet
+    runc: /var/lib/rancher/k3s/data/current/bin/runc
+    containerd: /var/lib/rancher/k3s/data/current/bin/containerd
+    k3s: /usr/local/bin/k3s
+
+test:
+  enabled: true
+  image:
+    repository: curlimages/curl
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111

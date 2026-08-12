@@ -1,0 +1,33 @@
+{{- include "agw-operator.webhookMaterial" . -}}
+{{- $material := index .Values "__agw_webhook_material" -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "agw-operator.fullname" . }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+  annotations:
+    agents.astatide.com/certificate-source: helm-lookup-gen
+webhooks:
+  - name: agentrun.validation.agents.astatide.com
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ include "agw-operator.webhookServiceName" . }}
+        namespace: {{ .Values.namespaces.system }}
+        port: 443
+        path: {{ include "agw-operator.webhookPath" . }}
+      caBundle: {{ $material.caCrt | quote }}
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.namespaces.runs }}
+    rules:
+      - operations: [CREATE, UPDATE]
+        apiGroups: [agents.astatide.com]
+        apiVersions: [v1alpha1]
+        resources: [agentruns]
+        scope: Namespaced

@@ -1,0 +1,192 @@
+apiVersion: agents.astatide.com/v1alpha1
+kind: Agent
+metadata:
+  name: issue-fixer
+  namespace: agw-runs
+spec:
+  runtime:
+    harness: codex
+    image: ghcr.io/astatide/agw-runtime-codex@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  instructions:
+    inline: |
+      Make the smallest correct change, explain the evidence, and do not modify files outside the run scope.
+  toolSetRef: github-readonly
+  modelRouteRef: default-codex
+  contextStrategyRef: default-context
+  policyRefs: [default-quality]
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: Gate
+metadata:
+  name: go-default
+  namespace: agw-runs
+spec:
+  policyRefs: [default-quality]
+  verify:
+    image: ghcr.io/astatide/agw-verify-go@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    fromCleanCheckout: true
+    commands:
+      - argv: ["go", "test", "./...", "-count=1"]
+    timeout: 20m
+  require:
+    scopeRespected: true
+    testStrength: newTestsMustFailOnBase
+    adapter: go
+    baseTestCommand:
+      argv: ["go", "test", "./...", "-count=1"]
+    coverageDelta: ">= 0"
+    maxFilesChanged: 25
+    maxDiffLines: 800
+    noBinaryFiles: true
+  signals:
+    executionWeightBasisPoints: 7000
+    critic:
+      weightBasisPoints: 3000
+      modelRouteRef: critic-reviewer
+      maxFindings: 64
+    minScoreBasisPoints: 8500
+  onFail: Rejected
+  mode: shadow
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: ToolSet
+metadata:
+  name: github-readonly
+  namespace: agw-runs
+spec:
+  servers:
+    - name: github
+      ref: https://dockermcp.example.invalid/mcp
+      credentialsRef: mcp-github-readonly
+      tools:
+        - name: get_me
+          effect: read
+        - name: list_issues
+          effect: read
+  profiles:
+    - name: explore
+      tools:
+        - server: github
+          tool: get_me
+        - server: github
+          tool: list_issues
+    - name: edit
+      tools:
+        - server: github
+          tool: list_issues
+    - name: verify
+      tools:
+        - server: github
+          tool: get_me
+  maxToolsPerPhase: 12
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: ModelRoute
+metadata:
+  name: default-codex
+  namespace: agw-runs
+spec:
+  providers:
+    - name: openrouter
+      kind: openrouter-responses
+      model: nvidia/nemotron-3-ultra-550b-a55b:free
+      family: nvidia
+      credentialRef: openrouter
+      priority: 1
+  budget:
+    maxCostUsd: "2"
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: ModelRoute
+metadata:
+  name: critic-reviewer
+  namespace: agw-runs
+spec:
+  providers:
+    - name: anthropic-reviewer
+      kind: anthropic-messages
+      model: claude-reviewer
+      family: anthropic
+      credentialRef: anthropic
+      priority: 1
+  budget:
+    maxCostUsd: "2"
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: Policy
+metadata:
+  name: default-quality
+  namespace: agw-runs
+spec:
+  rules:
+    - id: no-raw-sql
+      severity: blocking
+      context: Use the repository database abstraction; do not add raw SQL outside repo/.
+      check:
+        kind: script
+        script: policies/no-raw-sql.sh
+        expect: exit0
+    - id: exported-doc-comments
+      severity: advisory
+      context: Exported functions should have doc comments starting with the symbol name.
+      check:
+        kind: script
+        script: policies/doc-comments.sh
+        expect: exit0
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: ContextStrategy
+metadata:
+  name: default-context
+  namespace: agw-runs
+spec:
+  repoMap:
+    kind: tree-sitter
+    budget: 8000
+  # Symbols are intentionally omitted from the default sample. To enable the
+  # optional local tier, a deployment must first package and test a digest-
+  # pinned LSP runtime, then explicitly set AGW_CONTEXT_SYMBOL_ADAPTER and its
+  # fixed canonical AGW_CONTEXT_SYMBOL_ADAPTER_ARGS_JSON in the context init
+  # environment. The context init fails closed if the executable is absent or
+  # the protocol is unsafe.
+  history:
+    kind: git-blame-touched
+    depth: 20
+  conventions:
+    fromPolicy: true
+  semantic:
+    enabled: false
+  budget:
+    totalTokens: 40000
+    maxBytes: 8388608
+---
+apiVersion: agents.astatide.com/v1alpha1
+kind: AgentRun
+metadata:
+  name: jobmark-fix-427
+  namespace: agw-runs
+spec:
+  agentRef: issue-fixer
+  gateRef: go-default
+  output:
+    mode: patch
+  source:
+    repo: github.com/Astatide1337/jobmark
+    baseRef: main
+    depth: 1
+  task:
+    inline: |
+      Fix the nil dereference in interactions_list when contactId is absent.
+      Reproduction is in issue #427.
+  scope:
+    paths: ["src/**", "tests/**"]
+    forbidden: ["**/*.yml", "Dockerfile", ".github/**", "**/go.mod"]
+  workspace:
+    size: 8Gi
+  publish:
+    mode: pull-request
+    credentialRef: gh-app-astatide
+  limits:
+    timeout: 45m
+    maxToolCalls: 60
+    maxCostUsd: "2"

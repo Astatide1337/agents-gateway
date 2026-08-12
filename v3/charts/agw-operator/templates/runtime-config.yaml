@@ -1,0 +1,14 @@
+{{- include "agw-operator.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agw-operator.runtimeConfigName" . }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+data:
+  # Machine-readable status and event timestamps stay UTC. The human value is
+  # consumed only by future display formatters; it is not used as TZ.
+  AGW_MACHINE_TIMEZONE: {{ .Values.timezone.machine | quote }}
+  AGW_HUMAN_TIMEZONE: {{ .Values.timezone.human | quote }}
+  TZ: {{ .Values.timezone.machine | quote }}

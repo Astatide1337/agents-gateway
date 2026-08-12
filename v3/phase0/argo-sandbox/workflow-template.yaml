@@ -1,0 +1,347 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: agw-phase0-sandbox-lifecycle
+  namespace: agw-runs
+  labels:
+    app.kubernetes.io/name: agw-phase0-sandbox-lifecycle
+    app.kubernetes.io/part-of: agents-gateway-v3
+    agw.astatide.com/phase: "0"
+spec:
+  entrypoint: main
+  onExit: cleanup
+  activeDeadlineSeconds: 900
+  ttlStrategy:
+    secondsAfterCompletion: 600
+  podGC:
+    strategy: OnPodCompletion
+  templates:
+    - name: main
+      steps:
+        - - name: create-workspace
+            template: create-workspace
+        - - name: clone-setup
+            template: clone-setup
+        - - name: create-sandbox
+            template: create-sandbox
+            arguments:
+              parameters:
+                - name: shutdown_time
+                  value: "{{steps.clone-setup.outputs.parameters.sandbox_shutdown_time}}"
+        - - name: wait-ready
+            template: wait-sandbox
+            arguments:
+              parameters:
+                - name: condition
+                  value: Ready
+                - name: marker
+                  value: /workspace/.agw/ready.json
+                - name: require_marker
+                  value: ""
+        - - name: wait-finished
+            template: wait-sandbox
+            arguments:
+              parameters:
+                - name: condition
+                  value: Finished
+                - name: marker
+                  value: /workspace/.agw/finished.json
+                - name: require_marker
+                  value: /workspace/.agw/ready.json
+        - - name: capture
+            template: capture
+
+    - name: create-workspace
+      resource:
+        action: apply
+        setOwnerReference: true
+        manifest: |
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: "phase0-{{workflow.uid}}-workspace"
+            namespace: agw-runs
+            labels:
+              app.kubernetes.io/part-of: agents-gateway-v3
+              agw.astatide.com/phase: "0"
+              agw.astatide.com/workflow: "{{workflow.name}}"
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 256Mi
+            volumeMode: Filesystem
+      retryStrategy:
+        limit: "2"
+        retryPolicy: OnError
+        backoff:
+          duration: 2s
+          factor: 2
+          maxDuration: 10s
+
+    - name: clone-setup
+      retryStrategy:
+        limit: "1"
+        retryPolicy: OnError
+        backoff:
+          duration: 2s
+          factor: 2
+          maxDuration: 5s
+      script:
+        image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+        imagePullPolicy: IfNotPresent
+        command: [sh]
+        source: |
+          set -eu
+          mkdir -p /workspace/.agw
+          now_epoch="$(date -u '+%s')"
+          now="$(date -u -d "@$now_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
+          shutdown="$(date -u -d "@$((now_epoch + 600))" '+%Y-%m-%dT%H:%M:%SZ')"
+          printf '%s\n' "$shutdown" > /workspace/.agw/shutdown-time
+          printf '{"stage":"clone-setup","workflow":"%s","createdAt":"%s"}\n' "{{workflow.name}}" "$now" > /workspace/.agw/clone-setup.json
+          # This fixture stands in for clone/setup. The live experiment must
+          # replace it with the selected read-only clone step after the bridge
+          # lifecycle itself is proven.
+          printf 'phase0 fixture\n' > /workspace/repository.txt
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+      outputs:
+        parameters:
+          - name: sandbox_shutdown_time
+            valueFrom:
+              path: /workspace/.agw/shutdown-time
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: "phase0-{{workflow.uid}}-workspace"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+    - name: create-sandbox
+      inputs:
+        parameters:
+          - name: shutdown_time
+      resource:
+        action: apply
+        setOwnerReference: true
+        manifest: |
+          apiVersion: agents.x-k8s.io/v1beta1
+          kind: Sandbox
+          metadata:
+            name: "phase0-{{workflow.uid}}"
+            namespace: agw-runs
+            labels:
+              app.kubernetes.io/part-of: agents-gateway-v3
+              agw.astatide.com/phase: "0"
+              agw.astatide.com/workflow: "{{workflow.name}}"
+          spec:
+            shutdownTime: "{{inputs.parameters.shutdown_time}}"
+            shutdownPolicy: Delete
+            service: false
+            podTemplate:
+              metadata:
+                labels:
+                  app.kubernetes.io/part-of: agents-gateway-v3
+                  agw.astatide.com/phase: "0"
+              spec:
+                hostUsers: false
+                automountServiceAccountToken: false
+                restartPolicy: Never
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 65532
+                  runAsGroup: 65532
+                  fsGroup: 65532
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: fixture
+                    image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+                    imagePullPolicy: IfNotPresent
+                    command: [sh, -ceu]
+                    args:
+                      - |
+                        mkdir -p /workspace/.agw
+                        printf '{"stage":"sandbox","status":"running"}\n' > /workspace/.agw/sandbox-started.json
+                        sleep 15
+                        printf '{"stage":"sandbox","status":"succeeded"}\n' > /workspace/artifact.json
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: [ALL]
+                    resources:
+                      requests:
+                        cpu: 25m
+                        memory: 32Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                    volumeMounts:
+                      - name: workspace
+                        mountPath: /workspace
+                volumes:
+                  - name: workspace
+                    persistentVolumeClaim:
+                      claimName: "phase0-{{workflow.uid}}-workspace"
+      retryStrategy:
+        limit: "2"
+        retryPolicy: OnError
+        backoff:
+          duration: 2s
+          factor: 2
+          maxDuration: 10s
+
+    - name: wait-sandbox
+      inputs:
+        parameters:
+          - name: condition
+          - name: marker
+          - name: require_marker
+      container:
+        image: agw-sandbox-wait-bridge:phase0
+        imagePullPolicy: Never
+        command: [/sandbox-wait]
+        args:
+          - --name=phase0-{{workflow.uid}}
+          - --namespace=agw-runs
+          - --condition={{inputs.parameters.condition}}
+          - --timeout=8m
+          - --poll-interval=2s
+          - --marker={{inputs.parameters.marker}}
+          - --require-marker={{inputs.parameters.require_marker}}
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: "phase0-{{workflow.uid}}-workspace"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+
+    - name: capture
+      retryStrategy:
+        limit: "1"
+        retryPolicy: OnError
+      script:
+        image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+        imagePullPolicy: IfNotPresent
+        command: [sh]
+        source: |
+          set -eu
+          test -s /workspace/artifact.json
+          digest="$(sha256sum /workspace/artifact.json | awk '{print $1}')"
+          printf '%s\n' "$digest" > /workspace/.agw/artifact-sha256
+          printf '{"artifact":"artifact.json","sha256":"%s","capturedBy":"argo-capture"}\n' "$digest" > /workspace/.agw/capture.json
+          test -s /workspace/.agw/ready.json
+          test -s /workspace/.agw/finished.json
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+      outputs:
+        parameters:
+          - name: artifact_sha256
+            valueFrom:
+              path: /workspace/.agw/artifact-sha256
+          # Preserve the bridge's identity-bound observations in Workflow
+          # status before onExit removes the workspace PVC.  The live checker
+          # validates these exact bytes after cleanup, so the experiment does
+          # not need to race the cleanup handler or read a deleted PVC.
+          - name: ready_marker
+            valueFrom:
+              path: /workspace/.agw/ready.json
+          - name: finished_marker
+            valueFrom:
+              path: /workspace/.agw/finished.json
+        artifacts:
+          - name: sandbox-artifact
+            path: /workspace/artifact.json
+            archive:
+              none: {}
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: "phase0-{{workflow.uid}}-workspace"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+    - name: cleanup
+      steps:
+        - - name: delete-sandbox
+            template: delete-sandbox
+            continueOn:
+              failed: true
+              error: true
+        - - name: delete-workspace
+            template: delete-workspace
+            continueOn:
+              failed: true
+              error: true
+
+    - name: delete-sandbox
+      resource:
+        action: delete
+        manifest: |
+          apiVersion: agents.x-k8s.io/v1beta1
+          kind: Sandbox
+          metadata:
+            name: "phase0-{{workflow.uid}}"
+            namespace: agw-runs
+      retryStrategy:
+        limit: "2"
+        retryPolicy: OnError
+
+    - name: delete-workspace
+      resource:
+        action: delete
+        manifest: |
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: "phase0-{{workflow.uid}}-workspace"
+            namespace: agw-runs
+      retryStrategy:
+        limit: "2"
+        retryPolicy: OnError
