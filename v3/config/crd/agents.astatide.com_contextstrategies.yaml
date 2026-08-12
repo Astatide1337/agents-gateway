@@ -1,0 +1,222 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: contextstrategies.agents.astatide.com
+spec:
+  group: agents.astatide.com
+  names:
+    kind: ContextStrategy
+    listKind: ContextStrategyList
+    plural: contextstrategies
+    shortNames:
+    - agwcontext
+    singular: contextstrategy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ContextStrategy is a reusable, bounded context assembly contract.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ContextStrategySpec describes deterministic context assembly. All tiers are
+              optional so the schema can grow without inventing fake settings, but the CEL
+              invariant below rejects a completely empty/no-op strategy.
+            properties:
+              budget:
+                description: ContextBudgetSpec is the hard aggregate context budget.
+                properties:
+                  maxBytes:
+                    format: int64
+                    maximum: 67108864
+                    minimum: 1024
+                    type: integer
+                  totalTokens:
+                    description: |-
+                      Keep the aggregate context below the point where attention quality starts
+                      thinning in the first stable release. Larger budgets require measured
+                      evidence and a future API revision.
+                    format: int32
+                    maximum: 131072
+                    minimum: 1
+                    type: integer
+                required:
+                - maxBytes
+                - totalTokens
+                type: object
+              conventions:
+                description: ContextConventionsSpec enables Policy-derived conventions
+                  in AGENTS.md.
+                properties:
+                  fromPolicy:
+                    type: boolean
+                required:
+                - fromPolicy
+                type: object
+              history:
+                description: ContextHistorySpec configures bounded history for touched
+                  paths.
+                properties:
+                  depth:
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  kind:
+                    enum:
+                    - git-blame-touched
+                    type: string
+                required:
+                - depth
+                - kind
+                type: object
+              repoMap:
+                description: ContextRepoMapSpec configures the structural repository
+                  map tier.
+                properties:
+                  budget:
+                    description: Hard token budget for the generated repository map.
+                    format: int32
+                    maximum: 100000
+                    minimum: 1
+                    type: integer
+                  kind:
+                    enum:
+                    - tree-sitter
+                    type: string
+                required:
+                - budget
+                - kind
+                type: object
+              semantic:
+                description: |-
+                  ContextSemanticSpec reserves the semantic tier without enabling it in the
+                  first stable release.
+                properties:
+                  enabled:
+                    type: boolean
+                required:
+                - enabled
+                type: object
+              symbols:
+                description: ContextSymbolsSpec configures the language-server symbol
+                  tier.
+                properties:
+                  kind:
+                    enum:
+                    - lsp-serena
+                    type: string
+                  languages:
+                    items:
+                      enum:
+                      - go
+                      - typescript
+                      - javascript
+                      - python
+                      - rust
+                      - java
+                      - dotnet
+                      type: string
+                    maxItems: 8
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - kind
+                - languages
+                type: object
+            required:
+            - budget
+            type: object
+            x-kubernetes-validations:
+            - message: ContextStrategy must enable at least one context tier
+              rule: has(self.repoMap) || has(self.symbols) || has(self.history) ||
+                (has(self.conventions) && self.conventions.fromPolicy)
+            - message: repoMap budget cannot exceed the aggregate totalTokens budget
+              rule: '!has(self.repoMap) || self.repoMap.budget <= self.budget.totalTokens'
+            - message: semantic context is disabled in this release
+              rule: '!has(self.semantic) || !self.semantic.enabled'
+          status:
+            description: ResourceStatus is the bounded status shared by configuration
+              resources.
+            properties:
+              conditions:
+                items:
+                  description: |-
+                    Condition is a bounded status condition. Full diagnostics belong in the
+                    event stream or report artifact, not in a Kubernetes status object.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 2048
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      maxLength: 64
+                      type: string
+                    status:
+                      description: |-
+                        ConditionStatus is intentionally narrower than a free-form string and is
+                        used by every status condition in this package.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              specDigest:
+                maxLength: 71
+                pattern: ^sha256:[a-f0-9]{64}$
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

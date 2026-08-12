@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+
+# Build from the repository root: `docker build -f
+# v3/images/agent-run-lifecycle/Containerfile .`.
+ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /src
+COPY v3/go.mod v3/go.sum ./
+RUN go mod download
+COPY v3/ ./
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -buildvcs=false -ldflags='-s -w' \
+    -o /out/agw-agent-run-lifecycle ./cmd/agw-agent-run-lifecycle
+
+ARG RUNTIME_IMAGE=docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+
+FROM ${RUNTIME_IMAGE}
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="Agents Gateway Argo lifecycle producer" \
+      org.opencontainers.image.description="Bounded Argo clone, Sandbox wait, capture, and authenticated lifecycle handoff producer" \
+      org.opencontainers.image.source="https://github.com/Astatide1337/agents-gateway" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="MIT" \
+      com.astatide.agw.component="agent-run-lifecycle" \
+      com.astatide.agw.api="agents.astatide.com/v1alpha1"
+
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S -g 1000 agw \
+    && adduser -S -D -H -u 1000 -G agw -s /sbin/nologin agw \
+    && install -d -o 1000 -g 1000 -m 0700 /agw /workspace /tmp
+
+COPY --from=build /out/agw-agent-run-lifecycle /agw/agent-run-lifecycle
+RUN chmod 0755 /agw/agent-run-lifecycle
+
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["/agw/agent-run-lifecycle"]

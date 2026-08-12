@@ -1,0 +1,295 @@
+# Runtime-only contract resources. live-gate.sh substitutes all __PLACEHOLDER__
+# values after the AgentRun has an API-server UID. Every child is owned by that
+# exact AgentRun; no controller credentials or provider endpoints are used.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: direct-expected-patch
+  namespace: __NAMESPACE__
+  labels:
+    agents.astatide.com/e2e: direct-contract
+  ownerReferences:
+    - apiVersion: agents.astatide.com/v1alpha1
+      kind: AgentRun
+      name: __RUN_NAME__
+      uid: __RUN_UID__
+      controller: true
+      blockOwnerDeletion: true
+data:
+  patch.diff: |
+    change=1
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: direct-workspace
+  namespace: __NAMESPACE__
+  labels:
+    agents.astatide.com/e2e: direct-contract
+    agents.astatide.com/role: work
+  ownerReferences:
+    - apiVersion: agents.astatide.com/v1alpha1
+      kind: AgentRun
+      name: __RUN_NAME__
+      uid: __RUN_UID__
+      controller: true
+      blockOwnerDeletion: true
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: direct-verify-workspace
+  namespace: __NAMESPACE__
+  labels:
+    agents.astatide.com/e2e: direct-contract
+    agents.astatide.com/role: verify
+  ownerReferences:
+    - apiVersion: agents.astatide.com/v1alpha1
+      kind: AgentRun
+      name: __RUN_NAME__
+      uid: __RUN_UID__
+      controller: true
+      blockOwnerDeletion: true
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: direct-work
+  namespace: __NAMESPACE__
+  labels:
+    agents.astatide.com/e2e: direct-contract
+    agents.astatide.com/role: work
+  ownerReferences:
+    - apiVersion: agents.astatide.com/v1alpha1
+      kind: AgentRun
+      name: __RUN_NAME__
+      uid: __RUN_UID__
+      controller: true
+      blockOwnerDeletion: true
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        agents.astatide.com/e2e: direct-contract
+        agents.astatide.com/role: work
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      nodeSelector:
+        agw.astatide.com/agents: "true"
+      tolerations:
+        - key: agw.astatide.com/agents
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: work
+          image: docker.io/library/busybox:1.36.1
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-ceu"]
+          args:
+            - |
+              mkdir -p /workspace/base /workspace/repo /workspace/evidence
+              printf '%s\n' 'base=clean' > /workspace/base/base.txt
+              printf '%s\n' 'change=1' > /workspace/repo/change.txt
+              printf '%s\n' '{"phase":"Working","runUid":"__RUN_UID__","specDigest":"__SPEC_DIGEST__","baseSHA":"__BASE_SHA__"}' > /workspace/evidence/work-complete.json
+              test "$(cat /workspace/base/base.txt)" = 'base=clean'
+              test "$(cat /workspace/repo/change.txt)" = 'change=1'
+              printf '%s\n' '{"phase":"Working","complete":true,"runUid":"__RUN_UID__","specDigest":"__SPEC_DIGEST__"}'
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: direct-workspace
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: direct-capture
+  namespace: __NAMESPACE__
+  labels:
+    agents.astatide.com/e2e: direct-contract
+    agents.astatide.com/role: capture
+  ownerReferences:
+    - apiVersion: agents.astatide.com/v1alpha1
+      kind: AgentRun
+      name: __RUN_NAME__
+      uid: __RUN_UID__
+      controller: true
+      blockOwnerDeletion: true
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        agents.astatide.com/e2e: direct-contract
+        agents.astatide.com/role: capture
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      nodeSelector:
+        agw.astatide.com/agents: "true"
+      tolerations:
+        - key: agw.astatide.com/agents
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: capture
+          image: docker.io/library/busybox:1.36.1
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-ceu"]
+          args:
+            - |
+              # The capture Job is submitted with the work Job so the
+              # controller contract can be checked before execution. Wait for
+              # the work boundary to materialize its clean base and change;
+              # without this gate the two independent Jobs race on the PVC.
+              attempts=0
+              while [ ! -f /workspace/base/base.txt ] || [ ! -f /workspace/repo/change.txt ]; do
+                attempts=$((attempts + 1))
+                test "$attempts" -lt 60
+                sleep 1
+              done
+              test "$(cat /workspace/base/base.txt)" = 'base=clean'
+              test "$(cat /workspace/repo/change.txt)" = 'change=1'
+              printf '%s\n' 'change=1' > /workspace/evidence/patch.diff
+              mkdir -p /verify-workspace
+              cp /workspace/evidence/patch.diff /verify-workspace/patch.diff
+              printf '%s\n' 'ready' > /verify-workspace/capture-ready
+              printf '%s\n' '{"phase":"Capturing","captured":true,"runUid":"__RUN_UID__","specDigest":"__SPEC_DIGEST__","patch":"change=1"}' > /workspace/evidence/capture-report.json
+              test -s /workspace/evidence/patch.diff
+              printf '%s\n' '{"phase":"Capturing","captured":true,"runUid":"__RUN_UID__","specDigest":"__SPEC_DIGEST__"}'
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: verify-workspace
+              mountPath: /verify-workspace
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: direct-workspace
+        - name: verify-workspace
+          persistentVolumeClaim:
+            claimName: direct-verify-workspace
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: direct-verify
+  namespace: __NAMESPACE__
+  labels:
+    agents.astatide.com/e2e: direct-contract
+    agents.astatide.com/role: verify
+  ownerReferences:
+    - apiVersion: agents.astatide.com/v1alpha1
+      kind: AgentRun
+      name: __RUN_NAME__
+      uid: __RUN_UID__
+      controller: true
+      blockOwnerDeletion: true
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        agents.astatide.com/e2e: direct-contract
+        agents.astatide.com/role: verify
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      nodeSelector:
+        agw.astatide.com/agents: "true"
+      tolerations:
+        - key: agw.astatide.com/agents
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: verify
+          image: docker.io/library/busybox:1.36.1
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-ceu"]
+          args:
+            - |
+              while [ ! -f /verify/capture-ready ]; do sleep 1; done
+              expected=$(cat /verify/patch.diff)
+              test "$expected" = 'change=1'
+              printf '%s\n' '{"phase":"Verifying","verdict":"Accepted","runUid":"__RUN_UID__","specDigest":"__SPEC_DIGEST__","baseSHA":"__BASE_SHA__","evidence":"fresh-verify-volume"}' > /verify/report.json
+              cat /verify/report.json
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+          volumeMounts:
+            - name: verify-workspace
+              mountPath: /verify
+      volumes:
+        - name: verify-workspace
+          persistentVolumeClaim:
+            claimName: direct-verify-workspace
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: direct-verify-failure
+  namespace: __NAMESPACE__
+  labels:
+    agents.astatide.com/e2e: direct-contract
+    agents.astatide.com/role: verify-failure
+  ownerReferences:
+    - apiVersion: agents.astatide.com/v1alpha1
+      kind: AgentRun
+      name: __RUN_NAME__
+      uid: __RUN_UID__
+      controller: true
+      blockOwnerDeletion: true
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        agents.astatide.com/e2e: direct-contract
+        agents.astatide.com/role: verify-failure
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      nodeSelector:
+        agw.astatide.com/agents: "true"
+      tolerations:
+        - key: agw.astatide.com/agents
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: verify
+          image: docker.io/library/busybox:1.36.1
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-ceu"]
+          args:
+            - |
+              printf '%s\n' '{"code":"VerificationCommandFailed","message":"offline verifier rejected the exact patch","retryable":false,"phase":"Verifying","runUid":"__RUN_UID__","specDigest":"__SPEC_DIGEST__","baseSHA":"__BASE_SHA__"}'
+              exit 42
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 50m, memory: 32Mi}

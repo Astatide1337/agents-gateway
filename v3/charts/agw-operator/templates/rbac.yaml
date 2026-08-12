@@ -1,0 +1,156 @@
+{{- if .Values.rbac.create }}
+{{- if eq (len .Values.argo.systemSecretNames) 0 }}
+{{- fail "argo.systemSecretNames must explicitly list every source credential Secret used by Agent, ToolSet, ModelRoute, or skills configuration" }}
+{{- end }}
+{{- $systemSecretNames := uniq (concat .Values.argo.systemSecretNames (list .Values.githubApp.existingSecret .Values.reportSigning.existingSecret .Values.objectStore.credentials.existingSecret .Values.skillsCredential.existingSecret)) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agw-operator.systemRoleName" . }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update, patch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [agw-preflight]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    # The operator only needs the explicitly configured system credentials.
+    # Keep this allowlist narrow; runtime AgentRun references cannot expand it.
+    resourceNames:
+      {{- range $name := $systemSecretNames }}
+      {{- if $name }}
+      - {{ $name | quote }}
+      {{- end }}
+      {{- end }}
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agw-operator.systemRoleName" . }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agw-operator.serviceAccountName" . }}
+    namespace: {{ .Values.namespaces.system }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agw-operator.systemRoleName" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agw-operator.runsRoleName" . }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [agents.astatide.com]
+    resources: [agents, agentruns, gates, toolsets, modelroutes, policies, contextstrategies]
+    verbs: [get, list, watch]
+  - apiGroups: [agents.astatide.com]
+    resources: [agentruns/status]
+    verbs: [get, update, patch]
+  - apiGroups: [agents.astatide.com]
+    resources: [agentruns/finalizers]
+    verbs: [update]
+  {{- if eq .Values.sandboxBackend "agent-sandbox" }}
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, watch, create, delete]
+  {{- end }}
+  {{- if eq .Values.orchestrationBackend "argo" }}
+  - apiGroups: [argoproj.io]
+    resources: [workflows]
+    verbs: [get, create, delete]
+  {{- end }}
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, delete]
+  {{- if eq .Values.sandboxBackend "job" }}
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [create]
+  {{- end }}
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agw-operator.runsRoleName" . }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agw-operator.serviceAccountName" . }}
+    namespace: {{ .Values.namespaces.system }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agw-operator.runsRoleName" . }}
+{{- if .Values.preflight.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agw-operator.preflightRoleName" . }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: preflight
+rules:
+  # The attestor cannot enumerate ConfigMaps or Secrets. Helm creates the
+  # fixed ConfigMap; deliberate deletion therefore fails closed until repair.
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [agw-preflight]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agw-operator.preflightRoleName" . }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: preflight
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agw-operator.preflightServiceAccountName" . }}
+    namespace: {{ .Values.namespaces.system }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agw-operator.preflightRoleName" . }}
+{{- end }}
+{{- end }}

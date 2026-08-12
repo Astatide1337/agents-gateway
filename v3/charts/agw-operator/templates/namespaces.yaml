@@ -1,0 +1,19 @@
+{{- if .Values.namespaces.createSystem }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    agents.astatide.com/role: system
+{{- end }}
+{{- if .Values.namespaces.createRuns }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    agents.astatide.com/role: runs
+{{- end }}

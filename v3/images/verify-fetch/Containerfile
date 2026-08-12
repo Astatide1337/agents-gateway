@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+
+# The defaults are the digests resolved by the Phase-0 development build.
+# Release automation may update them after recording a new base-image
+# attestation; mutable tags are never accepted as production inputs.
+ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af
+ARG RUNTIME_IMAGE=docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /src/v3
+COPY v3/go.mod v3/go.sum ./
+RUN go mod download
+COPY v3/api ./api
+COPY v3/cmd ./cmd
+COPY v3/internal ./internal
+COPY v3/pkg ./pkg
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -buildvcs=false -ldflags='-s -w' \
+    -o /out/agw-verify-fetch ./cmd/agw-verify-fetch
+
+FROM ${RUNTIME_IMAGE}
+RUN apk add --no-cache ca-certificates git \
+    && install -d -m 0755 /agw /verify/workspace \
+    && install -d -m 0700 -o 0 -g 0 /run/agw/fetch \
+    && install -m 0400 -o 0 -g 0 /dev/null /run/agw/fetch/clone-token \
+    && install -m 0400 -o 0 -g 0 /dev/null /run/agw/fetch/artifact-access-key-id \
+    && install -m 0400 -o 0 -g 0 /dev/null /run/agw/fetch/artifact-secret-access-key \
+    && install -m 0400 -o 0 -g 0 /dev/null /run/agw/fetch/artifact-session-token \
+    && test -f /run/agw/fetch/clone-token \
+    && test ! -L /run/agw/fetch/clone-token \
+    && test -f /run/agw/fetch/artifact-access-key-id \
+    && test ! -L /run/agw/fetch/artifact-access-key-id \
+    && test -f /run/agw/fetch/artifact-secret-access-key \
+    && test ! -L /run/agw/fetch/artifact-secret-access-key \
+    && test -f /run/agw/fetch/artifact-session-token \
+    && test ! -L /run/agw/fetch/artifact-session-token
+COPY --from=build /out/agw-verify-fetch /agw/fetch
+
+# The workload sets this to namespace root under hostUsers:false so it can
+# leave the pristine base tree root-owned and read-only. No host root is
+# reachable through this identity.
+USER 0:0
+WORKDIR /verify/workspace
+ENTRYPOINT ["/agw/fetch"]

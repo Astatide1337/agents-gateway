@@ -1,0 +1,128 @@
+# Phase-0 disposable user-namespace probe. hostUsers is deliberately placed on
+# PodSpec. It must be rejected by the operator if the runtime silently ignores it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __PHASE0_UIDMAP_POD__
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+    agw.astatide.com/phase0-check: userns-uidmap
+spec:
+  hostUsers: false
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  shareProcessNamespace: false
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  nodeSelector:
+    __PHASE0_NODE_SELECTOR_KEY__: "__PHASE0_NODE_SELECTOR_VALUE__"
+  tolerations:
+    - key: __PHASE0_TOLERATION_KEY__
+      operator: Equal
+      value: "__PHASE0_TOLERATION_VALUE__"
+      effect: NoSchedule
+  containers:
+    - name: uidmap
+      image: __PHASE0_BASE_IMAGE__
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      command: ["/bin/sh", "-ceu"]
+      args:
+        - |
+          printf '%s\n' 'uid_map:'
+          cat /proc/self/uid_map
+          printf '%s\n' 'gid_map:'
+          cat /proc/self/gid_map
+          printf 'user_namespace=%s\n' "$(readlink /proc/self/ns/user)"
+          printf 'mount_namespace=%s\n' "$(readlink /proc/self/ns/mnt)"
+          printf 'uid=%s gid=%s\n' "$(id -u)" "$(id -g)"
+          printf 'emptydir_write=%s\n' "$(touch /evidence/probe && printf true || printf false)"
+          # Avoid a secret-shaped key in evidence: the sanitizer intentionally
+          # redacts token fields, including the harmless literal "absent".
+          printf 'sa_mount_state=%s\n' "$(test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token && printf absent || printf present)"
+          printf 'uidmap_probe_complete=true\n'
+      volumeMounts:
+        - name: evidence
+          mountPath: /evidence
+  volumes:
+    - name: evidence
+      emptyDir: {}
+---
+# A second independently-created pod proves the runtime allocates a distinct
+# subordinate host UID range rather than reusing one mapping for every run.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __PHASE0_UIDMAP_POD__-b
+  namespace: __PHASE0_NAMESPACE__
+  labels:
+    agw.astatide.com/phase0: "true"
+    agw.astatide.com/phase0-run: __PHASE0_RUN_ID__
+    agw.astatide.com/phase0-check: userns-uidmap
+spec:
+  hostUsers: false
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  shareProcessNamespace: false
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  nodeSelector:
+    __PHASE0_NODE_SELECTOR_KEY__: "__PHASE0_NODE_SELECTOR_VALUE__"
+  tolerations:
+    - key: __PHASE0_TOLERATION_KEY__
+      operator: Equal
+      value: "__PHASE0_TOLERATION_VALUE__"
+      effect: NoSchedule
+  containers:
+    - name: uidmap
+      image: __PHASE0_BASE_IMAGE__
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      command: ["/bin/sh", "-ceu"]
+      args:
+        - |
+          printf '%s\n' 'uid_map:'
+          cat /proc/self/uid_map
+          printf '%s\n' 'gid_map:'
+          cat /proc/self/gid_map
+          printf 'user_namespace=%s\n' "$(readlink /proc/self/ns/user)"
+          printf 'uid=%s gid=%s\n' "$(id -u)" "$(id -g)"
+          printf 'emptydir_write=%s\n' "$(touch /evidence/probe && printf true || printf false)"
+          printf 'sa_mount_state=%s\n' "$(test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token && printf absent || printf present)"
+          printf 'uidmap_probe_complete=true\n'
+      volumeMounts:
+        - name: evidence
+          mountPath: /evidence
+  volumes:
+    - name: evidence
+      emptyDir: {}

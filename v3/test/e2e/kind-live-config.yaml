@@ -1,0 +1,18 @@
+# Disposable local-only topology for Agents Gateway v3 Phase-0 probes.
+# This is intentionally not a production k3s configuration and must not be
+# used as evidence for the target kernel/containerd security floor.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+    labels:
+      agw.astatide.com/agents: "true"
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          taints:
+            - key: agw.astatide.com/agents
+              value: "true"
+              effect: NoSchedule

@@ -1,0 +1,13 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: phase0-argo-sandbox
+  namespace: agw-runs
+  labels:
+    app.kubernetes.io/name: phase0-argo-sandbox
+    app.kubernetes.io/part-of: agents-gateway-v3
+    agw.astatide.com/phase: "0"
+spec:
+  workflowTemplateRef:
+    name: agw-phase0-sandbox-lifecycle
+  serviceAccountName: agw-phase0-workflow

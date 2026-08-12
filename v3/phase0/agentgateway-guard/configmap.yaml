@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agw-phase0-guard-config
+  namespace: agw-phase0-guard
+  labels:
+    app.kubernetes.io/name: agw-phase0-guard-config
+    app.kubernetes.io/part-of: agents-gateway-v3
+    agw.astatide.com/phase: "0"
+data:
+  agentgateway.yaml: |
+    # agentgateway v1.4.1 standalone configuration.
+    # This is a recording-only target. It does not contain a real credential.
+    gateways:
+      default:
+        port: 8082
+    mcp:
+      gateways:
+        - default
+      prefixMode: never
+      policies:
+        backendAuth:
+          key:
+            # v1.4.1's secret deserializer accepts the tagged file form and
+            # trims the file contents before injecting the backend header.
+            value:
+              file: /run/agentgateway/canary/token
+            location:
+              header:
+                name: x-phase0-canary
+      targets:
+        - name: recording
+          mcp:
+            host: http://127.0.0.1:9090/mcp
+    # Startup-only settings belong below config in v1.4.1. Management
+    # endpoints are Unix sockets mounted only in the gateway container. They
+    # are not TCP listeners and the agent has no socket mount.
+    config:
+      adminAddr: unix:///run/agentgateway/runtime/admin.sock
+      statsAddr: unix:///run/agentgateway/runtime/stats.sock
+      readinessAddr: unix:///run/agentgateway/runtime/readiness.sock
+      logging:
+        # Keep request metadata out of the disposable proof logs. The canary
+        # is still checked separately by the recording server and live checker.
+        level: warn
+        format: json
+  airlock.sh: |
+    #!/bin/sh
+    set -eu
+
+    mode="${AGW_AIRLOCK_MODE:-recording-only}"
+    [ "$mode" = recording-only ] || {
+      echo 'unsupported airlock mode' >&2
+      exit 64
+    }
+
+    command -v iptables >/dev/null 2>&1 || { echo 'iptables is required' >&2; exit 70; }
+    command -v ip6tables >/dev/null 2>&1 || { echo 'ip6tables is required' >&2; exit 70; }
+
+    # Owner matching is intentionally applied to OUTPUT. INPUT permits only
+    # exact loopback listener ports for new TCP handshakes; a new connection
+    # must still pass the originating process's destination-specific OUTPUT
+    # rule before it can reach a listener.
+    iptables -w -F OUTPUT
+    iptables -w -F INPUT
+    iptables -w -P OUTPUT DROP
+    iptables -w -P INPUT DROP
+    ip6tables -w -F OUTPUT
+    ip6tables -w -F INPUT
+    ip6tables -w -P OUTPUT DROP
+    ip6tables -w -P INPUT DROP
+
+    for family in iptables ip6tables; do
+      "$family" -w -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      "$family" -w -A INPUT -i lo -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    done
+    iptables -w -A INPUT -i lo -m conntrack --ctstate NEW -p tcp -m multiport --dports 8081,8082,9090 -d 127.0.0.1 -j ACCEPT
+    ip6tables -w -A INPUT -i lo -m conntrack --ctstate NEW -p tcp -m multiport --dports 8081,8082,9090 -d ::1 -j ACCEPT
+    iptables -w -A OUTPUT -o lo -m owner --uid-owner 1000 -p tcp --dport 8081 -d 127.0.0.1 -j ACCEPT
+
+    # The IPv6 loopback rule is separate because iptables and ip6tables have
+    # different address families. The UID is the invariant under test.
+    ip6tables -w -A OUTPUT -o lo -m owner --uid-owner 1000 -p tcp --dport 8081 -d ::1 -j ACCEPT
+
+    iptables -w -A OUTPUT -o lo -m owner --uid-owner 1337 -p tcp --dport 8082 -d 127.0.0.1 -j ACCEPT
+    ip6tables -w -A OUTPUT -o lo -m owner --uid-owner 1337 -p tcp --dport 8082 -d ::1 -j ACCEPT
+
+    # The proof target is the recording server in the same pod. Public egress
+    # is intentionally absent from this recording-only probe and requires a
+    # separately reviewed NetworkPolicy and airlock design.
+    iptables -w -A OUTPUT -o lo -m owner --uid-owner 1338 -p tcp --dport 9090 -d 127.0.0.1 -j ACCEPT
+    ip6tables -w -A OUTPUT -o lo -m owner --uid-owner 1338 -p tcp --dport 9090 -d ::1 -j ACCEPT
+
+    # Explicitly reject private and metadata destinations for every UID even
+    # if a future rule is appended incorrectly. The default DROP remains the
+    # final safety net.
+    for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16; do
+      iptables -w -A OUTPUT -d "$cidr" -j REJECT
+    done
+    for cidr in fd00::/8 fe80::/10 ::ffff:0:0/96; do
+      ip6tables -w -A OUTPUT -d "$cidr" -j REJECT
+    done
+    iptables -w -A OUTPUT -d 127.0.0.0/8 -j REJECT
+    ip6tables -w -A OUTPUT -d ::1/128 -j REJECT
+
+    echo "agentgateway Phase 0 airlock installed mode=$mode" >&2

@@ -3,8 +3,18 @@ name: CI
 on:
   push:
     branches: ["main", "master", "epic/*"]
+    paths-ignore:
+      - "v3/**"
+      - "docs/v3/**"
+      - ".github/workflows/v3-ci.yml"
+      - ".github/workflows/v3-release.yml"
   pull_request:
     branches: ["main", "master"]
+    paths-ignore:
+      - "v3/**"
+      - "docs/v3/**"
+      - ".github/workflows/v3-ci.yml"
+      - ".github/workflows/v3-release.yml"
 
 jobs:
   test:

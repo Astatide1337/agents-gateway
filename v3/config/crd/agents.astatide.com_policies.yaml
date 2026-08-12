@@ -1,0 +1,172 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: policies.agents.astatide.com
+spec:
+  group: agents.astatide.com
+  names:
+    kind: Policy
+    listKind: PolicyList
+    plural: policies
+    shortNames:
+    - agwpolicy
+    singular: policy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Policy is a reusable quality contract consumed by Agent and Gate.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PolicySpec is a namespaced, reusable quality contract.
+            properties:
+              rules:
+                items:
+                  description: PolicyRule is one bounded, portable quality rule.
+                  properties:
+                    check:
+                      description: |-
+                        PolicyCheck is the only deterministic check form supported by the first
+                        stable API. The script is resolved from the pristine repository revision.
+                      properties:
+                        expect:
+                          enum:
+                          - exit0
+                          type: string
+                        kind:
+                          enum:
+                          - script
+                          type: string
+                        script:
+                          description: |-
+                            A safe repository-relative path. Absolute paths, empty components, and
+                            dot-directory traversal are not representable.
+                          maxLength: 512
+                          minLength: 1
+                          pattern: ^(?:[A-Za-z0-9_-]+(?:[.][A-Za-z0-9_-]+)?)(?:/(?:[A-Za-z0-9_-]+(?:[.][A-Za-z0-9_-]+)?))*$
+                          type: string
+                      required:
+                      - expect
+                      - kind
+                      - script
+                      type: object
+                    context:
+                      maxLength: 8192
+                      type: string
+                    id:
+                      maxLength: 64
+                      minLength: 1
+                      pattern: ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$
+                      type: string
+                    severity:
+                      description: |-
+                        PolicySeverity determines whether a deterministic policy rule can reject a
+                        run. Advisory rules are context and self-check hints only.
+                      enum:
+                      - blocking
+                      - advisory
+                      type: string
+                  required:
+                  - id
+                  - severity
+                  type: object
+                  x-kubernetes-validations:
+                  - message: blocking policy rules require a deterministic check
+                    rule: self.severity != 'blocking' || has(self.check)
+                  - message: policy checks must use kind=script
+                    rule: '!has(self.check) || self.check.kind == ''script'''
+                  - message: policy checks must use expect=exit0
+                    rule: '!has(self.check) || self.check.expect == ''exit0'''
+                maxItems: 64
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - id
+                x-kubernetes-list-type: map
+            required:
+            - rules
+            type: object
+          status:
+            description: ResourceStatus is the bounded status shared by configuration
+              resources.
+            properties:
+              conditions:
+                items:
+                  description: |-
+                    Condition is a bounded status condition. Full diagnostics belong in the
+                    event stream or report artifact, not in a Kubernetes status object.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 2048
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      maxLength: 64
+                      type: string
+                    status:
+                      description: |-
+                        ConditionStatus is intentionally narrower than a free-form string and is
+                        used by every status condition in this package.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              specDigest:
+                maxLength: 71
+                pattern: ^sha256:[a-f0-9]{64}$
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

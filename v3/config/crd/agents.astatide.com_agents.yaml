@@ -1,0 +1,200 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: agents.agents.astatide.com
+spec:
+  group: agents.astatide.com
+  names:
+    kind: Agent
+    listKind: AgentList
+    plural: agents
+    shortNames:
+    - agwagent
+    singular: agent
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.runtime.harness
+      name: Harness
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Agent is a reusable runtime, instruction, tool, and model configuration.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AgentSpec defines a reusable runtime configuration.
+            properties:
+              contextStrategyRef:
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+                type: string
+              instructions:
+                description: InstructionsSpec provides agent instructions without
+                  embedding credentials.
+                properties:
+                  configMapRef:
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  inline:
+                    maxLength: 32768
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of inline or configMapRef must be set
+                  rule: has(self.inline) != has(self.configMapRef)
+              modelRouteRef:
+                maxLength: 253
+                minLength: 1
+                type: string
+              policyRefs:
+                items:
+                  maxLength: 253
+                  pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+                  type: string
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: set
+              runtime:
+                description: AgentRuntimeSpec selects the runtime image and adapter.
+                properties:
+                  harness:
+                    description: Harness identifies the supported runtime adapter.
+                    enum:
+                    - codex
+                    - claude-code
+                    type: string
+                  image:
+                    description: Runtime images must be digest-pinned in the resolved
+                      snapshot.
+                    maxLength: 512
+                    minLength: 1
+                    pattern: ^.+@sha256:[a-f0-9]{64}$
+                    type: string
+                  runtimeClassName:
+                    maxLength: 253
+                    type: string
+                required:
+                - harness
+                - image
+                type: object
+              skills:
+                items:
+                  description: SkillRef identifies a digest-verified skill bundle.
+                  properties:
+                    digest:
+                      pattern: ^sha256:[a-f0-9]{64}$
+                      type: string
+                    name:
+                      maxLength: 128
+                      minLength: 1
+                      type: string
+                    ref:
+                      maxLength: 1024
+                      minLength: 1
+                      type: string
+                  required:
+                  - digest
+                  - name
+                  - ref
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              toolSetRef:
+                maxLength: 253
+                minLength: 1
+                type: string
+            required:
+            - contextStrategyRef
+            - instructions
+            - modelRouteRef
+            - runtime
+            - toolSetRef
+            type: object
+          status:
+            description: ResourceStatus is the bounded status shared by configuration
+              resources.
+            properties:
+              conditions:
+                items:
+                  description: |-
+                    Condition is a bounded status condition. Full diagnostics belong in the
+                    event stream or report artifact, not in a Kubernetes status object.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 2048
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      maxLength: 64
+                      type: string
+                    status:
+                      description: |-
+                        ConditionStatus is intentionally narrower than a free-form string and is
+                        used by every status condition in this package.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              specDigest:
+                maxLength: 71
+                pattern: ^sha256:[a-f0-9]{64}$
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

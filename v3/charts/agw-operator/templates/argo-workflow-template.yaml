@@ -1,0 +1,746 @@
+{{- if eq .Values.orchestrationBackend "argo" }}
+{{- $lifecycleImage := printf "%s@%s" .Values.runtimeImages.lifecycle.repository .Values.runtimeImages.lifecycle.digest -}}
+{{- $captureImage := printf "%s@%s" .Values.runtimeImages.capture.repository .Values.runtimeImages.capture.digest -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9./_-]*@sha256:[a-f0-9]{64}$" $lifecycleImage) }}
+{{- fail "runtimeImages.lifecycle must be a digest-pinned image when orchestrationBackend=argo" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9./_-]*@sha256:[a-f0-9]{64}$" $captureImage) }}
+{{- fail "runtimeImages.capture must be a digest-pinned image when orchestrationBackend=argo" }}
+{{- end }}
+{{- if eq (len .Values.argo.systemSecretNames) 0 }}
+{{- fail "argo.systemSecretNames must explicitly list the system credential Secrets used by Argo prepare" }}
+{{- end }}
+{{- if eq (len .Values.argo.objectStoreEgressCIDRs) 0 }}
+{{- fail "argo.objectStoreEgressCIDRs must explicitly allow the lifecycle object-store destination" }}
+{{- end }}
+{{- range $cidr := .Values.argo.objectStoreEgressCIDRs }}
+{{- if regexMatch "/0+$" $cidr }}
+{{- fail "argo.objectStoreEgressCIDRs must not contain an unrestricted /0 CIDR" }}
+{{- end }}
+{{- end }}
+{{- range $name := list .Values.githubApp.existingSecret .Values.objectStore.credentials.existingSecret .Values.artifactSTS.roleARN }}
+{{- if not $name }}
+{{- fail "githubApp.existingSecret, objectStore.credentials.existingSecret, and artifactSTS.roleARN are required for orchestrationBackend=argo" }}
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.argo.serviceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.argo.serviceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+rules:
+  - apiGroups: ["agents.astatide.com"]
+    resources: ["agentruns"]
+    verbs: ["get"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["get"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.argo.serviceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.argo.serviceAccountName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.argo.serviceAccountName }}
+    namespace: {{ .Values.namespaces.runs }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.argo.waitServiceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle-wait
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.argo.waitServiceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle-wait
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.argo.waitServiceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle-wait
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.argo.waitServiceAccountName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.argo.waitServiceAccountName }}
+    namespace: {{ .Values.namespaces.runs }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.argo.handoffServiceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle-handoff
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.argo.handoffServiceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle-handoff
+rules:
+  - apiGroups: ["agents.astatide.com"]
+    resources: ["agentruns"]
+    verbs: ["get"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["get"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.argo.handoffServiceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle-handoff
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.argo.handoffServiceAccountName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.argo.handoffServiceAccountName }}
+    namespace: {{ .Values.namespaces.runs }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.argo.cleanupServiceAccountName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle-cleanup
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.argo.serviceAccountName }}-system-secrets
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- toYaml .Values.argo.systemSecretNames | nindent 6 }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.argo.serviceAccountName }}-system-secrets
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.argo.serviceAccountName }}-system-secrets
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.argo.serviceAccountName }}
+    namespace: {{ .Values.namespaces.runs }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-lifecycle-api-egress
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+spec:
+  podSelector:
+    matchExpressions:
+      - key: agents.astatide.com/lifecycle-role
+        operator: In
+        values: [prepare, wait, handoff]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.preflight.apiServerCIDR | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.argo.apiServerPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-lifecycle-public-egress
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+spec:
+  podSelector:
+    matchExpressions:
+      - key: agents.astatide.com/lifecycle-role
+        operator: In
+        values: [stage, handoff]
+  policyTypes: [Egress]
+  egress:
+{{- range $cidr := .Values.argo.objectStoreEgressCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ $cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agw-operator.fullname" . }}-lifecycle-capture-deny-egress
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+spec:
+  podSelector:
+    matchLabels:
+      agents.astatide.com/lifecycle-role: capture
+  policyTypes: [Egress]
+  egress: []
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: {{ .Values.argo.workflowTemplateName }}
+  namespace: {{ .Values.namespaces.runs }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argo-lifecycle
+  annotations:
+    agents.astatide.com/lifecycle-producer: argo-bounded-handoff-v1
+    agents.astatide.com/lifecycle-output-parameter: agw-lifecycle-output
+spec:
+  serviceAccountName: {{ .Values.argo.serviceAccountName }}
+  entrypoint: lifecycle
+  onExit: cleanup
+  podGC:
+    strategy: OnWorkflowCompletion
+  arguments:
+    parameters:
+      - name: agw-run-uid
+      - name: agw-run-name
+      - name: agw-namespace
+      - name: agw-resolved-spec-uri
+      - name: agw-resolved-spec-digest
+      - name: agw-base-sha
+      - name: agw-run-generation
+      - name: agw-workflow-template-uid
+      - name: agw-workflow-template-digest
+  templates:
+    - name: lifecycle
+      steps:
+        - - name: prepare
+            template: prepare
+        - - name: wait-ready
+            template: wait
+            arguments:
+              parameters:
+                - name: sandbox-name
+                  value: "{{`{{steps.prepare.outputs.parameters.sandbox-name}}`}}"
+                - name: workspace-claim
+                  value: "{{`{{steps.prepare.outputs.parameters.workspace-claim}}`}}"
+                - name: condition
+                  value: Ready
+                - name: timeout
+                  value: "{{`{{steps.prepare.outputs.parameters.run-timeout}}`}}"
+                - name: sandbox-uid
+                  value: "{{`{{steps.prepare.outputs.parameters.sandbox-uid}}`}}"
+                - name: marker
+                  value: /workspace/.agw/ready.json
+        - - name: stage
+            template: stage
+            arguments:
+              parameters:
+                - name: workspace-claim
+                  value: "{{`{{steps.prepare.outputs.parameters.workspace-claim}}`}}"
+                - name: work-secret
+                  value: "{{`{{steps.prepare.outputs.parameters.work-secret}}`}}"
+        - - name: wait-finished
+            template: wait
+            arguments:
+              parameters:
+                - name: sandbox-name
+                  value: "{{`{{steps.prepare.outputs.parameters.sandbox-name}}`}}"
+                - name: workspace-claim
+                  value: "{{`{{steps.prepare.outputs.parameters.workspace-claim}}`}}"
+                - name: condition
+                  value: Finished
+                - name: timeout
+                  value: "{{`{{steps.prepare.outputs.parameters.run-timeout}}`}}"
+                - name: sandbox-uid
+                  value: "{{`{{steps.prepare.outputs.parameters.sandbox-uid}}`}}"
+                - name: marker
+                  value: /workspace/.agw/finished.json
+                - name: required-marker
+                  value: /workspace/.agw/ready.json
+        - - name: capture
+            template: capture
+            arguments:
+              parameters:
+                - name: workspace-claim
+                  value: "{{`{{steps.prepare.outputs.parameters.workspace-claim}}`}}"
+                - name: sandbox-uid
+                  value: "{{`{{steps.prepare.outputs.parameters.sandbox-uid}}`}}"
+        - - name: handoff
+            template: handoff
+            arguments:
+              parameters:
+                - name: workspace-claim
+                  value: "{{`{{steps.prepare.outputs.parameters.workspace-claim}}`}}"
+                - name: work-secret
+                  value: "{{`{{steps.prepare.outputs.parameters.work-secret}}`}}"
+                - name: sandbox-uid
+                  value: "{{`{{steps.prepare.outputs.parameters.sandbox-uid}}`}}"
+      outputs:
+        parameters:
+          - name: agw-lifecycle-output
+            valueFrom:
+              parameter: "{{`{{steps.handoff.outputs.parameters.agw-lifecycle-output}}`}}"
+
+    - name: prepare
+      automountServiceAccountToken: true
+      podSpecPatch: |
+        hostUsers: false
+        shareProcessNamespace: false
+        enableServiceLinks: false
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+      metadata:
+        labels:
+          agents.astatide.com/lifecycle-role: prepare
+      container:
+        name: prepare
+        image: {{ $lifecycleImage | quote }}
+        imagePullPolicy: IfNotPresent
+        command: ["/agw/agent-run-lifecycle"]
+        args: ["prepare"]
+        env:
+          {{- include "agw.lifecycleIdentityEnv" . | nindent 10 }}
+          - name: AGW_SYSTEM_NAMESPACE
+            value: {{ .Values.namespaces.system | quote }}
+          - name: AGW_GITHUB_APP_SECRET
+            value: {{ .Values.githubApp.existingSecret | quote }}
+          - name: AGW_SKILLS_TOKEN_SECRET
+            value: {{ .Values.skillsCredential.existingSecret | quote }}
+          - name: AGW_SKILLS_TOKEN_KEY
+            value: {{ .Values.skillsCredential.tokenKey | quote }}
+          - name: AGW_SKILLS_ENDPOINT
+            value: {{ .Values.skillsGateway.endpoint | quote }}
+          - name: AGW_OBJECT_STORE_CREDENTIAL_SECRET
+            value: {{ .Values.objectStore.credentials.existingSecret | quote }}
+          - name: AGW_OBJECT_STORE_ACCESS_KEY_ID_KEY
+            value: {{ .Values.objectStore.credentials.accessKeyIdKey | quote }}
+          - name: AGW_OBJECT_STORE_SECRET_ACCESS_KEY_KEY
+            value: {{ .Values.objectStore.credentials.secretAccessKeyKey | quote }}
+          - name: AGW_OBJECT_STORE_SESSION_TOKEN_KEY
+            value: {{ .Values.objectStore.credentials.sessionTokenKey | quote }}
+          {{- include "agw.lifecycleStoreEnv" . | nindent 10 }}
+          {{- include "agw.lifecycleSTSAndImagesEnv" . | nindent 10 }}
+        volumeMounts:
+          - name: tmp
+            mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+          limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+      outputs:
+        parameters:
+          - name: sandbox-name
+            valueFrom: {path: /tmp/agw-sandbox-name}
+          - name: sandbox-uid
+            valueFrom: {path: /tmp/agw-sandbox-uid}
+          - name: workspace-claim
+            valueFrom: {path: /tmp/agw-workspace-claim}
+          - name: work-secret
+            valueFrom: {path: /tmp/agw-work-secret-name}
+          - name: run-timeout
+            valueFrom: {path: /tmp/agw-run-timeout}
+
+    - name: stage
+      metadata:
+        labels:
+          agents.astatide.com/lifecycle-role: stage
+      podSpecPatch: |
+        automountServiceAccountToken: false
+        hostUsers: false
+        shareProcessNamespace: false
+        enableServiceLinks: false
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+      inputs:
+        parameters:
+          - name: workspace-claim
+          - name: work-secret
+      container:
+        name: stage
+        image: {{ $lifecycleImage | quote }}
+        imagePullPolicy: IfNotPresent
+        command: ["/agw/agent-run-lifecycle"]
+        args: ["stage"]
+        env:
+          {{- include "agw.lifecycleIdentityEnv" . | nindent 10 }}
+          - name: AGW_WORKSPACE
+            value: /workspace
+          {{- include "agw.lifecycleStoreEnv" . | nindent 10 }}
+          - name: AGW_OBJECT_STORE_ACCESS_KEY_FILE
+            value: /run/agw/object-store/access-key-id
+          - name: AGW_OBJECT_STORE_SECRET_ACCESS_KEY_FILE
+            value: /run/agw/object-store/secret-access-key
+          - name: AGW_OBJECT_STORE_SESSION_TOKEN_FILE
+            value: /run/agw/object-store/session-token
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: object-store
+            mountPath: /run/agw/object-store
+            readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop: [ALL]
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: "{{`{{inputs.parameters.workspace-claim}}`}}"
+        - name: object-store
+          secret:
+            secretName: "{{`{{inputs.parameters.work-secret}}`}}"
+            items:
+              - {key: artifact-access-key-id, path: access-key-id}
+              - {key: artifact-secret-access-key, path: secret-access-key}
+              - {key: artifact-session-token, path: session-token}
+
+    - name: wait
+      serviceAccountName: {{ .Values.argo.waitServiceAccountName }}
+      automountServiceAccountToken: true
+      podSpecPatch: |
+        hostUsers: false
+        shareProcessNamespace: false
+        enableServiceLinks: false
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+      metadata:
+        labels:
+          agents.astatide.com/lifecycle-role: wait
+      inputs:
+        parameters:
+          - name: sandbox-name
+          - name: sandbox-uid
+          - name: workspace-claim
+          - name: condition
+          - name: timeout
+          - name: marker
+          - name: required-marker
+            default: ""
+      container:
+        name: wait
+        image: {{ $lifecycleImage | quote }}
+        imagePullPolicy: IfNotPresent
+        command: ["/agw/agent-run-lifecycle"]
+        args:
+          - wait
+          - --name
+          - "{{`{{inputs.parameters.sandbox-name}}`}}"
+          - --namespace
+          - "{{`{{workflow.parameters.agw-namespace}}`}}"
+          - --uid
+          - "{{`{{inputs.parameters.sandbox-uid}}`}}"
+          - --condition
+          - "{{`{{inputs.parameters.condition}}`}}"
+          - --timeout
+          - "{{`{{inputs.parameters.timeout}}`}}"
+          - --poll-interval
+          - 2s
+          - --marker
+          - "{{`{{inputs.parameters.marker}}`}}"
+          - --require-marker
+          - "{{`{{inputs.parameters.required-marker}}`}}"
+        env:
+          - name: AGW_KUBE_API_SERVER
+            value: {{ .Values.preflight.apiServerURL | quote }}
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop: [ALL]
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: "{{`{{inputs.parameters.workspace-claim}}`}}"
+
+    - name: capture
+      metadata:
+        labels:
+          agents.astatide.com/lifecycle-role: capture
+      podSpecPatch: |
+        automountServiceAccountToken: false
+        hostUsers: false
+        shareProcessNamespace: false
+        enableServiceLinks: false
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+      inputs:
+        parameters:
+          - name: workspace-claim
+          - name: sandbox-uid
+      container:
+        name: capture
+        image: {{ $captureImage | quote }}
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-ceu"]
+        args:
+          - >-
+            spec="$(cat /workspace/.agw/capture-spec.json)";
+            max_patch="$(printf '%s' "$spec" | sed -n 's/.*"maxPatchBytes":\([0-9][0-9]*\).*/\1/p')";
+            max_result="$(printf '%s' "$spec" | sed -n 's/.*"maxResultBytes":\([0-9][0-9]*\).*/\1/p')";
+            max_manifest="$(printf '%s' "$spec" | sed -n 's/.*"maxManifestBytes":\([0-9][0-9]*\).*/\1/p')";
+            expected_uid="{{`{{inputs.parameters.sandbox-uid}}`}}";
+            for marker in /workspace/.agw/ready.json /workspace/.agw/finished.json; do
+              test -s "$marker" || { echo "missing Sandbox identity marker: $marker" >&2; exit 1; };
+              grep -Fq "\"uid\":\"$expected_uid\"" "$marker" || { echo "Sandbox identity marker UID mismatch: $marker" >&2; exit 1; };
+            done;
+            export AGW_CAPTURE_SPEC_JSON="$spec" AGW_CAPTURE_MAX_PATCH_BYTES="$max_patch" AGW_CAPTURE_MAX_RESULT_BYTES="$max_result" AGW_CAPTURE_MAX_MANIFEST_BYTES="$max_manifest";
+            exec /agw/capture >/dev/null
+        env:
+          - name: AGW_CAPTURE_PROTOCOL
+            value: stdout-frame-v2
+          - name: AGW_CAPTURE_RUN_UID
+            value: "{{`{{workflow.parameters.agw-run-uid}}`}}"
+          - name: AGW_CAPTURE_SPEC_DIGEST
+            value: "{{`{{workflow.parameters.agw-resolved-spec-digest}}`}}"
+          - name: AGW_CAPTURE_BASE_SHA
+            value: "{{`{{workflow.parameters.agw-base-sha}}`}}"
+          - name: AGW_CAPTURE_REPO_PATH
+            value: /workspace/repo
+          - name: AGW_CAPTURE_OUTPUT_DIR
+            value: /workspace/.agw/capture
+          - name: AGW_CAPTURE_PATCH_PATH
+            value: /workspace/.agw/capture/patch.diff
+          - name: AGW_CAPTURE_MANIFEST_PATH
+            value: /workspace/.agw/capture/patch-manifest.json
+          - name: AGW_CAPTURE_RESULT_PATH
+            value: /workspace/.agw/capture/result.json
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop: [ALL]
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: "{{`{{inputs.parameters.workspace-claim}}`}}"
+
+    - name: handoff
+      serviceAccountName: {{ .Values.argo.handoffServiceAccountName }}
+      automountServiceAccountToken: true
+      podSpecPatch: |
+        hostUsers: false
+        shareProcessNamespace: false
+        enableServiceLinks: false
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+      metadata:
+        labels:
+          agents.astatide.com/lifecycle-role: handoff
+      inputs:
+        parameters:
+          - name: workspace-claim
+          - name: work-secret
+          - name: sandbox-uid
+      container:
+        name: handoff
+        image: {{ $lifecycleImage | quote }}
+        imagePullPolicy: IfNotPresent
+        command: ["/agw/agent-run-lifecycle"]
+        args: ["handoff"]
+        env:
+          {{- include "agw.lifecycleIdentityEnv" . | nindent 10 }}
+          - name: AGW_WORKSPACE
+            value: /workspace
+          - name: AGW_SANDBOX_UID
+            value: "{{`{{inputs.parameters.sandbox-uid}}`}}"
+          {{- include "agw.lifecycleStoreEnv" . | nindent 10 }}
+          - name: AGW_OBJECT_STORE_ACCESS_KEY_FILE
+            value: /run/agw/object-store/access-key-id
+          - name: AGW_OBJECT_STORE_SECRET_ACCESS_KEY_FILE
+            value: /run/agw/object-store/secret-access-key
+          - name: AGW_OBJECT_STORE_SESSION_TOKEN_FILE
+            value: /run/agw/object-store/session-token
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: object-store
+            mountPath: /run/agw/object-store
+            readOnly: true
+          - name: tmp
+            mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+          limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: "{{`{{inputs.parameters.workspace-claim}}`}}"
+        - name: object-store
+          secret:
+            secretName: "{{`{{inputs.parameters.work-secret}}`}}"
+            items:
+              - {key: artifact-access-key-id, path: access-key-id}
+              - {key: artifact-secret-access-key, path: secret-access-key}
+              - {key: artifact-session-token, path: session-token}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+      outputs:
+        parameters:
+          - name: agw-lifecycle-output
+            valueFrom:
+              path: /tmp/agw-lifecycle-output.json
+
+    - name: cleanup
+      serviceAccountName: {{ .Values.argo.cleanupServiceAccountName }}
+      # Cleanup is an Argo lifecycle marker only. Per-run credential deletion
+      # is controller-owned, so this template must not receive a Kubernetes
+      # API token or RBAC binding.
+      automountServiceAccountToken: false
+      podSpecPatch: |
+        hostUsers: false
+        shareProcessNamespace: false
+        enableServiceLinks: false
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+      metadata:
+        labels:
+          agents.astatide.com/lifecycle-role: cleanup
+      retryStrategy:
+        limit: "3"
+        retryPolicy: Always
+        backoff:
+          duration: 2s
+          factor: 2
+          maxDuration: 30s
+      container:
+        name: cleanup
+        image: {{ $lifecycleImage | quote }}
+        imagePullPolicy: IfNotPresent
+        command: ["/agw/agent-run-lifecycle"]
+        args: ["cleanup"]
+        env:
+          {{- include "agw.lifecycleIdentityEnv" . | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {cpu: 250m, memory: 256Mi}
+{{- end }}

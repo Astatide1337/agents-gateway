@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agw-runs
+  labels:
+    app.kubernetes.io/part-of: agents-gateway-v3
+    agw.astatide.com/phase: "0"

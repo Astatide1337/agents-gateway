@@ -1,0 +1,212 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agw-operator
+  namespace: agw-system
+  labels:
+    app.kubernetes.io/name: agw-operator
+    app.kubernetes.io/part-of: agents-gateway-v3
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agw-operator-system
+  namespace: agw-system
+  labels:
+    app.kubernetes.io/name: agw-operator
+    app.kubernetes.io/part-of: agents-gateway-v3
+rules:
+  # Leader election is deliberately confined to the operator namespace.
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - create
+      - update
+      - patch
+  # Preflight evidence has one fixed identity. The operator performs a named
+  # GET and never needs to enumerate this namespace's ConfigMaps.
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - agw-preflight
+    verbs:
+      - get
+  # Provider/GitHub/object-store materialization is by logical Secret name.
+  # Deliberately no list/watch: credentials must not be enumerable by the
+  # operator service account.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agw-operator-system
+  namespace: agw-system
+  labels:
+    app.kubernetes.io/name: agw-operator
+    app.kubernetes.io/part-of: agents-gateway-v3
+subjects:
+  - kind: ServiceAccount
+    name: agw-operator
+    namespace: agw-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agw-operator-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agw-operator-runs
+  namespace: agw-runs
+  labels:
+    app.kubernetes.io/name: agw-operator
+    app.kubernetes.io/part-of: agents-gateway-v3
+rules:
+  # These are the seven namespaced AGW resources. The operator resolves
+  # AgentRun references and watches changes in the configured runs namespace.
+  - apiGroups:
+      - agents.astatide.com
+    resources:
+      - agents
+      - agentruns
+      - gates
+      - toolsets
+      - modelroutes
+      - policies
+      - contextstrategies
+    verbs:
+      - get
+      - list
+      - watch
+  # Only AgentRun status and finalizers are operator-owned subresources.
+  - apiGroups:
+      - agents.astatide.com
+    resources:
+      - agentruns/status
+    verbs:
+      - get
+      - update
+      - patch
+  - apiGroups:
+      - agents.astatide.com
+    resources:
+      - agentruns/finalizers
+    verbs:
+      - update
+  # agent-sandbox owns the resulting Pods. AGW creates and observes Sandbox
+  # children; the narrower Pod/log grants below are only for bounded capture
+  # and verifier evidence, never mutation or exec.
+  - apiGroups:
+      - agents.x-k8s.io
+    resources:
+      - sandboxes
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - delete
+  # Task and instruction ConfigMap references are resolved with named GETs.
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+  # Per-run materialized credentials are deterministic, owner-referenced
+  # Secrets. Retention needs a bounded metadata list but never a Secret watch;
+  # named reads, creation, and UID-fenced cleanup remain the only mutations.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - create
+      - list
+      - delete
+  # PVCs are created by the Sandbox controller. AGW observes them and can reap
+  # retained workspace claims under its retention policy.
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+      - delete
+  # Capture/verification Jobs are controller-owned execution boundaries.
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - delete
+  # Capture and verification output is read from one fixed container after
+  # proving Pod ownership. No exec, attach, port-forward, update, or delete.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+  - apiGroups:
+      - ""
+    resources:
+      - pods/log
+    verbs:
+      - get
+  # The operator installs and removes the per-run network boundary.
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # Events are diagnostic output, not a control-plane data store.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agw-operator-runs
+  namespace: agw-runs
+  labels:
+    app.kubernetes.io/name: agw-operator
+    app.kubernetes.io/part-of: agents-gateway-v3
+subjects:
+  - kind: ServiceAccount
+    name: agw-operator
+    namespace: agw-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agw-operator-runs

@@ -1,0 +1,882 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: agentruns.agents.astatide.com
+spec:
+  group: agents.astatide.com
+  names:
+    kind: AgentRun
+    listKind: AgentRunList
+    plural: agentruns
+    shortNames:
+    - agwrun
+    singular: agentrun
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.gate.verdict
+      name: Gate
+      type: string
+    - jsonPath: .status.effect.pullRequestUrl
+      name: PR
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AgentRun is the only resource a user needs to create for a run.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AgentRunSpec is the user-authored run contract.
+            properties:
+              agentRef:
+                maxLength: 253
+                minLength: 1
+                type: string
+              cancelRequested:
+                description: |-
+                  CancelRequested is a one-way operational request. The controller records
+                  the terminal Cancelled phase; clients must not clear it.
+                type: boolean
+              gateRef:
+                maxLength: 253
+                minLength: 1
+                type: string
+              limits:
+                description: LimitsSpec bounds time, tool calls, and model spend.
+                properties:
+                  maxCostUsd:
+                    description: |-
+                      MaxCostUSD is a decimal string rather than a floating-point number so
+                      budgets and resolved-spec digests are identical in every client.
+                    pattern: ^(0|[1-9][0-9]{0,5})([.][0-9]{1,6})?$
+                    type: string
+                  maxModelTokens:
+                    format: int64
+                    maximum: 1000000000
+                    minimum: 0
+                    type: integer
+                  maxOutputBytes:
+                    format: int64
+                    maximum: 1099511627776
+                    minimum: 0
+                    type: integer
+                  maxPatchBytes:
+                    format: int64
+                    maximum: 1099511627776
+                    minimum: 0
+                    type: integer
+                  maxToolCalls:
+                    format: int32
+                    maximum: 10000
+                    minimum: 1
+                    type: integer
+                  timeout:
+                    pattern: ^[0-9]+(s|m|h)$
+                    type: string
+                required:
+                - maxCostUsd
+                - maxToolCalls
+                - timeout
+                type: object
+              output:
+                description: |-
+                  Output is optional for compatibility with v3 manifests written before
+                  findings mode existed. The resolver treats nil and an omitted mode as
+                  patch output.
+                properties:
+                  mode:
+                    description: OutputMode selects the durable result shape produced
+                      by an AgentRun.
+                    enum:
+                    - patch
+                    - findings
+                    - both
+                    type: string
+                  target:
+                    description: OutputTarget identifies the immutable review target
+                      for findings output.
+                    properties:
+                      pullRequest:
+                        format: int64
+                        maximum: 2147483647
+                        minimum: 1
+                        type: integer
+                    required:
+                    - pullRequest
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: findings output requires target.pullRequest
+                  rule: '!has(self.mode) || self.mode == ''patch'' || self.mode ==
+                    ''both'' || (has(self.target) && self.target.pullRequest > 0)'
+              publish:
+                description: PublishSpec controls controller-owned publication.
+                properties:
+                  credentialRef:
+                    description: |-
+                      This is a logical reference resolved by the operator; it is never a
+                      credential value.
+                    maxLength: 253
+                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  labels:
+                    items:
+                      maxLength: 64
+                      type: string
+                    maxItems: 8
+                    type: array
+                  mode:
+                    description: PublishMode controls whether a gated result is published.
+                    enum:
+                    - none
+                    - pull-request
+                    type: string
+                  title:
+                    maxLength: 256
+                    type: string
+                required:
+                - mode
+                type: object
+                x-kubernetes-validations:
+                - message: pull-request publication requires credentialRef
+                  rule: self.mode == 'none' || size(self.credentialRef) > 0
+              scope:
+                description: ScopeSpec limits the paths an agent may change.
+                properties:
+                  forbidden:
+                    items:
+                      maxLength: 512
+                      type: string
+                    maxItems: 128
+                    type: array
+                  paths:
+                    items:
+                      maxLength: 512
+                      type: string
+                    maxItems: 128
+                    type: array
+                type: object
+              source:
+                description: SourceSpec identifies the immutable source revision for
+                  a run.
+                properties:
+                  baseRef:
+                    maxLength: 256
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                    type: string
+                  depth:
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  repo:
+                    description: |-
+                      Repo accepts github.com/owner/repository or an equivalent canonical host
+                      form; embedded credentials and arbitrary clone URLs are rejected by the
+                      admission layer.
+                    maxLength: 512
+                    minLength: 1
+                    pattern: ^github[.]com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+                    type: string
+                required:
+                - baseRef
+                - repo
+                type: object
+              task:
+                description: TaskSpec is either inline text or a ConfigMap key reference.
+                properties:
+                  configMapRef:
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  inline:
+                    maxLength: 32768
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of inline or configMapRef must be set
+                  rule: has(self.inline) != has(self.configMapRef)
+              workspace:
+                description: WorkspaceSpec defines disposable per-run storage.
+                properties:
+                  size:
+                    description: Size is a Kubernetes resource quantity string, for
+                      example 8Gi.
+                    pattern: ^[1-9][0-9]*(Ki|Mi|Gi|Ti)$
+                    type: string
+                  storageClassName:
+                    maxLength: 63
+                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                required:
+                - size
+                type: object
+            required:
+            - agentRef
+            - gateRef
+            - limits
+            - publish
+            - source
+            - task
+            - workspace
+            type: object
+            x-kubernetes-validations:
+            - message: agentRef and gateRef are required
+              rule: size(self.agentRef) > 0 && size(self.gateRef) > 0
+            - message: AgentRun execution spec is immutable after creation
+              rule: self.agentRef == oldSelf.agentRef && self.gateRef == oldSelf.gateRef
+                && self.source == oldSelf.source && self.task == oldSelf.task && self.scope
+                == oldSelf.scope && self.workspace == oldSelf.workspace && self.publish
+                == oldSelf.publish && self.limits == oldSelf.limits && self.output
+                == oldSelf.output
+          status:
+            description: AgentRunStatus is a bounded projection; full evidence lives
+              in artifacts.
+            properties:
+              artifacts:
+                items:
+                  description: ArtifactRef points at immutable evidence in object
+                    storage.
+                  properties:
+                    digest:
+                      description: Digest is a content digest in sha256:<hex> form.
+                      pattern: ^sha256:[a-f0-9]{64}$
+                      type: string
+                    kind:
+                      maxLength: 64
+                      pattern: ^$|^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                      type: string
+                    mediaType:
+                      maxLength: 128
+                      type: string
+                    name:
+                      maxLength: 128
+                      type: string
+                    sizeBytes:
+                      format: int64
+                      maximum: 1099511627776
+                      minimum: 0
+                      type: integer
+                    uri:
+                      description: URI is an opaque object-store URI. Credentials
+                        must never be embedded.
+                      maxLength: 1024
+                      type: string
+                  required:
+                  - digest
+                  - uri
+                  type: object
+                maxItems: 16
+                type: array
+              baseSHA:
+                maxLength: 64
+                pattern: ^[a-f0-9]{40,64}$
+                type: string
+              children:
+                items:
+                  description: ChildRef identifies an operator-owned child resource.
+                  properties:
+                    kind:
+                      enum:
+                      - Sandbox
+                      - Job
+                      maxLength: 63
+                      type: string
+                    name:
+                      maxLength: 253
+                      type: string
+                    planFingerprint:
+                      description: |-
+                        PlanFingerprint binds this child reference to the controller-computed,
+                        backend-specific execution plan. It is distinct from SpecDigest, which
+                        identifies the resolved AgentRun configuration rather than the child
+                        resource's actual immutable specification.
+                      maxLength: 71
+                      pattern: ^$|^sha256:[a-f0-9]{64}$
+                      type: string
+                    role:
+                      maxLength: 64
+                      type: string
+                    specDigest:
+                      pattern: ^$|^sha256:[a-f0-9]{64}$
+                      type: string
+                    uid:
+                      maxLength: 64
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  type: object
+                maxItems: 16
+                type: array
+              completedAt:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: |-
+                    Condition is a bounded status condition. Full diagnostics belong in the
+                    event stream or report artifact, not in a Kubernetes status object.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 2048
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      maxLength: 64
+                      type: string
+                    status:
+                      description: |-
+                        ConditionStatus is intentionally narrower than a free-form string and is
+                        used by every status condition in this package.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              contextPackRef:
+                description: ArtifactRef points at immutable evidence in object storage.
+                properties:
+                  digest:
+                    description: Digest is a content digest in sha256:<hex> form.
+                    pattern: ^sha256:[a-f0-9]{64}$
+                    type: string
+                  kind:
+                    maxLength: 64
+                    pattern: ^$|^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                    type: string
+                  mediaType:
+                    maxLength: 128
+                    type: string
+                  name:
+                    maxLength: 128
+                    type: string
+                  sizeBytes:
+                    format: int64
+                    maximum: 1099511627776
+                    minimum: 0
+                    type: integer
+                  uri:
+                    description: URI is an opaque object-store URI. Credentials must
+                      never be embedded.
+                    maxLength: 1024
+                    type: string
+                required:
+                - digest
+                - uri
+                type: object
+              costUsd:
+                pattern: ^$|^(0|[1-9][0-9]{0,5})([.][0-9]{1,6})?$
+                type: string
+              effect:
+                description: EffectSummary is the bounded projection of a durable
+                  effect ledger entry.
+                properties:
+                  key:
+                    pattern: ^sha256:[a-f0-9]{64}$
+                    type: string
+                  pullRequestUrl:
+                    maxLength: 1024
+                    type: string
+                  state:
+                    description: EffectState is the durable state of an externally
+                      visible effect.
+                    enum:
+                    - pending
+                    - succeeded
+                    - failed
+                    - unknown
+                    type: string
+                type: object
+              eventStreamRef:
+                description: ArtifactRef points at immutable evidence in object storage.
+                properties:
+                  digest:
+                    description: Digest is a content digest in sha256:<hex> form.
+                    pattern: ^sha256:[a-f0-9]{64}$
+                    type: string
+                  kind:
+                    maxLength: 64
+                    pattern: ^$|^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                    type: string
+                  mediaType:
+                    maxLength: 128
+                    type: string
+                  name:
+                    maxLength: 128
+                    type: string
+                  sizeBytes:
+                    format: int64
+                    maximum: 1099511627776
+                    minimum: 0
+                    type: integer
+                  uri:
+                    description: URI is an opaque object-store URI. Credentials must
+                      never be embedded.
+                    maxLength: 1024
+                    type: string
+                required:
+                - digest
+                - uri
+                type: object
+              failure:
+                description: FailureStatus is safe to expose in the API and deliberately
+                  bounded.
+                properties:
+                  code:
+                    maxLength: 128
+                    type: string
+                  message:
+                    maxLength: 2048
+                    type: string
+                  retryable:
+                    type: boolean
+                required:
+                - code
+                - message
+                type: object
+              gate:
+                description: GateResult is the status projection of independent verification.
+                properties:
+                  checks:
+                    items:
+                      description: GateCheck is one bounded machine-checkable gate
+                        observation.
+                      properties:
+                        message:
+                          maxLength: 1024
+                          type: string
+                        name:
+                          maxLength: 128
+                          type: string
+                        passed:
+                          type: boolean
+                      required:
+                      - name
+                      - passed
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  generation:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  mode:
+                    description: GateMode controls whether a Gate is advisory or enforcing.
+                    enum:
+                    - shadow
+                    - enforcing
+                    type: string
+                  name:
+                    description: |-
+                      Name, UID, and Generation identify the immutable Gate revision that
+                      produced this result. A human shadow review must bind to this revision;
+                      the current Gate object may have changed by the time the review is made.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  reportRef:
+                    description: ArtifactRef points at immutable evidence in object
+                      storage.
+                    properties:
+                      digest:
+                        description: Digest is a content digest in sha256:<hex> form.
+                        pattern: ^sha256:[a-f0-9]{64}$
+                        type: string
+                      kind:
+                        maxLength: 64
+                        pattern: ^$|^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                        type: string
+                      mediaType:
+                        maxLength: 128
+                        type: string
+                      name:
+                        maxLength: 128
+                        type: string
+                      sizeBytes:
+                        format: int64
+                        maximum: 1099511627776
+                        minimum: 0
+                        type: integer
+                      uri:
+                        description: URI is an opaque object-store URI. Credentials
+                          must never be embedded.
+                        maxLength: 1024
+                        type: string
+                    required:
+                    - digest
+                    - uri
+                    type: object
+                  uid:
+                    maxLength: 64
+                    type: string
+                  verdict:
+                    enum:
+                    - Accepted
+                    - Rejected
+                    type: string
+                type: object
+              observedGeneration:
+                format: int64
+                type: integer
+              orchestration:
+                description: |-
+                  OrchestrationStatus is a bounded mirror of the selected backend. Its phase
+                  is informational and must never be used as an AGW completion contract.
+                properties:
+                  backend:
+                    description: |-
+                      OrchestrationBackend identifies the optional lifecycle sequencing backend.
+                      It is persisted only as an execution status observation; it is not user
+                      input on AgentRun and therefore cannot change an admitted run's contract.
+                    enum:
+                    - argo
+                    type: string
+                  message:
+                    maxLength: 2048
+                    type: string
+                  phase:
+                    description: |-
+                      OrchestrationPhase is deliberately separate from AgentRun Phase. Argo's
+                      terminal state is never an AGW Gate, publication, or effect verdict.
+                    enum:
+                    - Pending
+                    - Running
+                    - Succeeded
+                    - Failed
+                    - Error
+                    - Skipped
+                    - Omitted
+                    - Suspended
+                    type: string
+                  reference:
+                    description: |-
+                      OrchestrationRef is the immutable Kubernetes identity bound to one admitted
+                      AgentRun generation. Namespace is explicit even though the current API is
+                      namespaced, so a status reader cannot accidentally treat a same-name
+                      Workflow from another namespace as this run's child.
+                    properties:
+                      apiVersion:
+                        pattern: ^argoproj[.]io/v1alpha1$
+                        type: string
+                      generation:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      kind:
+                        enum:
+                        - Workflow
+                        type: string
+                      name:
+                        maxLength: 253
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      namespace:
+                        maxLength: 253
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                        type: string
+                      runGeneration:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      specDigest:
+                        pattern: ^sha256:[a-f0-9]{64}$
+                        type: string
+                      uid:
+                        maxLength: 64
+                        minLength: 1
+                        type: string
+                      workflowTemplateDigest:
+                        pattern: ^sha256:[a-f0-9]{64}$
+                        type: string
+                      workflowTemplateName:
+                        maxLength: 253
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      workflowTemplateUID:
+                        maxLength: 64
+                        minLength: 1
+                        type: string
+                    required:
+                    - apiVersion
+                    - generation
+                    - kind
+                    - name
+                    - namespace
+                    - runGeneration
+                    - specDigest
+                    - uid
+                    - workflowTemplateDigest
+                    - workflowTemplateName
+                    - workflowTemplateUID
+                    type: object
+                required:
+                - backend
+                - phase
+                - reference
+                type: object
+              patch:
+                description: PatchSummary is a bounded summary of a captured patch.
+                properties:
+                  filesChanged:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  linesChanged:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  manifestRef:
+                    description: ArtifactRef points at immutable evidence in object
+                      storage.
+                    properties:
+                      digest:
+                        description: Digest is a content digest in sha256:<hex> form.
+                        pattern: ^sha256:[a-f0-9]{64}$
+                        type: string
+                      kind:
+                        maxLength: 64
+                        pattern: ^$|^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                        type: string
+                      mediaType:
+                        maxLength: 128
+                        type: string
+                      name:
+                        maxLength: 128
+                        type: string
+                      sizeBytes:
+                        format: int64
+                        maximum: 1099511627776
+                        minimum: 0
+                        type: integer
+                      uri:
+                        description: URI is an opaque object-store URI. Credentials
+                          must never be embedded.
+                        maxLength: 1024
+                        type: string
+                    required:
+                    - digest
+                    - uri
+                    type: object
+                  ref:
+                    description: ArtifactRef points at immutable evidence in object
+                      storage.
+                    properties:
+                      digest:
+                        description: Digest is a content digest in sha256:<hex> form.
+                        pattern: ^sha256:[a-f0-9]{64}$
+                        type: string
+                      kind:
+                        maxLength: 64
+                        pattern: ^$|^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                        type: string
+                      mediaType:
+                        maxLength: 128
+                        type: string
+                      name:
+                        maxLength: 128
+                        type: string
+                      sizeBytes:
+                        format: int64
+                        maximum: 1099511627776
+                        minimum: 0
+                        type: integer
+                      uri:
+                        description: URI is an opaque object-store URI. Credentials
+                          must never be embedded.
+                        maxLength: 1024
+                        type: string
+                    required:
+                    - digest
+                    - uri
+                    type: object
+                required:
+                - filesChanged
+                - linesChanged
+                type: object
+              phase:
+                description: Phase is the lifecycle phase of an AgentRun.
+                enum:
+                - Pending
+                - Cloning
+                - Working
+                - Capturing
+                - Verifying
+                - Gated
+                - Publishing
+                - Succeeded
+                - Rejected
+                - Failed
+                - Cancelled
+                - UnknownEffect
+                type: string
+              published:
+                type: boolean
+              resolvedSpecRef:
+                description: ArtifactRef points at immutable evidence in object storage.
+                properties:
+                  digest:
+                    description: Digest is a content digest in sha256:<hex> form.
+                    pattern: ^sha256:[a-f0-9]{64}$
+                    type: string
+                  kind:
+                    maxLength: 64
+                    pattern: ^$|^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                    type: string
+                  mediaType:
+                    maxLength: 128
+                    type: string
+                  name:
+                    maxLength: 128
+                    type: string
+                  sizeBytes:
+                    format: int64
+                    maximum: 1099511627776
+                    minimum: 0
+                    type: integer
+                  uri:
+                    description: URI is an opaque object-store URI. Credentials must
+                      never be embedded.
+                    maxLength: 1024
+                    type: string
+                required:
+                - digest
+                - uri
+                type: object
+              specDigest:
+                pattern: ^sha256:[a-f0-9]{64}$
+                type: string
+              startedAt:
+                format: date-time
+                type: string
+              toolCallCount:
+                format: int64
+                minimum: 0
+                type: integer
+              verifySandboxRef:
+                description: ChildRef identifies an operator-owned child resource.
+                properties:
+                  kind:
+                    enum:
+                    - Sandbox
+                    - Job
+                    maxLength: 63
+                    type: string
+                  name:
+                    maxLength: 253
+                    type: string
+                  planFingerprint:
+                    description: |-
+                      PlanFingerprint binds this child reference to the controller-computed,
+                      backend-specific execution plan. It is distinct from SpecDigest, which
+                      identifies the resolved AgentRun configuration rather than the child
+                      resource's actual immutable specification.
+                    maxLength: 71
+                    pattern: ^$|^sha256:[a-f0-9]{64}$
+                    type: string
+                  role:
+                    maxLength: 64
+                    type: string
+                  specDigest:
+                    pattern: ^$|^sha256:[a-f0-9]{64}$
+                    type: string
+                  uid:
+                    maxLength: 64
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              workSandboxRef:
+                description: ChildRef identifies an operator-owned child resource.
+                properties:
+                  kind:
+                    enum:
+                    - Sandbox
+                    - Job
+                    maxLength: 63
+                    type: string
+                  name:
+                    maxLength: 253
+                    type: string
+                  planFingerprint:
+                    description: |-
+                      PlanFingerprint binds this child reference to the controller-computed,
+                      backend-specific execution plan. It is distinct from SpecDigest, which
+                      identifies the resolved AgentRun configuration rather than the child
+                      resource's actual immutable specification.
+                    maxLength: 71
+                    pattern: ^$|^sha256:[a-f0-9]{64}$
+                    type: string
+                  role:
+                    maxLength: 64
+                    type: string
+                  specDigest:
+                    pattern: ^$|^sha256:[a-f0-9]{64}$
+                    type: string
+                  uid:
+                    maxLength: 64
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: cancelRequested cannot be cleared once true
+          rule: '!oldSelf.spec.cancelRequested || self.spec.cancelRequested'
+    served: true
+    storage: true
+    subresources:
+      status: {}

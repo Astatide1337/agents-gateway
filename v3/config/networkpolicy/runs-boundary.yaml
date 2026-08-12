@@ -1,0 +1,147 @@
+# Namespace-wide baseline. Per-container agent/broker separation is enforced
+# by the user-namespaced owner rules installed by the lockdown init container.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agw-runs-default-deny
+  namespace: agw-runs
+  labels:
+    app.kubernetes.io/part-of: agents-gateway-v3
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agw-runs-dns
+  namespace: agw-runs
+  labels:
+    app.kubernetes.io/part-of: agents-gateway-v3
+spec:
+  podSelector:
+    matchExpressions:
+      # Capture is explicitly networkless. NetworkPolicy rules are additive,
+      # so the namespace DNS allow must not select either the direct capture
+      # Job or the Argo lifecycle capture template.
+      - key: agents.astatide.com/role
+        operator: NotIn
+        values: [capture]
+      - key: agents.astatide.com/lifecycle-role
+        operator: NotIn
+        values: [capture]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# The pod may reach public endpoints; RFC1918, cluster, link-local, metadata,
+# CGNAT, benchmark, multicast, and ULA space remain unreachable. The agent UID
+# is still denied by the pod-local owner rules; only broker UID 1337 can use
+# this CNI permission.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agw-runs-public-egress
+  namespace: agw-runs
+  labels:
+    app.kubernetes.io/part-of: agents-gateway-v3
+spec:
+  podSelector:
+    matchLabels:
+      agents.astatide.com/egress: broker-public
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.0.0.0/24
+              - 192.0.2.0/24
+              - 192.168.0.0/16
+              - 198.18.0.0/15
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+      ports:
+        - { protocol: TCP, port: 443 }
+    - to:
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::/128
+              - ::1/128
+              - 64:ff9b:1::/48
+              - 100::/64
+              - 2001:db8::/32
+              - fc00::/7
+              - fe80::/10
+              - ff00::/8
+      ports:
+        - { protocol: TCP, port: 443 }
+---
+# Verify setup needs public egress only while its fetch init container clones
+# the exact base SHA and downloads the immutable patch. The final lockdown init
+# container then drops all pod-local egress before patched code executes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agw-runs-verify-fetch-egress
+  namespace: agw-runs
+  labels:
+    app.kubernetes.io/part-of: agents-gateway-v3
+spec:
+  podSelector:
+    matchLabels:
+      agents.astatide.com/egress: verify-fetch-public
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.0.0.0/24
+              - 192.0.2.0/24
+              - 192.168.0.0/16
+              - 198.18.0.0/15
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+      ports:
+        - { protocol: TCP, port: 443 }
+    - to:
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::/128
+              - ::1/128
+              - 64:ff9b:1::/48
+              - 100::/64
+              - 2001:db8::/32
+              - fc00::/7
+              - fe80::/10
+              - ff00::/8
+      ports:
+        - { protocol: TCP, port: 443 }

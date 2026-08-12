@@ -1,0 +1,21 @@
+# Build context: v3/
+#   docker build -f phase0/argo-sandbox/bridge/Containerfile \
+#     -t agw-sandbox-wait-bridge:phase0 .
+#
+# The build toolchain is pinned to the Go version used by v3. The final image is
+# scratch-based and contains only the statically linked bridge binary.
+FROM docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af AS build
+
+ARG TARGETARCH=amd64
+WORKDIR /src
+COPY go.mod ./
+COPY phase0/argo-sandbox/bridge ./phase0/argo-sandbox/bridge
+COPY phase0/argo-sandbox/cmd ./phase0/argo-sandbox/cmd
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags='-s -w' \
+    -o /out/sandbox-wait ./phase0/argo-sandbox/cmd/waitbridge
+
+FROM scratch
+COPY --from=build /out/sandbox-wait /sandbox-wait
+USER 65532:65532
+ENTRYPOINT ["/sandbox-wait"]

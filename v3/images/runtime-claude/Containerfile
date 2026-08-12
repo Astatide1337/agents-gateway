@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1
+
+# Build with images/runtime-claude/build.sh. The script resolves the selected
+# @anthropic-ai/claude-code release and passes the exact version here so the
+# installed CLI and OCI evidence cannot disagree. Base images are pinned to
+# reviewed amd64 manifests; override them only with another digest-pinned ref.
+ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af
+ARG NODE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+
+FROM ${GO_IMAGE} AS adapter-build
+WORKDIR /src/v3
+COPY v3/go.mod v3/go.sum ./
+RUN go mod download
+COPY v3/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
+    -o /out/agw-runtime-claude ./cmd/agw-runtime-claude
+
+FROM ${NODE_IMAGE} AS claude-install
+ARG CLAUDE_CODE_VERSION
+RUN test -n "${CLAUDE_CODE_VERSION}" \
+    || (echo 'CLAUDE_CODE_VERSION is required; use images/runtime-claude/build.sh' >&2 && exit 2)
+RUN npm install --global --omit=dev "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && test "$(node -p "require('/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json').version")" = "${CLAUDE_CODE_VERSION}" \
+    && command -v claude
+
+FROM ${NODE_IMAGE}
+ARG CLAUDE_CODE_VERSION
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="Agents Gateway Claude Code Runtime" \
+      org.opencontainers.image.description="Digest-deployed Claude Code runtime for agw.runtime.v1 work Sandboxes" \
+      org.opencontainers.image.source="https://github.com/Astatide1337/agents-gateway" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.version="${CLAUDE_CODE_VERSION}" \
+      org.opencontainers.image.licenses="MIT" \
+      com.astatide.agw.runtime.protocol="agw.runtime.v1" \
+      com.astatide.agw.claude.package="@anthropic-ai/claude-code" \
+      com.astatide.agw.claude.version="${CLAUDE_CODE_VERSION}" \
+      com.astatide.agw.go.module="github.com/Astatide1337/agents-gateway/v3"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -m 0755 /agw \
+    && install -d -o 1000 -g 1000 -m 0700 /workspace
+
+COPY --from=claude-install /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=claude-install /usr/local/bin/claude /usr/local/bin/claude
+COPY --from=adapter-build /out/agw-runtime-claude /agw/agent
+RUN chmod 0755 /agw/agent
+
+ENV AGW_BROKER=http://127.0.0.1:8081 \
+    AGW_HARNESS=claude-code \
+    AGW_CLAUDE_BIN=/usr/local/bin/claude \
+    AGW_CLAUDE_WORKSPACE=/workspace/repo
+
+# The work Sandbox fixes the runtime identity at UID/GID 1000. Provider
+# credentials are never baked into this image or inherited by the CLI.
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["/agw/agent"]

@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1
+
+# This image contains only the trusted verifier and the fixed tools commonly
+# used by Gate commands. It never performs network setup or accepts a network
+# client. The Kubernetes Sandbox lockdown initContainer is the enforcement
+# boundary; this process additionally clears all inherited proxy/credential
+# environment variables.
+ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af
+ARG RUN_IMAGE=docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /src/v3
+COPY v3/go.mod v3/go.sum ./
+RUN go mod download
+COPY v3/api ./api
+COPY v3/internal ./internal
+COPY v3/pkg ./pkg
+COPY v3/cmd ./cmd
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -buildvcs=false -ldflags='-s -w' \
+    -o /out/agw-verifier ./cmd/agw-verifier
+
+FROM ${RUN_IMAGE}
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="Agents Gateway Offline Verifier" \
+      org.opencontainers.image.description="Independent bounded Gate verifier for Agents Gateway v3" \
+      org.opencontainers.image.source="https://github.com/Astatide1337/agents-gateway" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="MIT" \
+      com.astatide.agw.role="verifier" \
+      com.astatide.agw.evidence.protocol="AGW_VERIFY_EVIDENCE_V1"
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 agw \
+    && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin agw \
+    && install -d -o 1000 -g 1000 -m 0700 /verify /verify/workspace
+
+COPY --from=build /out/agw-verifier /agw/verifier
+RUN chmod 0755 /agw/verifier
+
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/nonexistent \
+    AGW_VERIFY_NETWORK=disabled
+
+USER 1000:1000
+WORKDIR /verify/workspace/repo
+ENTRYPOINT ["/agw/verifier"]

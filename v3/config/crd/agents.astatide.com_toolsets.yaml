@@ -1,0 +1,240 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: toolsets.agents.astatide.com
+spec:
+  group: agents.astatide.com
+  names:
+    kind: ToolSet
+    listKind: ToolSetList
+    plural: toolsets
+    shortNames:
+    - agwtoolset
+    singular: toolset
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ToolSet is an allowlisted MCP surface with effect classification.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ToolSetSpec defines the allowlisted MCP surface.
+            properties:
+              maxToolsPerPhase:
+                format: int32
+                maximum: 12
+                minimum: 1
+                type: integer
+              profiles:
+                items:
+                  description: ToolProfile is the explicit, phase-scoped allowlist
+                    for one ToolSet phase.
+                  properties:
+                    name:
+                      description: |-
+                        ToolProfileName identifies the phase in which a ToolSet profile may be
+                        selected. The controller owns phase transitions; the ToolSet only declares
+                        the bounded allowlist for each named phase.
+                      enum:
+                      - explore
+                      - edit
+                      - verify
+                      type: string
+                    tools:
+                      items:
+                        description: |-
+                          ToolRef binds one profile entry to exactly one named server and tool. It
+                          intentionally contains no endpoint, credential, effect, or argument data;
+                          those remain authoritative on ToolServer and ToolDefinition.
+                        properties:
+                          server:
+                            maxLength: 128
+                            minLength: 1
+                            pattern: ^[A-Za-z0-9._-]+$
+                            type: string
+                          tool:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[A-Za-z0-9._-]+$
+                            type: string
+                        required:
+                        - server
+                        - tool
+                        type: object
+                      maxItems: 12
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - server
+                      - tool
+                      x-kubernetes-list-type: map
+                  required:
+                  - name
+                  - tools
+                  type: object
+                maxItems: 3
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              servers:
+                items:
+                  description: ToolServer describes an MCP upstream and its logical
+                    credential reference.
+                  properties:
+                    credentialsRef:
+                      maxLength: 253
+                      pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                    name:
+                      maxLength: 128
+                      minLength: 1
+                      pattern: ^[A-Za-z0-9._-]+$
+                      type: string
+                    ref:
+                      pattern: ^https://[^\s]+$
+                      type: string
+                    tools:
+                      items:
+                        description: ToolDefinition describes one MCP tool and its
+                          effect class.
+                        properties:
+                          effect:
+                            description: EffectKind is the effect class used by a
+                              ToolSet entry.
+                            enum:
+                            - read
+                            - write
+                            - publish
+                            type: string
+                          exactArguments:
+                            additionalProperties:
+                              x-kubernetes-preserve-unknown-fields: true
+                            description: ExactArguments is optional strict JSON matching
+                              applied by the broker.
+                            maxProperties: 64
+                            type: object
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[A-Za-z0-9._-]+$
+                            type: string
+                        required:
+                        - effect
+                        - name
+                        type: object
+                      maxItems: 256
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
+                  required:
+                  - name
+                  - ref
+                  - tools
+                  type: object
+                maxItems: 32
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - maxToolsPerPhase
+            - profiles
+            - servers
+            type: object
+            x-kubernetes-validations:
+            - message: profiles must contain exactly one explore, edit, and verify
+                profile
+              rule: size(self.profiles) == 3 && self.profiles.exists(p, p.name ==
+                'explore') && self.profiles.exists(p, p.name == 'edit') && self.profiles.exists(p,
+                p.name == 'verify')
+            - message: each profile cannot contain more than maxToolsPerPhase tools
+              rule: self.profiles.all(p, size(p.tools) <= self.maxToolsPerPhase)
+          status:
+            description: ResourceStatus is the bounded status shared by configuration
+              resources.
+            properties:
+              conditions:
+                items:
+                  description: |-
+                    Condition is a bounded status condition. Full diagnostics belong in the
+                    event stream or report artifact, not in a Kubernetes status object.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 2048
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      maxLength: 64
+                      type: string
+                    status:
+                      description: |-
+                        ConditionStatus is intentionally narrower than a free-form string and is
+                        used by every status condition in this package.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              specDigest:
+                maxLength: 71
+                pattern: ^sha256:[a-f0-9]{64}$
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

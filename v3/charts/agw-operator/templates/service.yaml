@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agw-operator.webhookServiceName" . }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    {{- include "agw-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: false
+  selector:
+    {{- include "agw-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: webhook
+    - name: metrics
+      port: 8080
+      protocol: TCP
+      targetPort: metrics
+    - name: health
+      port: 8081
+      protocol: TCP
+      targetPort: health

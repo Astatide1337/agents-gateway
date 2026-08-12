@@ -1,0 +1,74 @@
+# syntax=docker/dockerfile:1
+
+# Build with images/runtime-codex/build.sh. It resolves the selected
+# @openai/codex release and supplies the exact version as CODEX_CLI_VERSION so
+# the OCI label and installed package cannot disagree. Base images are pinned
+# to reviewed amd64 manifests; override them only with another digest-pinned
+# ref.
+ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af
+ARG NODE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+
+FROM ${GO_IMAGE} AS adapter-build
+WORKDIR /src/v3
+COPY v3/go.mod v3/go.sum ./
+RUN go mod download
+COPY v3/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
+    -o /out/agw-runtime-codex ./cmd/agw-runtime-codex
+
+FROM ${NODE_IMAGE} AS codex-install
+ARG CODEX_CLI_VERSION
+RUN test -n "${CODEX_CLI_VERSION}" \
+    || (echo 'CODEX_CLI_VERSION is required; use images/runtime-codex/build.sh' >&2 && exit 2)
+RUN npm install --global --omit=dev "@openai/codex@${CODEX_CLI_VERSION}" \
+    && test "$(node -p "require('/usr/local/lib/node_modules/@openai/codex/package.json').version")" = "${CODEX_CLI_VERSION}" \
+    && node --input-type=module -e 'import { createRequire } from "node:module"; import { constants, accessSync } from "node:fs"; import path from "node:path"; const require = createRequire("/usr/local/lib/node_modules/@openai/codex/bin/codex.js"); const packageName = process.arch === "x64" ? "@openai/codex-linux-x64" : process.arch === "arm64" ? "@openai/codex-linux-arm64" : ""; const triple = process.arch === "x64" ? "x86_64-unknown-linux-musl" : process.arch === "arm64" ? "aarch64-unknown-linux-musl" : ""; if (!packageName) throw new Error(`unsupported architecture: ${process.arch}`); accessSync(path.join(path.dirname(require.resolve(`${packageName}/package.json`)), "vendor", triple, "bin", "codex"), constants.X_OK);'
+
+FROM ${NODE_IMAGE}
+ARG CODEX_CLI_VERSION
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="Agents Gateway Codex Runtime" \
+      org.opencontainers.image.description="Digest-deployed Codex runtime for agw.runtime.v1 work Sandboxes" \
+      org.opencontainers.image.source="https://github.com/Astatide1337/agents-gateway" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.version="${CODEX_CLI_VERSION}" \
+      org.opencontainers.image.licenses="MIT" \
+      com.astatide.agw.runtime.protocol="agw.runtime.v1" \
+      com.astatide.agw.codex.package="@openai/codex" \
+      com.astatide.agw.codex.version="${CODEX_CLI_VERSION}" \
+      com.astatide.agw.go.module="github.com/Astatide1337/agents-gateway/v3"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -m 0755 /agw \
+    && install -d -o 1000 -g 1000 -m 0700 /workspace
+
+# The current @openai/codex package keeps the native Linux executable in its
+# optional platform dependency. Copy the complete scoped package tree so the
+# JS launcher, package metadata, native executable, rg, and sandbox helpers
+# remain in one version-consistent installation.
+COPY --from=codex-install /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
+RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
+    && chmod 0755 /usr/local/lib/node_modules/@openai/codex/bin/codex.js
+
+COPY --from=adapter-build /out/agw-runtime-codex /agw/agent
+RUN chmod 0755 /agw/agent
+
+# The per-run controller supplies AGW_CODEX_MODEL and AGW_BASE_SHA. The image
+# supplies only stable, non-secret defaults. AGW_CODEX_WORKSPACE is the path
+# created by the clone initContainer and is validated again by /agw/agent.
+ENV AGW_BROKER=http://127.0.0.1:8081 \
+    AGW_HARNESS=codex \
+    AGW_CODEX_BIN=/usr/local/bin/codex \
+    AGW_CODEX_WORKSPACE=/workspace/repo
+
+# The work Sandbox contract fixes the agent identity at UID/GID 1000. Keeping
+# the image identity identical prevents standalone smoke tests from masking
+# ownership failures that would appear only under Kubernetes.
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["/agw/agent"]
