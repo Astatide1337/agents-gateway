@@ -449,7 +449,7 @@ jobs:
           esac
 
           raw_final="$(docker buildx imagetools inspect --raw "$IMAGE_REF")"
-          actual_platforms="$(jq -r '[.manifests[]? | select(.platform != null) | "\(.platform.os)/\(.platform.architecture)"] | unique | sort | join(",")' <<<"$raw_final")"
+          actual_platforms="$(jq -r '[.manifests[]? | select(.platform != null and .platform.os != "unknown" and .platform.architecture != "unknown") | "\(.platform.os)/\(.platform.architecture)"] | unique | sort | join(",")' <<<"$raw_final")"
           case "$PLATFORMS" in
             linux/amd64) expected_platforms=linux/amd64 ;;
             linux/amd64,linux/arm64) expected_platforms=linux/amd64,linux/arm64 ;;

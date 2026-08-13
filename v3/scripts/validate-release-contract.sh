@@ -119,6 +119,10 @@ grep -Fq '.[$row.chartValues.repositoryKey] = $row.imageRepository' "$release_wo
   echo "chart repository generation must use imageRepository" >&2
   exit 1
 }
+grep -Fq 'select(.platform != null and .platform.os != "unknown" and .platform.architecture != "unknown")' "$release_workflow" || {
+  echo "release platform inspection must ignore provenance attestation descriptors" >&2
+  exit 1
+}
 
 repository="ghcr.io/astatide1337/agw-operator"
 repository_pattern="$(jq -r '.properties.image.properties.repository.pattern' v3/charts/agw-operator/values.schema.json)"
