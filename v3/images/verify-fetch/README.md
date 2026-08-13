@@ -61,7 +61,7 @@ build context must contain `v3/`:
 cd /home/ubuntu/Projects/agents-gateway
 docker build --file v3/images/verify-fetch/Containerfile \
   --build-arg GO_IMAGE=docker.io/library/golang:1.26.5@sha256:<recorded-digest> \
-  --build-arg RUNTIME_IMAGE=docker.io/library/alpine:3.22.1@sha256:<recorded-digest> \
+  --build-arg RUNTIME_IMAGE=docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6 \
   --tag ghcr.io/astatide/agw-verify-fetch:build .
 ```
 

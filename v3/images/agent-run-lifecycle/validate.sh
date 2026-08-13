@@ -15,7 +15,7 @@ require_text() {
 require_text 'COPY v3/go.mod v3/go.sum ./'
 require_text 'COPY v3/ ./'
 require_text 'ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af'
-require_text 'ARG RUNTIME_IMAGE=docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1'
+require_text 'ARG RUNTIME_IMAGE=docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6'
 if grep -Eiq '(^|[[:space:]])(FROM|ARG)[^#]*:latest([[:space:]]|$)' "$containerfile"; then
 	echo 'lifecycle Containerfile must not use mutable latest image references' >&2
 	exit 1

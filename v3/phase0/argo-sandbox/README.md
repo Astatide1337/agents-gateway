@@ -30,7 +30,7 @@ in [`versions.env`](versions.env). The experiment targets:
 - Argo Workflows `v4.1.0` (`e5ed20d5cb54d4708d5aeb29148b3e49922f795c`)
 - `kubernetes-sigs/agent-sandbox` `v0.5.4` (`6e2b7617310e3bf084b6d1a1cffbeb141a5e37fe`)
 - Go `1.26.5` for the bridge build
-- Alpine `3.22.1` by OCI index digest for fixture/setup/capture pods
+- Alpine `3.22.5` by immutable amd64 manifest digest for fixture/setup/capture pods
 
 Do not use these manifests against the existing production or home-lab cluster. The
 live step requires a separate disposable Kubernetes context.
