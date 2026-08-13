@@ -123,6 +123,14 @@ grep -Fq 'select(.platform != null and .platform.os != "unknown" and .platform.a
   echo "release platform inspection must ignore provenance attestation descriptors" >&2
   exit 1
 }
+grep -Fq 'retry_cosign()' "$release_workflow" || {
+  echo "release signing must retry transient Sigstore failures" >&2
+  exit 1
+}
+grep -Fq "cosign operation failed after 3 attempts" "$release_workflow" || {
+  echo "release signing retry bound is missing" >&2
+  exit 1
+}
 
 repository="ghcr.io/astatide1337/agw-operator"
 repository_pattern="$(jq -r '.properties.image.properties.repository.pattern' v3/charts/agw-operator/values.schema.json)"
