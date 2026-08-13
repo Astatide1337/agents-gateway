@@ -71,6 +71,32 @@ The selected engine is `docker` by default and can be changed with
 does not pass `--pull`, does not push, and does not prune; the runtime helper
 scripts may resolve the current Codex/Claude package from npm when building.
 
+## Fast local image proof
+
+The first direct Codex AgentRun must not wait for the release workflow. Build
+only the images that the direct backend actually consumes:
+
+```bash
+./scripts/build-local-proof-images.sh \
+  --output /tmp/agw-v3-proof-images.env
+```
+
+This builds 12 amd64 images: the operator, direct-backend helpers, preflight,
+the Codex runtime, and the verifier. It deliberately does not build Claude,
+the optional critic, or the Argo lifecycle image. It performs only each image's
+contract validator; it does not invoke GitHub Actions, QEMU, a registry push,
+Trivy, SBOM generation, Cosign, or cleanup/prune commands.
+
+The generated map contains local tags and engine image IDs for a disposable
+proof cluster. Those values are not production references: the chart and
+admission path still require registry-published `@sha256:` image references for
+any real deployment.
+
+Use `--image NAME` one or more times to build a smaller subset while iterating,
+and `--list` to show the direct-Codex profile. The full fifteen-image,
+multi-architecture, signed release remains an explicit operation in
+`.github/workflows/v3-release.yml`; it is not an end-to-end test prerequisite.
+
 ## Explicit reductions for constrained shells
 
 The required checks run by default. If a local machine is offline or resource
