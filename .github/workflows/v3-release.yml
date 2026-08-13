@@ -137,7 +137,7 @@ jobs:
           ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/workflows/v3-release.yml"), aliases: true); puts "workflow YAML: OK"'
           bash v3/scripts/validate-release-contract.sh
 
-          mapfile -t dockerfiles < <(rg '^            dockerfile: v3/' .github/workflows/v3-release.yml | sed 's/.*dockerfile: //')
+          mapfile -t dockerfiles < <(grep -E '^            dockerfile: v3/' .github/workflows/v3-release.yml | sed 's/.*dockerfile: //')
           test "${#dockerfiles[@]}" -eq 15
           for dockerfile in "${dockerfiles[@]}"; do
             test -f "$dockerfile"
@@ -150,7 +150,7 @@ jobs:
           # reintroduction of a mutable latest tag without banning the word in
           # documentation or Dockerfile dependency comments.
           MUTABLE_TAG_WORD=latest
-          if rg -n "tags.*:${MUTABLE_TAG_WORD}|IMAGE_REF.*:${MUTABLE_TAG_WORD}|image.*:${MUTABLE_TAG_WORD}" .github/workflows/v3-release.yml; then
+          if grep -En "tags.*:${MUTABLE_TAG_WORD}|IMAGE_REF.*:${MUTABLE_TAG_WORD}|image.*:${MUTABLE_TAG_WORD}" .github/workflows/v3-release.yml; then
             echo 'mutable latest image tag found in release workflow' >&2
             exit 1
           fi
