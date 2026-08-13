@@ -26,6 +26,14 @@ rules:
       - create
       - update
       - patch
+  # Leader-election events are emitted in the system namespace.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
   # Preflight evidence has one fixed identity. The operator performs a named
   # GET and never needs to enumerate this namespace's ConfigMaps.
   - apiGroups:
@@ -87,8 +95,9 @@ rules:
     verbs:
       - get
       - list
+      - patch
       - watch
-  # Only AgentRun status and finalizers are operator-owned subresources.
+  # Only AgentRun status is an operator-owned subresource.
   - apiGroups:
       - agents.astatide.com
     resources:
@@ -97,12 +106,6 @@ rules:
       - get
       - update
       - patch
-  - apiGroups:
-      - agents.astatide.com
-    resources:
-      - agentruns/finalizers
-    verbs:
-      - update
   # agent-sandbox owns the resulting Pods. AGW creates and observes Sandbox
   # children; the narrower Pod/log grants below are only for bounded capture
   # and verifier evidence, never mutation or exec.

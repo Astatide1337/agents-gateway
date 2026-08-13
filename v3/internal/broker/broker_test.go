@@ -152,6 +152,7 @@ type testTransport struct {
 	failModel      bool
 	modelContent   string
 	modelBody      string
+	modelResponder func(int, []byte) (string, string)
 	mcpResult      string
 	mcpEncoding    string
 	invalidMCP     bool
@@ -169,11 +170,11 @@ func (t *testTransport) RoundTrip(request *http.Request) (*http.Response, error)
 	if request.URL.Path == "/mcp" {
 		t.mcpCalls++
 	}
-	if request.URL.Path == "/v1/responses" {
+	if request.URL.Path == "/v1/responses" || request.URL.Path == "/api/v1/responses" {
 		t.modelCalls++
 	}
 	failMCP, failModel, invalidMCP, checkSession := t.failMCP, t.failModel, t.invalidMCP, t.checkSessionID
-	modelContent, modelBody, mcpResult, mcpEncoding := t.modelContent, t.modelBody, t.mcpResult, t.mcpEncoding
+	modelContent, modelBody, modelResponder, modelCall, mcpResult, mcpEncoding := t.modelContent, t.modelBody, t.modelResponder, t.modelCalls, t.mcpResult, t.mcpEncoding
 	t.mu.Unlock()
 
 	if request.URL.Path == "/mcp" {
@@ -212,9 +213,13 @@ func (t *testTransport) RoundTrip(request *http.Request) (*http.Response, error)
 			return nil, errors.New("unexpected MCP method")
 		}
 	}
-	if request.URL.Path == "/v1/responses" {
+	if request.URL.Path == "/v1/responses" || request.URL.Path == "/api/v1/responses" {
 		if failModel {
 			return nil, errors.New("model failed with bearer=super-secret")
+		}
+		if modelResponder != nil {
+			contentType, responseBody := modelResponder(modelCall, body)
+			return jsonResponse(http.StatusOK, responseBody, contentType, ""), nil
 		}
 		if modelContent == "" {
 			modelContent = "application/json"

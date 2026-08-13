@@ -545,7 +545,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diagnostics io.
 		return emitRunFailure(e, "codex_output_incomplete", errors.New("Codex did not emit a completed turn"), diagnostics)
 	}
 	if processErr != nil {
-		return emitRunFailure(e, "codex_failed", classifyCodexProcessFailure(processErr, childDiagnostics.String()), diagnostics)
+		return emitRunFailure(e, "codex_failed", classifyCodexProcessFailure(processErr, childDiagnostics.String(), codexOutput.sawAssistantMessage), diagnostics)
 	}
 	result := map[string]any{"status": "completed"}
 	if codexOutput.lastMessage != "" {
@@ -626,19 +626,24 @@ func (b *boundedChildDiagnostics) String() string {
 	return b.buf.String()
 }
 
-func classifyCodexProcessFailure(processErr error, diagnostics string) error {
+func classifyCodexProcessFailure(processErr error, diagnostics string, sawAssistantMessage bool) error {
 	lower := strings.ToLower(diagnostics)
 	switch {
-	case strings.Contains(lower, "mcp"):
-		return errors.New("Codex MCP initialization failed")
+	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "read-only file system"):
+		return errors.New("Codex encountered a sandbox filesystem restriction")
 	case strings.Contains(lower, "model provider"), strings.Contains(lower, "model_provider"):
 		return errors.New("Codex model provider configuration failed")
 	case strings.Contains(lower, "connection refused"), strings.Contains(lower, "error sending request"), strings.Contains(lower, "failed to connect"):
 		return errors.New("Codex could not reach the local broker")
-	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "read-only file system"):
-		return errors.New("Codex encountered a sandbox filesystem restriction")
+	case !sawAssistantMessage && (strings.Contains(lower, "required mcp servers failed to initialize") ||
+		strings.Contains(lower, "handshaking with mcp server failed") ||
+		strings.Contains(lower, "failed to initialize mcp server") ||
+		strings.Contains(lower, "mcp server failed to start")):
+		return errors.New("Codex MCP initialization failed")
 	case strings.Contains(lower, "unexpected argument"), strings.Contains(lower, "unknown argument"), strings.Contains(lower, "unrecognized option"):
 		return errors.New("Codex CLI arguments are incompatible with the installed version")
+	case sawAssistantMessage:
+		return errors.New("Codex terminated before completing its turn")
 	default:
 		return processErr
 	}
@@ -689,10 +694,11 @@ func uploadRunOutput(ctx context.Context, endpoint string, result map[string]any
 }
 
 type outputResult struct {
-	lastMessage      string
-	upstreamError    string
-	err              error
-	sawTurnCompleted bool
+	lastMessage         string
+	upstreamError       string
+	err                 error
+	sawAssistantMessage bool
+	sawTurnCompleted    bool
 }
 
 func consumeCodexOutput(reader io.Reader, e *emitter) outputResult {
@@ -713,6 +719,7 @@ func consumeCodexOutput(reader io.Reader, e *emitter) outputResult {
 			case "item.completed":
 				var item codexItem
 				if json.Unmarshal(event.Item, &item) == nil && item.Type == "agent_message" && item.Text != "" {
+					result.sawAssistantMessage = true
 					result.lastMessage = truncate(redactText(item.Text), 64<<10)
 					if emitErr := e.emit(proto.EventAssistantMessage, false, map[string]string{"message": result.lastMessage, "role": "assistant"}); emitErr != nil {
 						result.err = emitErr

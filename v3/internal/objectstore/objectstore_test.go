@@ -307,6 +307,23 @@ func TestGetClosesBodyWhenClientReturnsAnError(t *testing.T) {
 	}
 }
 
+func TestGetPreservesDefinitiveNotFoundMarker(t *testing.T) {
+	store := testStore(t, &fakeClient{
+		get: func(context.Context, *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+			return nil, responseError(http.StatusNotFound, "NoSuchKey")
+		},
+	}, 1024)
+
+	got, err := store.Get(context.Background(), "missing")
+	if got != nil || err == nil {
+		t.Fatalf("Get() = (%q, %v), want a not-found error", got, err)
+	}
+	var marker interface{ NotFound() bool }
+	if !errors.As(err, &marker) || !marker.NotFound() {
+		t.Fatalf("Get() error = %v, want a wrapped NotFound marker", err)
+	}
+}
+
 func TestValidation(t *testing.T) {
 	tests := []struct {
 		name string

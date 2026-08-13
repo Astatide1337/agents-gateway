@@ -70,7 +70,10 @@ const (
 	applyEntrypoint   = "/agw/apply"
 	lockdownShell     = "sh"
 	lockdownShellArgs = "-ceu"
-	verifyEntrypoint  = "/agw/verify"
+	// Keep this path aligned with the verifier image contract. The image
+	// validator and Containerfile publish /agw/verifier; invoking a different
+	// path would fail only when an independent Gate pod starts.
+	verifyEntrypoint = "/agw/verifier"
 
 	defaultMaxCommandBytes = 64 << 10
 	hardMaxCommandBytes    = 256 << 10

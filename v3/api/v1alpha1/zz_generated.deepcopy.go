@@ -230,6 +230,10 @@ func (in *AgentRunStatus) DeepCopyInto(out *AgentRunStatus) {
 		in, out := &in.StartedAt, &out.StartedAt
 		*out = (*in).DeepCopy()
 	}
+	if in.VerificationStartedAt != nil {
+		in, out := &in.VerificationStartedAt, &out.VerificationStartedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.CompletedAt != nil {
 		in, out := &in.CompletedAt, &out.CompletedAt
 		*out = (*in).DeepCopy()

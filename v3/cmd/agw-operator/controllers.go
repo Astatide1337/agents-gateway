@@ -171,6 +171,7 @@ func registerControllers(ctx context.Context, mgr ctrl.Manager, options controll
 	captureDriver, err := capturecontroller.New(mgr.GetClient(), capturecontroller.Options{
 		Logs: podLogReader{client: clientset}, Artifacts: store,
 		MaxLogBytes: capture.MaxEncodedFrameBytes(capture.DefaultMaxResultBytes, capture.DefaultMaxPatchBytes, capture.DefaultMaxManifestBytes),
+		Reader:      mgr.GetAPIReader(),
 	})
 	if err != nil {
 		return fmt.Errorf("configure capture phase: %w", err)

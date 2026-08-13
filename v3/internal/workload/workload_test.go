@@ -250,8 +250,8 @@ func TestBuildProducesADR006ADR007WorkTopology(t *testing.T) {
 	if requestedStorage.String() != "8Gi" || limitedStorage.String() != "8Gi" {
 		t.Fatalf("workspace PVC resources=%v, want 8Gi request and limit", claim.Spec.Resources)
 	}
-	if volumeByName(pod.Volumes, SkillsVolumeName).EmptyDir == nil || volumeByName(pod.Volumes, ContextVolumeName).EmptyDir == nil || volumeByName(pod.Volumes, BrokerScratchVolumeName).EmptyDir == nil {
-		t.Fatal("skills, context, and broker scratch are not emptyDir volumes")
+	if volumeByName(pod.Volumes, SkillsVolumeName).EmptyDir == nil || volumeByName(pod.Volumes, ContextVolumeName).EmptyDir == nil {
+		t.Fatal("skills and context are not emptyDir volumes")
 	}
 
 	secretByName := map[string]corev1.Volume{}
@@ -278,6 +278,9 @@ func TestBuildProducesADR006ADR007WorkTopology(t *testing.T) {
 	clone := containerByName(pod.InitContainers, "clone")
 	if clone.SecurityContext.RunAsUser == nil || *clone.SecurityContext.RunAsUser != 0 || clone.SecurityContext.Privileged == nil || *clone.SecurityContext.Privileged {
 		t.Fatalf("clone must be unprivileged namespace-root: %#v", clone.SecurityContext)
+	}
+	if len(clone.SecurityContext.Capabilities.Add) != 1 || clone.SecurityContext.Capabilities.Add[0] != corev1.Capability("CHOWN") {
+		t.Fatalf("clone capabilities=%v, want only CHOWN", clone.SecurityContext.Capabilities)
 	}
 	if !hasExactDirectSecretItemMount(clone, CloneSecretVolumeName, CloneTokenFile, "token") {
 		t.Fatal("clone is missing its direct-file credential projection")
@@ -383,6 +386,12 @@ func TestBuildProducesADR006ADR007WorkTopology(t *testing.T) {
 	if envValue(broker, "AGW_OBJECT_STORE_PREFIX") != "agents-gateway/v3" || envValue(broker, "AGW_EFFECTS_PREFIX") != "runs/"+snapshot.Run.UID+"/effects" {
 		t.Fatal("broker object-store paths are not fenced to the configured root and run")
 	}
+	if envValue(broker, "AGW_BASE_SHA") != snapshot.BaseSHA {
+		t.Fatalf("broker base SHA=%q, want immutable base %q", envValue(broker, "AGW_BASE_SHA"), snapshot.BaseSHA)
+	}
+	if got := envValue(broker, "AGW_PRICING_JSON"); got != "" {
+		t.Fatalf("unpriced test route unexpectedly emitted pricing=%q", got)
+	}
 	if envValue(broker, "AGW_MAX_TOOL_CALLS") != "60" || envValue(broker, "AGW_MAX_COST_USD") != "2.00" || envValue(broker, "AGW_MAX_MODEL_TOKENS") != "0" {
 		t.Fatalf("broker run limits are not copied from the immutable snapshot: toolCalls=%q cost=%q tokens=%q", envValue(broker, "AGW_MAX_TOOL_CALLS"), envValue(broker, "AGW_MAX_COST_USD"), envValue(broker, "AGW_MAX_MODEL_TOKENS"))
 	}
@@ -398,8 +407,21 @@ func TestBuildProducesADR006ADR007WorkTopology(t *testing.T) {
 	if envValue(broker, "AGW_CONTEXT_PACK_DIR") != ContextBrokerMountPath {
 		t.Fatalf("broker context path=%q, want %q", envValue(broker, "AGW_CONTEXT_PACK_DIR"), ContextBrokerMountPath)
 	}
-	if mount := namedMount(broker, BrokerScratchVolumeName, BrokerScratchPath); mount == nil || mount.ReadOnly {
-		t.Fatalf("broker scratch mount=%#v, want writable through pod fsGroup", mount)
+	if envValue(broker, "AGW_BROKER_SCRATCH") != "" {
+		t.Fatal("broker should use the content-addressed object store for tool-result storage")
+	}
+}
+
+func TestBuildEmitsDeclarativeModelPricingForBroker(t *testing.T) {
+	snapshot := testSnapshot()
+	snapshot.ModelRoute.Providers[0].Pricing = &v1alpha1.ModelPricing{InputMicrosPerToken: 3, OutputMicrosPerToken: 7}
+	manifest, err := Build(snapshot, testOptions(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := containerByName(manifest.Spec.PodTemplate.Spec.Containers, "broker")
+	if got := envValue(broker, "AGW_PRICING_JSON"); got != `{"openrouter":{"inputMicrosPerToken":3,"outputMicrosPerToken":7}}` {
+		t.Fatalf("pricing JSON=%q", got)
 	}
 }
 

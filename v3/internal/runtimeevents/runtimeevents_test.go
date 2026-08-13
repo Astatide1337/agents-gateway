@@ -503,6 +503,20 @@ func TestStoreUnavailableDoesNotBecomeCorruption(t *testing.T) {
 	}
 }
 
+type wrappedNotFoundMarker struct{}
+
+func (wrappedNotFoundMarker) Error() string  { return "object missing" }
+func (wrappedNotFoundMarker) NotFound() bool { return true }
+
+func TestLoadCompletionRecognizesWrappedNotFound(t *testing.T) {
+	store := newMemoryStore()
+	store.getErr = fmt.Errorf("s3 get: %w", wrappedNotFoundMarker{})
+	repository := &Repository{store: store}
+	if _, err := repository.LoadCompletion(context.Background(), "run-uid", testSpecDigest); !errors.Is(err, ErrMissing) {
+		t.Fatalf("LoadCompletion() error = %v, want ErrMissing", err)
+	}
+}
+
 func TestEveryRuntimeObjectIsFencedBelowExactRunPrefix(t *testing.T) {
 	store := newMemoryStore()
 	collector := newTestCollector(t, store, Options{})

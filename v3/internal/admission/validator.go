@@ -41,7 +41,6 @@ func (v *Validator) Handle(ctx context.Context, req webhookadmission.Request) we
 	if req.Operation == admissionv1.Delete {
 		return webhookadmission.Allowed("deletion does not create an execution boundary")
 	}
-
 	run := &v1alpha1.AgentRun{}
 	if err := v.Decoder.Decode(req, run); err != nil {
 		return webhookadmission.Errored(400, fmt.Errorf("decode AgentRun: %w", err))
@@ -69,6 +68,17 @@ func (v *Validator) Handle(ctx context.Context, req webhookadmission.Request) we
 	}
 	if err := ValidateAgentRunStatic(run, previous); err != nil {
 		return webhookadmission.Denied(err.Error())
+	}
+	// Finalizer cleanup is a controller-owned teardown operation. Once the API
+	// server has marked the run for deletion, do not let an expired preflight
+	// attestation strand the resource and its workspace forever. The static
+	// validator has already required this to be a one-way removal of the
+	// operator's cleanup finalizer; ordinary user updates still take the full
+	// dynamic, fail-closed path below.
+	if run.DeletionTimestamp != nil && previous != nil &&
+		containsFinalizer(previous.Finalizers, "agw.astatide.com/cleanup") &&
+		!containsFinalizer(run.Finalizers, "agw.astatide.com/cleanup") {
+		return webhookadmission.Allowed("controller cleanup finalizer removal is valid during deletion")
 	}
 	// Cancellation is an availability and safety operation: once its one-way
 	// transition is validated, stale preflight state or a deleted configuration

@@ -521,6 +521,59 @@ func TestTerminalCleanupRevokesCredentialsAndSandboxesWhenArtifactStoreIsUnavail
 	}
 }
 
+func TestDeletingRunCleanupIgnoresPostAdmissionGenerationChange(t *testing.T) {
+	scheme := testScheme(t)
+	run := testRun()
+	run.Generation = 2
+	run.Finalizers = []string{AgentRunFinalizer}
+	deletionTime := metav1.NewTime(time.Date(2026, 8, 12, 21, 0, 0, 0, time.UTC))
+	run.DeletionTimestamp = &deletionTime
+	baseSHA := strings.Repeat("e", 40)
+	snapshot := testSnapshot(run, baseSHA, v1alpha1.GateEnforcing)
+	snapshot.Run.Generation = 1
+	body, err := canonical.CanonicalizeResolvedSpec(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonical.ResolvedSpecDigest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status.SpecDigest = digest
+	run.Status.BaseSHA = baseSHA
+	run.Status.WorkSandboxRef = &v1alpha1.ChildRef{
+		Name: testChildName(run, sandbox.RoleWork), Kind: sandbox.ChildKindSandbox,
+		UID: "work-uid", Role: string(sandbox.RoleWork), SpecDigest: digest,
+		PlanFingerprint: testPlanFingerprint(),
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.AgentRun{}).WithObjects(run).Build()
+	cleaner := &cleanerFake{}
+	captureDriver := &capturePhaseFake{}
+	reconciler := &AgentRunReconciler{
+		Client: kube, APIReader: kube, Artifacts: &writerFake{body: body},
+		Sandboxes: cleaner, Capture: captureDriver,
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(run)}); err != nil {
+		t.Fatal(err)
+	}
+	if captureDriver.cleanupCalls != 1 {
+		t.Fatalf("capture cleanup calls = %d, want 1", captureDriver.cleanupCalls)
+	}
+	if len(cleaner.refs) != 1 || cleaner.refs[0].Role != sandbox.RoleWork {
+		t.Fatalf("sandbox cleanup refs = %#v, want work child", cleaner.refs)
+	}
+	current := &v1alpha1.AgentRun{}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(run), current); !apierrors.IsNotFound(err) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contains(current.Finalizers, AgentRunFinalizer) {
+			t.Fatal("cleanup finalizer was retained after deleting a run with a changed generation")
+		}
+	}
+}
+
 func ownedRunSecret(run *v1alpha1.AgentRun, name string) *corev1.Secret {
 	controller := true
 	blockOwnerDeletion := true

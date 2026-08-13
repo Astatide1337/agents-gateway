@@ -67,10 +67,10 @@ func run(ctx context.Context, lookup func(string) (string, bool)) error {
 	if err := verifyCheckoutSHA(ctx, spec.RepoPath, env, spec.BaseSHA); err != nil {
 		return err
 	}
-	if _, err := runGit(ctx, spec.RepoPath, env, "apply", "--check", "--", spec.PatchPath); err != nil {
+	if _, err := runGit(ctx, spec.RepoPath, env, repoGitArgs(spec.RepoPath, "apply", "--check", "--", spec.PatchPath)...); err != nil {
 		return errGitOperation
 	}
-	if _, err := runGit(ctx, spec.RepoPath, env, "apply", "--whitespace=error", "--", spec.PatchPath); err != nil {
+	if _, err := runGit(ctx, spec.RepoPath, env, repoGitArgs(spec.RepoPath, "apply", "--whitespace=error", "--", spec.PatchPath)...); err != nil {
 		return errGitOperation
 	}
 	if digestBytes(patch) != spec.PatchDigest {
@@ -148,11 +148,21 @@ func readPatch(spec applySpec) ([]byte, error) {
 }
 
 func verifyCheckoutSHA(ctx context.Context, repo string, env []string, expected string) error {
-	output, err := runGit(ctx, repo, env, "rev-parse", "--verify", "HEAD^{commit}")
+	output, err := runGit(ctx, repo, env, repoGitArgs(repo, "rev-parse", "--verify", "HEAD^{commit}")...)
 	if err != nil || strings.TrimSpace(string(output)) != expected {
 		return errGitOperation
 	}
 	return nil
+}
+
+// repoGitArgs opts the verifier into exactly its fixed checkout path. The
+// fetch init runs as namespace root and the apply/verifier steps run as UID
+// 1000, so Git's ownership guard would otherwise reject this intentional
+// hand-off. No repository-controlled or global Git configuration is enabled.
+func repoGitArgs(repo string, args ...string) []string {
+	result := make([]string, 0, len(args)+2)
+	result = append(result, "-c", "safe.directory="+repo)
+	return append(result, args...)
 }
 
 func safeGitEnvironment() []string {

@@ -208,11 +208,11 @@ func TestOperatorRBACIsNamespacedAndLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"get", "create", "update", "patch"}},
 		{APIGroups: []string{""}, Resources: []string{"configmaps"}, ResourceNames: []string{"agw-preflight"}, Verbs: []string{"get"}},
 		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
+		{APIGroups: []string{""}, Resources: []string{"events"}, Verbs: []string{"create", "patch"}},
 	}
 	expectedRuns := []rbacv1.PolicyRule{
-		{APIGroups: []string{"agents.astatide.com"}, Resources: []string{"agents", "agentruns", "gates", "toolsets", "modelroutes", "policies", "contextstrategies"}, Verbs: []string{"get", "list", "watch"}},
+		{APIGroups: []string{"agents.astatide.com"}, Resources: []string{"agents", "agentruns", "gates", "toolsets", "modelroutes", "policies", "contextstrategies"}, Verbs: []string{"get", "list", "watch", "patch"}},
 		{APIGroups: []string{"agents.astatide.com"}, Resources: []string{"agentruns/status"}, Verbs: []string{"get", "update", "patch"}},
-		{APIGroups: []string{"agents.astatide.com"}, Resources: []string{"agentruns/finalizers"}, Verbs: []string{"update"}},
 		{APIGroups: []string{"agents.x-k8s.io"}, Resources: []string{"sandboxes"}, Verbs: []string{"get", "list", "watch", "create", "delete"}},
 		{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get"}},
 		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "create", "delete"}},

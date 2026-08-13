@@ -611,6 +611,21 @@ type ModelProvider struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=1000
 	Priority int32 `json:"priority"`
+	// Pricing is optional only for zero-cost routes. When present, the values
+	// are micro-USD per token and are copied into the broker's exact pricing
+	// table for this provider.
+	Pricing *ModelPricing `json:"pricing,omitempty"`
+}
+
+// ModelPricing is deliberately integer-based so cost accounting never uses
+// floating point values. A zero value is valid for explicitly free models.
+type ModelPricing struct {
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000000000000
+	InputMicrosPerToken int64 `json:"inputMicrosPerToken"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000000000000
+	OutputMicrosPerToken int64 `json:"outputMicrosPerToken"`
 }
 
 // ModelBudget bounds provider spend.
@@ -758,10 +773,14 @@ type AgentRunStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	ToolCallCount int64 `json:"toolCallCount,omitempty"`
 	// +kubebuilder:validation:Pattern=`^$|^(0|[1-9][0-9]{0,5})([.][0-9]{1,6})?$`
-	CostUSD     string         `json:"costUsd,omitempty"`
-	Failure     *FailureStatus `json:"failure,omitempty"`
-	StartedAt   *metav1.Time   `json:"startedAt,omitempty"`
-	CompletedAt *metav1.Time   `json:"completedAt,omitempty"`
+	CostUSD   string         `json:"costUsd,omitempty"`
+	Failure   *FailureStatus `json:"failure,omitempty"`
+	StartedAt *metav1.Time   `json:"startedAt,omitempty"`
+	// VerificationStartedAt anchors the independent verify Sandbox deadline.
+	// It is persisted once when the run enters verification so controller
+	// retries do not mutate an already-created child specification.
+	VerificationStartedAt *metav1.Time `json:"verificationStartedAt,omitempty"`
+	CompletedAt           *metav1.Time `json:"completedAt,omitempty"`
 	// +kubebuilder:validation:MaxItems=16
 	// +listType=map
 	// +listMapKey=type

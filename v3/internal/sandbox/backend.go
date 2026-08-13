@@ -623,12 +623,13 @@ func validateSandbox(sandbox *sandboxv1beta1.Sandbox, role Role, now time.Time, 
 		return err
 	}
 	for index, container := range pod.InitContainers {
-		if err := validateContainerSecurity(container, container.Name == "lockdown" && index == len(pod.InitContainers)-1, false); err != nil {
+		allowCloneChown := role == RoleWork && index == 0 && container.Name == "clone"
+		if err := validateContainerSecurity(container, container.Name == "lockdown" && index == len(pod.InitContainers)-1, false, allowCloneChown); err != nil {
 			return err
 		}
 	}
 	for _, container := range pod.Containers {
-		if err := validateContainerSecurity(container, false, true); err != nil {
+		if err := validateContainerSecurity(container, false, true, false); err != nil {
 			return err
 		}
 	}
@@ -716,7 +717,7 @@ func validateRoleUIDs(pod corev1.PodSpec, role Role) error {
 	return nil
 }
 
-func validateContainerSecurity(container corev1.Container, lockdown bool, regular bool) error {
+func validateContainerSecurity(container corev1.Container, lockdown bool, regular bool, allowCloneChown bool) error {
 	security := container.SecurityContext
 	if security == nil {
 		return fmt.Errorf("%w: container %q must declare a securityContext", ErrInvalidSecurityPosture, container.Name)
@@ -758,7 +759,11 @@ func validateContainerSecurity(container corev1.Container, lockdown bool, regula
 		return nil
 	}
 
-	if len(security.Capabilities.Add) != 0 {
+	if allowCloneChown {
+		if len(security.Capabilities.Add) != 1 || security.Capabilities.Add[0] != corev1.Capability("CHOWN") {
+			return fmt.Errorf("%w: clone must add only CHOWN", ErrInvalidSecurityPosture)
+		}
+	} else if len(security.Capabilities.Add) != 0 {
 		return fmt.Errorf("%w: container %q may not add capabilities", ErrInvalidSecurityPosture, container.Name)
 	}
 	if !regular {

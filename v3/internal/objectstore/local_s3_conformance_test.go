@@ -319,6 +319,20 @@ func TestLocalSDKStoreConditionalArtifactRestartAndAmbiguity(t *testing.T) {
 	}
 }
 
+func TestLocalSDKStorePreservesMissingObjectMarker(t *testing.T) {
+	fixture := newLocalS3(t)
+	store := newLocalSDKStore(t, fixture)
+
+	_, err := store.Get(context.Background(), "runs/local-s3-conformance/missing.json")
+	if err == nil {
+		t.Fatal("Get() unexpectedly succeeded for a missing object")
+	}
+	var marker interface{ NotFound() bool }
+	if !errors.As(err, &marker) || !marker.NotFound() {
+		t.Fatalf("Get() error = %v, want a wrapped NotFound marker", err)
+	}
+}
+
 func TestLocalSDKStoreConditionalCreateHasOneWinner(t *testing.T) {
 	fixture := newLocalS3(t)
 	store := newLocalSDKStore(t, fixture)

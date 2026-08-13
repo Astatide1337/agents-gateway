@@ -51,6 +51,9 @@ func TestJobBackendEnsureIsIdempotentAndConvertsWorkAndVerifyPlans(t *testing.T)
 			if job.Labels[RunUIDLabelKey] != string(run.UID) || job.Labels[RoleLabelKey] != string(role) || job.Labels[ChildNameLabelKey] != first.Name {
 				t.Fatalf("Job identity labels=%v", job.Labels)
 			}
+			if job.Spec.Template.Labels[RunUIDLabelKey] != string(run.UID) || job.Spec.Template.Labels[RoleLabelKey] != string(role) || job.Spec.Template.Labels[ChildNameLabelKey] != first.Name {
+				t.Fatalf("Job pod identity labels=%v", job.Spec.Template.Labels)
+			}
 			if len(job.OwnerReferences) != 1 || job.OwnerReferences[0].UID != run.UID || !boolValue(job.OwnerReferences[0].Controller) {
 				t.Fatalf("Job owner reference=%#v", job.OwnerReferences)
 			}
@@ -166,6 +169,32 @@ func TestJobBackendTimeoutConversionRoundsUpFromBackendClock(t *testing.T) {
 	}
 	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != 91 {
 		t.Fatalf("active deadline=%v, want rounded-up 91 seconds", job.Spec.ActiveDeadlineSeconds)
+	}
+}
+
+func TestJobBackendEnsureIgnoresDerivedDeadlineClockDrift(t *testing.T) {
+	now := fixedTime()
+
+	kube := fakeJobBackendClient(t)
+	clock := now
+	backend, err := NewJobBackend(kube, BackendOptions{Now: func() time.Time { return clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := testRun()
+	plan := testPlan(run, RoleVerify, digest('a'), now)
+
+	first, err := backend.Ensure(t.Context(), plan)
+	if err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+	clock = clock.Add(10 * time.Second)
+	second, err := backend.Ensure(t.Context(), plan)
+	if err != nil {
+		t.Fatalf("ensure after clock drift: %v", err)
+	}
+	if first.PlanFingerprint != second.PlanFingerprint {
+		t.Fatalf("plan fingerprint changed with derived deadline: first=%q second=%q", first.PlanFingerprint, second.PlanFingerprint)
 	}
 }
 
@@ -302,6 +331,9 @@ func TestJobBackendAcceptsRealisticAPIServerJobDefaulting(t *testing.T) {
 			job.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{jobControllerUIDLabel: controllerUID}}
 			job.Spec.Template.Labels = map[string]string{
 				"app":                       "agent-work",
+				RunUIDLabelKey:              string(run.UID),
+				RoleLabelKey:                string(RoleWork),
+				ChildNameLabelKey:           job.Name,
 				jobControllerUIDLabel:       controllerUID,
 				jobNameLabel:                job.Name,
 				legacyJobControllerUIDLabel: controllerUID,
@@ -318,6 +350,7 @@ func TestJobBackendAcceptsRealisticAPIServerJobDefaulting(t *testing.T) {
 			pod.DNSPolicy = corev1.DNSClusterFirst
 			pod.SchedulerName = corev1.DefaultSchedulerName
 			pod.EnableServiceLinks = boolPtr(true)
+			pod.ShareProcessNamespace = boolPtr(false)
 			pod.TerminationGracePeriodSeconds = int64Ptr(30)
 			priority := int32(0)
 			pod.Priority = &priority
@@ -379,6 +412,11 @@ func simulateAPIServerContainerDefaults(container *corev1.Container) {
 	container.TerminationMessagePath = corev1.TerminationMessagePathDefault
 	container.TerminationMessagePolicy = corev1.TerminationMessageReadFile
 	container.Resources = corev1.ResourceRequirements{Limits: corev1.ResourceList{}, Requests: corev1.ResourceList{}}
+	for index := range container.Env {
+		if fieldRef := container.Env[index].ValueFrom; fieldRef != nil && fieldRef.FieldRef != nil {
+			fieldRef.FieldRef.APIVersion = "v1"
+		}
+	}
 }
 
 func TestJobBackendRejectsForeignAndSpecConflictsWithoutMutation(t *testing.T) {

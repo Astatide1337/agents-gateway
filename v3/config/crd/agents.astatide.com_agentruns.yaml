@@ -801,6 +801,13 @@ spec:
                 format: int64
                 minimum: 0
                 type: integer
+              verificationStartedAt:
+                description: |-
+                  VerificationStartedAt anchors the independent verify Sandbox deadline.
+                  It is persisted once when the run enters verification so controller
+                  retries do not mutate an already-created child specification.
+                format: date-time
+                type: string
               verifySandboxRef:
                 description: ChildRef identifies an operator-owned child resource.
                 properties:
@@ -875,7 +882,8 @@ spec:
         type: object
         x-kubernetes-validations:
         - message: cancelRequested cannot be cleared once true
-          rule: '!oldSelf.spec.cancelRequested || self.spec.cancelRequested'
+          rule: '!has(oldSelf.spec.cancelRequested) || !oldSelf.spec.cancelRequested
+            || (has(self.spec.cancelRequested) && self.spec.cancelRequested)'
     served: true
     storage: true
     subresources:

@@ -227,6 +227,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 		Key:    aws.String(fullKey),
 	})
 	if err != nil {
+		err = classifyGetError(err)
 		if output != nil && output.Body != nil {
 			closeErr := output.Body.Close()
 			if closeErr != nil {
@@ -253,6 +254,42 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: response for %q lacks a body or Content-Length", ErrInvalidResponse, fullKey)
 	}
 	return readExact(output.Body, *output.ContentLength, s.max)
+}
+
+// notFoundError preserves a definitive S3 404 across the adapter boundary.
+// Callers use errors.As with the small NotFound marker instead of depending on
+// one provider's concrete SDK error type.
+type notFoundError struct{ err error }
+
+func (e *notFoundError) Error() string  { return e.err.Error() }
+func (e *notFoundError) Unwrap() error  { return e.err }
+func (e *notFoundError) NotFound() bool { return true }
+
+func classifyGetError(err error) error {
+	if err == nil || !isObjectNotFound(err) {
+		return err
+	}
+	return &notFoundError{err: err}
+}
+
+func isObjectNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) && statusErr.HTTPStatusCode() == http.StatusNotFound {
+		return true
+	}
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(apiErr.ErrorCode())) {
+	case "nosuchkey", "nosuchobject", "notfound":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) objectKey(key string) (string, error) {

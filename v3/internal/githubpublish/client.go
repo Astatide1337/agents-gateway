@@ -49,6 +49,8 @@ const (
 	userAgent   = "agents-gateway-v3-publisher"
 )
 
+var branchProofDelays = [...]time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond}
+
 var (
 	// ErrInvalidConfig is returned only for an invalid adapter construction.
 	// It contains no configuration values or credentials.
@@ -365,14 +367,31 @@ func (c *Client) EnsureBranch(ctx context.Context, repo githubapp.Repository, re
 }
 
 func (c *Client) reconcileBranch(ctx context.Context, current session, repo githubapp.Repository, request publish.BranchRequest, fullRef string) (publish.BranchResult, error) {
-	observed, err := c.readRef(ctx, current, repo, fullRef)
-	if err != nil {
-		return publish.BranchResult{}, ErrUnclassified
+	// GitHub can return the successful ref-creation response before the new
+	// ref is visible to a subsequent GET. Reconcile with bounded read-only
+	// retries; never repeat the POST or PATCH mutation.
+	for attempt, delay := range branchProofDelays {
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return publish.BranchResult{}, ErrUnclassified
+			case <-timer.C:
+			}
+		}
+		observed, err := c.readRef(ctx, current, repo, fullRef)
+		if err == nil {
+			if observed.SHA != request.BaseSHA {
+				return publish.BranchResult{}, publish.ErrGitHubConflict
+			}
+			return publish.BranchResult{Name: request.Name, SHA: observed.SHA}, nil
+		}
+		if !errors.Is(err, errNotFound) || attempt == len(branchProofDelays)-1 {
+			return publish.BranchResult{}, ErrUnclassified
+		}
 	}
-	if observed.SHA != request.BaseSHA {
-		return publish.BranchResult{}, publish.ErrGitHubConflict
-	}
-	return publish.BranchResult{Name: request.Name, SHA: observed.SHA}, nil
+	return publish.BranchResult{}, ErrUnclassified
 }
 
 type blobPayload struct {
@@ -414,13 +433,6 @@ type commitPayload struct {
 		Name  string `json:"name"`
 		Email string `json:"email"`
 	} `json:"author"`
-	Commit struct {
-		Message string `json:"message"`
-		Author  struct {
-			Name  string `json:"name"`
-			Email string `json:"email"`
-		} `json:"author"`
-	} `json:"commit"`
 }
 
 type gitCommitRequest struct {
@@ -611,13 +623,13 @@ func (c *Client) createCommit(ctx context.Context, current session, repo githuba
 		return "", ErrUnclassified
 	}
 	var created commitPayload
-	if decodeJSON(response.body, &created) != nil || !validObjectSHA(created.SHA) || created.Tree.SHA != treeSHA || len(created.Parents) != 1 || created.Parents[0].SHA != request.BaseSHA || created.Commit.Message != request.Message || created.Commit.Author.Name != agwBotName || created.Commit.Author.Email != agwBotEmail {
+	if decodeJSON(response.body, &created) != nil || !validObjectSHA(created.SHA) || created.Tree.SHA != treeSHA || len(created.Parents) != 1 || created.Parents[0].SHA != request.BaseSHA || created.Message != request.Message || created.Author.Name != agwBotName || created.Author.Email != agwBotEmail {
 		return "", ErrUnclassified
 	}
 	return created.SHA, nil
 }
 
-func (c *Client) updateBranch(ctx context.Context, current session, repo githubapp.Repository, branch, commitSHA string) error {
+func (c *Client) updateBranch(ctx context.Context, current session, repo githubapp.Repository, branch, baseSHA, commitSHA string) error {
 	fullRef := "refs/heads/" + branch
 	apiRef := strings.Join(append([]string{"git", "refs", "heads"}, escapeParts(strings.Split(branch, "/"))...), "/")
 	response, err := c.do(ctx, current, http.MethodPatch, repoPath(repo)+"/"+apiRef, nil, map[string]any{
@@ -625,37 +637,48 @@ func (c *Client) updateBranch(ctx context.Context, current session, repo githuba
 		"force": false,
 	})
 	if err != nil {
-		observed, readErr := c.readRef(ctx, current, repo, fullRef)
-		if readErr == nil && observed.SHA == commitSHA {
-			return nil
-		}
-		if readErr == nil && observed.SHA != commitSHA {
-			return publish.ErrGitHubConflict
-		}
-		return ErrUnclassified
+		return c.reconcileUpdatedBranch(ctx, current, repo, fullRef, baseSHA, commitSHA)
 	}
 	if response.status != http.StatusOK {
-		observed, readErr := c.readRef(ctx, current, repo, fullRef)
-		if readErr == nil && observed.SHA == commitSHA {
-			return nil
-		}
-		if readErr == nil && observed.SHA != commitSHA {
-			return publish.ErrGitHubConflict
-		}
-		return ErrUnclassified
+		return c.reconcileUpdatedBranch(ctx, current, repo, fullRef, baseSHA, commitSHA)
 	}
 	var updated refPayload
 	if decodeJSON(response.body, &updated) != nil || updated.Ref != fullRef || updated.Object.Type != "commit" || updated.Object.SHA != commitSHA {
 		return ErrUnclassified
 	}
-	observed, err := c.readRef(ctx, current, repo, fullRef)
-	if err != nil {
-		return ErrUnclassified
+	return c.reconcileUpdatedBranch(ctx, current, repo, fullRef, baseSHA, commitSHA)
+}
+
+func (c *Client) reconcileUpdatedBranch(ctx context.Context, current session, repo githubapp.Repository, fullRef, baseSHA, commitSHA string) error {
+	for attempt, delay := range branchProofDelays {
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ErrUnclassified
+			case <-timer.C:
+			}
+		}
+		observed, err := c.readRef(ctx, current, repo, fullRef)
+		if err == nil {
+			switch observed.SHA {
+			case commitSHA:
+				return nil
+			case baseSHA:
+				// A successful GitHub ref update can be briefly hidden by a
+				// stale read. Continue with proof-only retries.
+			default:
+				return publish.ErrGitHubConflict
+			}
+		} else if !errors.Is(err, errNotFound) {
+			return ErrUnclassified
+		}
+		if attempt == len(branchProofDelays)-1 {
+			return ErrUnclassified
+		}
 	}
-	if observed.SHA != commitSHA {
-		return publish.ErrGitHubConflict
-	}
-	return nil
+	return ErrUnclassified
 }
 
 // EnsureCommit turns the verified manifest into Git blobs, a tree, a commit,
@@ -722,7 +745,7 @@ func (c *Client) EnsureCommit(ctx context.Context, repo githubapp.Repository, re
 	if err := c.readTree(ctx, current, repo, committed.Tree.SHA, files); err != nil {
 		return publish.CommitResult{}, ErrUnclassified
 	}
-	if err := c.updateBranch(ctx, current, repo, request.BranchName, commitSHA); err != nil {
+	if err := c.updateBranch(ctx, current, repo, request.BranchName, request.BaseSHA, commitSHA); err != nil {
 		return publish.CommitResult{}, err
 	}
 	return publish.CommitResult{
@@ -736,7 +759,7 @@ func (c *Client) EnsureCommit(ctx context.Context, repo githubapp.Repository, re
 }
 
 func proveCommit(commit commitPayload, request publish.CommitRequest, treeSHA string) bool {
-	return commit.Tree.SHA == treeSHA && len(commit.Parents) == 1 && commit.Parents[0].SHA == request.BaseSHA && commit.Commit.Message == request.Message && commit.Commit.Author.Name == agwBotName && commit.Commit.Author.Email == agwBotEmail
+	return commit.Tree.SHA == treeSHA && len(commit.Parents) == 1 && commit.Parents[0].SHA == request.BaseSHA && commit.Message == request.Message && commit.Author.Name == agwBotName && commit.Author.Email == agwBotEmail
 }
 
 func validateCommitRequest(request publish.CommitRequest) error {

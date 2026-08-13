@@ -274,9 +274,12 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
+		// The typed cache is intentionally limited to the run namespace. System
+		// credentials and preflight evidence are read through APIReader, so
+		// caching the system namespace would widen the operator's RBAC surface
+		// to every watched resource there without providing a controller need.
 		Cache: cache.Options{DefaultNamespaces: map[string]cache.Config{
-			runsNamespace:   {},
-			systemNamespace: {},
+			runsNamespace: {},
 		}},
 		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress:  probeAddr,

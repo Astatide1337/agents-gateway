@@ -77,6 +77,14 @@ func (b *Broker) invokeModelWire(ctx context.Context, body []byte, incoming http
 	if !ok || !providerSupportsWire(provider, wire) {
 		return zero, ErrDenied
 	}
+	upstreamBody := body
+	var flattened flattenedTools
+	if wire == modelWireResponses && provider.kind == "openrouter-responses" {
+		upstreamBody, flattened, err = flattenOpenRouterResponsesRequest(body)
+		if err != nil {
+			return zero, err
+		}
+	}
 	reservation, err := b.reserveModel(ctx, provider, body, maxOutput)
 	if err != nil {
 		return zero, err
@@ -92,7 +100,7 @@ func (b *Broker) invokeModelWire(ctx context.Context, body []byte, incoming http
 		return zero, err
 	}
 	defer zeroBytes(credential)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.endpoint, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.endpoint, bytes.NewReader(upstreamBody))
 	if err != nil {
 		return zero, ErrUpstreamUnavailable
 	}
@@ -141,6 +149,12 @@ func (b *Broker) invokeModelWire(ctx context.Context, body []byte, incoming http
 	}
 	if contentType == "application/json" && strictjson.ValidateObject(result) != nil {
 		return zero, ErrUpstreamInvalid
+	}
+	if wire == modelWireResponses && provider.kind == "openrouter-responses" {
+		result, err = restoreOpenRouterResponses(result, contentType, flattened)
+		if err != nil {
+			return zero, err
+		}
 	}
 	inputTokens, outputTokens, inputFound, outputFound := extractUsageForProvider(result, contentType, provider.kind)
 	if !inputFound {

@@ -321,6 +321,23 @@ exit 1
 	}
 }
 
+func TestRunDoesNotMisclassifyPostStartupMCPDiagnostic(t *testing.T) {
+	fake := fakeCodex(t, `
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"started work"}}'
+printf '%s\n' 'MCP server failed to start after the model turn' >&2
+exit 1
+`)
+	cfg := Config{CodexBinary: fake, ResponsesURL: "http://127.0.0.1:8787/v1", Workspace: t.TempDir(), Model: "gpt-test", MaxRuntime: time.Minute, TerminationGrace: time.Second}
+	var output bytes.Buffer
+	err := Run(context.Background(), strings.NewReader(runStartLine(t, "run-post-startup-mcp-error", "work")), &output, io.Discard, cfg)
+	if err == nil || !strings.Contains(err.Error(), "terminated before completing its turn") {
+		t.Fatalf("post-startup diagnostic was misclassified: %v", err)
+	}
+	if strings.Contains(err.Error(), "MCP initialization failed") {
+		t.Fatalf("post-startup diagnostic was reported as initialization failure: %v", err)
+	}
+}
+
 func TestBoundedChildDiagnostics(t *testing.T) {
 	var diagnostics boundedChildDiagnostics
 	payload := bytes.Repeat([]byte("x"), maxChildDiagnosticsBytes*2)
