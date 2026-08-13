@@ -2,9 +2,10 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
-image=${AGW_VERIFIER_IMAGE:-agw-verifier:dev}
+engine=${CONTAINER_ENGINE:-docker}
+image=${IMAGE:-${AGW_VERIFIER_IMAGE:-agw-verifier:dev}}
 
-exec docker build \
+exec "$engine" build \
   --pull \
   --file "$repo_root/v3/images/verifier/Containerfile" \
   --tag "$image" \
