@@ -18,6 +18,7 @@ expected=$'operator\nclone\nskills\ncontext\nlockdown\nbroker\ncapture\nverify-f
 help=$($SCRIPT --help)
 grep -F -- '--image NAME' <<<"$help" >/dev/null
 grep -F -- 'does not push, scan, sign, attest, or prune' <<<"$help" >/dev/null
+grep -F -- 'pinned with @sha256' <<<"$help" >/dev/null
 
 if "$SCRIPT" --image runtime-claude >/dev/null 2>&1; then
   echo 'runtime-claude unexpectedly accepted by direct-codex profile' >&2

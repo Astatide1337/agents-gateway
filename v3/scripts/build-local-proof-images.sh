@@ -145,7 +145,8 @@ parse_args() {
 }
 
 build_image() {
-  local name=$1 tag="$IMAGE_PREFIX-$name:local" helper
+  local name=$1 tag helper
+  tag="$IMAGE_PREFIX-$name:local"
   helper=$(image_build_helper "$name")
 
   printf '\n==> build local image: %s\n' "$name"
@@ -192,6 +193,7 @@ write_output() {
       local key=${name//-/_}
       printf 'AGW_PROOF_%s_IMAGE=%q\n' "${key^^}" "${IMAGE_REFS[$name]}"
       printf 'AGW_PROOF_%s_IMAGE_ID=%q\n' "${key^^}" "${IMAGE_IDS[$name]}"
+      printf 'AGW_PROOF_%s_PINNED_IMAGE=%q\n' "${key^^}" "${IMAGE_REFS[$name]}@${IMAGE_IDS[$name]}"
     done
   } >"$OUTPUT_FILE"
   chmod 0600 "$OUTPUT_FILE"
