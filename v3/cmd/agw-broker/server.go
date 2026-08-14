@@ -64,6 +64,10 @@ func newBrokerRuntime(ctx context.Context, config brokerConfig, storage storageD
 	}
 	if config.ContextPackDir != "" {
 		if _, err := policyBroker.PublishContextArtifact(ctx); err != nil {
+			// Keep the externally visible startup code stable while retaining the
+			// bounded validation reason in the sidecar log. This is the only
+			// useful diagnostic for a sealed context-pack mismatch.
+			log.Printf("context artifact initialization detail: %v", err)
 			return nil, configError{code: "context_artifact_initialization_failed"}
 		}
 	}

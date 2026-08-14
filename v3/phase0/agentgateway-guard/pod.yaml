@@ -27,7 +27,7 @@ spec:
       type: RuntimeDefault
   initContainers:
     - name: credential-fixture
-      image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+      image: docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
       imagePullPolicy: IfNotPresent
       command: [sh, -ceu]
       args:
@@ -99,7 +99,7 @@ spec:
           memory: 64Mi
   containers:
     - name: agent
-      image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+      image: docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
       imagePullPolicy: IfNotPresent
       command: [sh, -ceu]
       args:
@@ -231,7 +231,7 @@ spec:
       # This disposable probe reads only the recorder's non-secret evidence
       # endpoint. It has no canary volume or canary environment and uses the
       # same UID that the airlock permits to reach the recorder loopback.
-      image: docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+      image: docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
       imagePullPolicy: IfNotPresent
       command: [sh, -ceu]
       args:

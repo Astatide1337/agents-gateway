@@ -101,6 +101,26 @@ spec:
                       maxLength: 128
                       minLength: 1
                       type: string
+                    pricing:
+                      description: |-
+                        Pricing is optional only for zero-cost routes. When present, the values
+                        are micro-USD per token and are copied into the broker's exact pricing
+                        table for this provider.
+                      properties:
+                        inputMicrosPerToken:
+                          format: int64
+                          maximum: 1000000000000
+                          minimum: 0
+                          type: integer
+                        outputMicrosPerToken:
+                          format: int64
+                          maximum: 1000000000000
+                          minimum: 0
+                          type: integer
+                      required:
+                      - inputMicrosPerToken
+                      - outputMicrosPerToken
+                      type: object
                     priority:
                       format: int32
                       maximum: 1000

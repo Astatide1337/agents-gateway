@@ -21,6 +21,28 @@ import (
 	"github.com/Astatide1337/agents-gateway/v3/pkg/strictjson"
 )
 
+func TestCleanEnvironmentTrustsOnlyFixedVerifierCheckout(t *testing.T) {
+	environment := cleanEnvironment(map[string]string{
+		"GIT_CONFIG_COUNT":   "99",
+		"GIT_CONFIG_KEY_0":   "safe.directory",
+		"GIT_CONFIG_VALUE_0": "/tmp/untrusted",
+		"AGW_TEST_EXTRA":     "retained",
+	})
+	values := make(map[string]string, len(environment))
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[name] = value
+		}
+	}
+	if values["GIT_CONFIG_COUNT"] != "1" || values["GIT_CONFIG_KEY_0"] != "safe.directory" || values["GIT_CONFIG_VALUE_0"] != "/verify/workspace/repo" {
+		t.Fatalf("verifier Git trust was not fixed to the verification checkout: %#v", values)
+	}
+	if values["AGW_TEST_EXTRA"] != "retained" {
+		t.Fatalf("extra environment was not retained: %#v", values)
+	}
+}
+
 func TestRunEmitsOneIdentityBoundStrictFrame(t *testing.T) {
 	fixture := newFixture(t, map[string][]byte{"main.go": []byte("one\n")}, map[string][]byte{"main.go": []byte("two\n")})
 	fixture.patch = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-one\n+two\n"
@@ -231,6 +253,31 @@ func TestAnalyzeDetectsBinaryAndContentChangesWithSameSize(t *testing.T) {
 	}
 	if len(analysis.ChangedPaths) != 1 || analysis.ChangedPaths[0] != "data.bin" || !analysis.HasBinaryFiles || analysis.LinesChanged != 0 {
 		t.Fatalf("unexpected binary analysis: %+v", analysis)
+	}
+}
+
+func TestAnalyzeIgnoresReadOnlyWritableHandoffPermissions(t *testing.T) {
+	fixture := newFixture(t,
+		map[string][]byte{"unchanged.txt": []byte("same\n")},
+		map[string][]byte{"unchanged.txt": []byte("same\n"), "new.txt": []byte("new\n")},
+	)
+	if err := os.Chmod(filepath.Join(fixture.base, "unchanged.txt"), 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(fixture.repo, "unchanged.txt"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(fixture.repo, "new.txt"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	fixture.patch = "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n"
+	fixture.writePatch(t)
+	analysis, err := Analyze(fixture.repo, fixture.base, fixture.patchPath, DefaultMaxPatchBytes)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if len(analysis.ChangedPaths) != 1 || analysis.ChangedPaths[0] != "new.txt" {
+		t.Fatalf("handoff permissions changed the observed patch: %+v", analysis)
 	}
 }
 

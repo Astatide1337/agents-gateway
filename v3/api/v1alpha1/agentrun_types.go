@@ -11,7 +11,7 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // +kubebuilder:printcolumn:name="Gate",type="string",JSONPath=".status.gate.verdict"
 // +kubebuilder:printcolumn:name="PR",type="string",JSONPath=".status.effect.pullRequestUrl"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-// +kubebuilder:validation:XValidation:rule="!oldSelf.spec.cancelRequested || self.spec.cancelRequested",message="cancelRequested cannot be cleared once true"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.spec.cancelRequested) || !oldSelf.spec.cancelRequested || (has(self.spec.cancelRequested) && self.spec.cancelRequested)",message="cancelRequested cannot be cleared once true"
 type AgentRun struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

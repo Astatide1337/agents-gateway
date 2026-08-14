@@ -192,7 +192,7 @@ func (l *Ledger) Claim(ctx context.Context, claim Claim) (ClaimDecision, error) 
 			return ClaimDecision{Unknown: true, Claim: existing}, ErrUnknown
 		}
 		return ClaimDecision{Claim: existing}, nil
-	} else if !errors.Is(err, ErrNotFound) {
+	} else if !isNotFound(err) {
 		return ClaimDecision{}, err
 	}
 	return ClaimDecision{Unknown: true, Claim: existing}, ErrUnknown
@@ -312,7 +312,7 @@ func (l *Ledger) tombstoneExists(ctx context.Context, effectKey string) (bool, e
 		return false, ErrInvalidInput
 	}
 	body, err := l.store.Get(ctx, l.tombstoneKey(effectKey))
-	if errors.Is(err, ErrNotFound) {
+	if isNotFound(err) {
 		return false, nil
 	}
 	if err != nil {
@@ -323,6 +323,18 @@ func (l *Ledger) tombstoneExists(ctx context.Context, effectKey string) (bool, e
 		return false, ErrCorrupt
 	}
 	return true, nil
+}
+
+// isNotFound accepts both this package's sentinel and the provider-neutral
+// marker used by object-store adapters. The latter keeps the ledger boundary
+// independent of a concrete S3 SDK error type while still distinguishing an
+// absent object from an ambiguous read failure.
+func isNotFound(err error) bool {
+	if errors.Is(err, ErrNotFound) {
+		return true
+	}
+	var marker interface{ NotFound() bool }
+	return errors.As(err, &marker) && marker.NotFound()
 }
 
 func validClaim(claim Claim) bool {

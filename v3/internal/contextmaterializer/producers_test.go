@@ -148,6 +148,30 @@ func TestProduceRejectsUnsafeRepositoryInputs(t *testing.T) {
 	}
 }
 
+func TestProduceSkipsKnownBinaryAssets(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "public"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "public", "Inter-Regular.ttf"), []byte{0x00, 0xff, 0x00}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("safe\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Produce(context.Background(), ProducerConfig{
+		Root: root, Settings: ProducerSettings{Lexical: true},
+		Strategies: contextpack.ContextStrategies{Lexical: "local-ripgrep"}, Budgets: producerTestBudgets(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Lexical) != 1 || result.Lexical[0].Path != "README.md" {
+		t.Fatalf("binary asset entered lexical context: %#v", result.Lexical)
+	}
+}
+
 func TestProduceSymbolsFailClosedWithoutLocalAdapter(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0644); err != nil {

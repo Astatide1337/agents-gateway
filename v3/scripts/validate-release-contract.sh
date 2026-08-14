@@ -29,7 +29,7 @@ sed -n '/^  workflow_dispatch:/,/^permissions:/p' "$release_workflow" | grep -Fq
 
 action_pattern='^[[:space:]]+uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-fA-F]{40}[[:space:]]+#[[:space:]]+v[0-9][0-9A-Za-z._-]*[[:space:]]*$'
 mapfile -t v3_workflows < <(
-  rg --files .github/workflows | rg '(^|/)v3[^/]*\.ya?ml$' | sort || true
+  find .github/workflows -type f \( -name 'v3*.yml' -o -name 'v3*.yaml' \) -print | sort || true
 )
 test "${#v3_workflows[@]}" -gt 0 || { echo "no v3 workflows found" >&2; exit 1; }
 for workflow in "${v3_workflows[@]}"; do
@@ -40,11 +40,11 @@ for workflow in "${v3_workflows[@]}"; do
     echo "v3 workflow must expose workflow_dispatch: $workflow" >&2
     exit 1
   }
-  if rg -n '^  (push|pull_request|pull_request_target|schedule|repository_dispatch|workflow_run|workflow_call|workflow_dispatches):' "$workflow" | rg -v '^.*workflow_dispatch:'; then
+  if grep -En '^  (push|pull_request|pull_request_target|schedule|repository_dispatch|workflow_run|workflow_call|workflow_dispatches):' "$workflow" | grep -Ev '^.*workflow_dispatch:'; then
     echo "v3 workflow contains an automatic or externally callable trigger: $workflow" >&2
     exit 1
   fi
-  mapfile -t action_lines < <(rg '^[[:space:]]+uses:' "$workflow" || true)
+  mapfile -t action_lines < <(grep -E '^[[:space:]]+uses:' "$workflow" || true)
   test "${#action_lines[@]}" -gt 0 || {
     echo "no GitHub Action references found in $workflow" >&2
     exit 1
@@ -117,6 +117,18 @@ if grep -Eq '\.\[\$row\.chartValues\.repositoryKey\] = \$row\.image($|[^A-Za-z])
 fi
 grep -Fq '.[$row.chartValues.repositoryKey] = $row.imageRepository' "$release_workflow" || {
   echo "chart repository generation must use imageRepository" >&2
+  exit 1
+}
+grep -Fq 'select(.platform != null and .platform.os != "unknown" and .platform.architecture != "unknown")' "$release_workflow" || {
+  echo "release platform inspection must ignore provenance attestation descriptors" >&2
+  exit 1
+}
+grep -Fq 'retry_cosign()' "$release_workflow" || {
+  echo "release signing must retry transient Sigstore failures" >&2
+  exit 1
+}
+grep -Fq "cosign operation failed after 3 attempts" "$release_workflow" || {
+  echo "release signing retry bound is missing" >&2
   exit 1
 }
 

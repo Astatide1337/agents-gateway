@@ -44,7 +44,6 @@ const (
 	WorkspaceVolumeName      = "workspace"
 	SkillsVolumeName         = "skills"
 	ContextVolumeName        = "context-pack"
-	BrokerScratchVolumeName  = "broker-scratch"
 	CloneSecretVolumeName    = "clone-secret"
 	SkillsSecretVolumeName   = "skills-secret"
 	BrokerSecretVolumeName   = "broker-secret"
@@ -65,7 +64,6 @@ const (
 	SkillsMountPath         = "/opt/agw/skills"
 	ContextMountPath        = "/opt/agw/context"
 	ContextBrokerMountPath  = "/opt/agw/context-pack"
-	BrokerScratchPath       = "/run/agw/broker"
 	WorkspaceMountPath      = "/workspace"
 	WorkspaceRepoSubPath    = "repo"
 	WorkspaceBaseSubPath    = "base"
@@ -201,6 +199,10 @@ func Build(snapshot resolved.Snapshot, options Options) (*sandboxv1beta1.Sandbox
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode ModelRoute: %v", ErrInvalidInput, err)
 	}
+	pricingJSON, err := modelPricingJSON(snapshot.ModelRoute)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode model pricing: %v", ErrInvalidInput, err)
+	}
 	primary, err := primaryProvider(snapshot.ModelRoute)
 	if err != nil {
 		return nil, err
@@ -271,7 +273,7 @@ func Build(snapshot resolved.Snapshot, options Options) (*sandboxv1beta1.Sandbox
 		// Clone runs as namespace-root so it can leave /workspace/base owned by
 		// UID 0 and mode 0555 while handing /workspace/repo to UID 1000. With
 		// hostUsers:false this UID has no host-root authority.
-		SecurityContext: namespaceRootSecurityContext(),
+		SecurityContext: cloneSecurityContext(),
 		VolumeMounts: []corev1.VolumeMount{
 			workspaceMount(false),
 			// Secret directory projections are Kubernetes atomic-writer symlinks.
@@ -395,11 +397,12 @@ func Build(snapshot resolved.Snapshot, options Options) (*sandboxv1beta1.Sandbox
 			{Name: "AGW_BROKER_SECRET_FILES", Value: string(brokerSecretFiles)},
 			{Name: "AGW_TOOLSET_JSON", Value: string(toolSetJSON)},
 			{Name: "AGW_MODEL_ROUTE_JSON", Value: string(modelRouteJSON)},
+			{Name: "AGW_PRICING_JSON", Value: pricingJSON},
 			{Name: "AGW_WORKSPACE", Value: WorkspaceMountPath},
 			{Name: "AGW_CONTEXT_PACK_DIR", Value: ContextBrokerMountPath},
-			{Name: "AGW_BROKER_SCRATCH", Value: BrokerScratchPath},
 			{Name: "AGW_RUN_UID", Value: snapshot.Run.UID},
 			{Name: "AGW_SPEC_DIGEST", Value: specDigest},
+			{Name: "AGW_BASE_SHA", Value: snapshot.BaseSHA},
 			{Name: "AGW_EFFECTS_PREFIX", Value: "runs/" + snapshot.Run.UID + "/effects"},
 			{Name: "AGW_OBJECT_STORE_BUCKET", Value: options.ArtifactStoreBucket},
 			{Name: "AGW_OBJECT_STORE_REGION", Value: options.ArtifactStoreRegion},
@@ -418,7 +421,6 @@ func Build(snapshot resolved.Snapshot, options Options) (*sandboxv1beta1.Sandbox
 		SecurityContext: regularSecurityContext(1337),
 		VolumeMounts: []corev1.VolumeMount{
 			workspaceMount(true),
-			volumeMount(BrokerScratchVolumeName, BrokerScratchPath, false),
 			// The broker reads the dedicated ContextPack volume directly. It never
 			// reads the agent's workspace copy, which may contain agent-authored
 			// files and is therefore not an evidence source.
@@ -502,7 +504,6 @@ func Build(snapshot resolved.Snapshot, options Options) (*sandboxv1beta1.Sandbox
 							{Name: WorkspaceVolumeName, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: WorkspaceVolumeName}}},
 							{Name: SkillsVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 							{Name: ContextVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-							{Name: BrokerScratchVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						}, secretVolumes...),
 					},
 				},
@@ -726,6 +727,31 @@ func primaryProvider(route v1alpha1.ModelRouteSpec) (v1alpha1.ModelProvider, err
 	return selected, nil
 }
 
+func modelPricingJSON(route v1alpha1.ModelRouteSpec) (string, error) {
+	type pricing struct {
+		InputMicrosPerToken  int64 `json:"inputMicrosPerToken"`
+		OutputMicrosPerToken int64 `json:"outputMicrosPerToken"`
+	}
+	table := make(map[string]pricing)
+	for _, provider := range route.Providers {
+		if provider.Pricing == nil {
+			continue
+		}
+		table[provider.Name] = pricing{
+			InputMicrosPerToken:  provider.Pricing.InputMicrosPerToken,
+			OutputMicrosPerToken: provider.Pricing.OutputMicrosPerToken,
+		}
+	}
+	if len(table) == 0 {
+		return "", nil
+	}
+	body, err := json.Marshal(table)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
 func validateRuntimeModelPairing(harness v1alpha1.Harness, route v1alpha1.ModelRouteSpec) error {
 	for _, provider := range route.Providers {
 		isClaudeProvider := provider.Kind == "anthropic-messages" || provider.Kind == "openrouter-anthropic-messages"
@@ -768,6 +794,11 @@ func harnessRuntimeEnv(harness v1alpha1.Harness, provider v1alpha1.ModelProvider
 		return []corev1.EnvVar{
 			{Name: "AGW_CODEX_WORKSPACE", Value: WorkspaceMountPath + "/repo"},
 			{Name: "AGW_CODEX_MODEL", Value: model},
+			// The Kubernetes work Sandbox is the authoritative outer boundary.
+			// Codex's nested Linux sandbox cannot create user namespaces under the
+			// pod security profile, so the runtime delegates command isolation to
+			// the pod's UID/network/filesystem controls.
+			{Name: "AGW_CODEX_SANDBOX", Value: "danger-full-access"},
 			{Name: "AGW_CODEX_MAX_RUNTIME", Value: timeout},
 			{Name: "AGW_CODEX_REQUIRE_ARTIFACT", Value: "true"},
 		}
@@ -1029,6 +1060,15 @@ func namespaceRootSecurityContext() *corev1.SecurityContext {
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
+}
+
+func cloneSecurityContext() *corev1.SecurityContext {
+	security := namespaceRootSecurityContext()
+	// The clone helper must hand the working checkout to UID 1000 and seal the
+	// pristine checkout as UID 0. CHOWN is the only extra capability required;
+	// it is namespaced by hostUsers:false and remains paired with drop-ALL.
+	security.Capabilities.Add = []corev1.Capability{"CHOWN"}
+	return security
 }
 
 func lockdownSecurityContext() *corev1.SecurityContext {

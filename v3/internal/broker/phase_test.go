@@ -213,6 +213,30 @@ func TestMCPListFollowsExploreAndEditProfiles(t *testing.T) {
 	}
 }
 
+func TestMCPToolCallAcceptsClientMetadataWithoutForwardingIt(t *testing.T) {
+	transport := &testTransport{}
+	broker := newTestBroker(t, testBrokerOptions{transport: transport})
+	handler, err := broker.MCPHandler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body, err := performMCP(handler, "tools/call", map[string]any{
+		"name":      "read_issue",
+		"arguments": map[string]any{"issue": "427"},
+		"_meta":     map[string]any{"progressToken": 1, "client": "codex"},
+	})
+	if err != nil || status != http.StatusOK || bytes.Contains(body, []byte(`"error"`)) {
+		t.Fatalf("metadata tool call status=%d error=%v body=%s", status, err, body)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	for index, request := range transport.requests {
+		if request.URL.Path == "/mcp" && bytes.Contains(transport.bodies[index], []byte(`"method":"tools/call"`)) && bytes.Contains(transport.bodies[index], []byte(`"_meta"`)) {
+			t.Fatalf("client metadata leaked into upstream MCP request: %s", transport.bodies[index])
+		}
+	}
+}
+
 func TestVerifierOnlyProfileIsNotAgentSelectable(t *testing.T) {
 	config := newTestConfig(testBrokerOptions{})
 	config.ToolSet.Servers[0].Tools = append(config.ToolSet.Servers[0].Tools, v1alpha1.ToolDefinition{

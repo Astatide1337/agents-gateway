@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -263,20 +264,26 @@ func main() {
 
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: register Kubernetes scheme: %v\n", err)
 		os.Exit(1)
 	}
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: register Agents Gateway scheme: %v\n", err)
 		os.Exit(1)
 	}
 	if err := sandboxv1beta1.AddToScheme(scheme); err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: register Sandbox scheme: %v\n", err)
 		os.Exit(1)
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
+		// The typed cache is intentionally limited to the run namespace. System
+		// credentials and preflight evidence are read through APIReader, so
+		// caching the system namespace would widen the operator's RBAC surface
+		// to every watched resource there without providing a controller need.
 		Cache: cache.Options{DefaultNamespaces: map[string]cache.Config{
-			runsNamespace:   {},
-			systemNamespace: {},
+			runsNamespace: {},
 		}},
 		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress:  probeAddr,
@@ -286,6 +293,7 @@ func main() {
 		WebhookServer:           webhook.NewServer(webhook.Options{Port: webhookPort}),
 	})
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: configure manager: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -363,6 +371,7 @@ func main() {
 			MaxOutputBytes: criticMaxOutputBytes, Timeout: criticTimeout,
 		},
 	}); err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: register controllers: %v\n", err)
 		os.Exit(1)
 	}
 	validator := agwadmission.NewValidator(mgr.GetScheme(), mgr.GetAPIReader(), preflightTTL, identity)
@@ -371,16 +380,20 @@ func main() {
 	registerWebhooks(mgr, validator)
 
 	if err := mgr.AddHealthzCheck("health", healthz.Ping); err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: register health check: %v\n", err)
 		os.Exit(1)
 	}
 	if err := mgr.AddReadyzCheck("ready", healthz.Ping); err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: register ready check: %v\n", err)
 		os.Exit(1)
 	}
 	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: register webhook check: %v\n", err)
 		os.Exit(1)
 	}
 
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		fmt.Fprintf(os.Stderr, "agw-operator: run manager: %v\n", err)
 		os.Exit(1)
 	}
 }

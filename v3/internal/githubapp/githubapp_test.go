@@ -273,7 +273,7 @@ func TestMintRequestsExactlyOneRepositoryAndClosedPermissionProfiles(t *testing.
 					t.Errorf("body keys=%v, want exactly repositories and permissions", body)
 				}
 				var repositories []string
-				if err := json.Unmarshal(body["repositories"], &repositories); err != nil || len(repositories) != 1 || repositories[0] != repo.FullName() {
+				if err := json.Unmarshal(body["repositories"], &repositories); err != nil || len(repositories) != 1 || repositories[0] != repo.Name {
 					t.Errorf("repositories=%#v err=%v", repositories, err)
 				}
 				var permissions map[string]string

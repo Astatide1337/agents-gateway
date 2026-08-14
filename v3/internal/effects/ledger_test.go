@@ -15,6 +15,44 @@ type memoryStore struct {
 	fail    error
 }
 
+type providerNotFound struct{}
+
+func (providerNotFound) Error() string  { return "provider object not found" }
+func (providerNotFound) NotFound() bool { return true }
+
+type providerMarkerStore struct {
+	objects map[string][]byte
+}
+
+func (s *providerMarkerStore) Create(_ context.Context, key string, body []byte, _ string) (bool, error) {
+	if _, exists := s.objects[key]; exists {
+		return false, nil
+	}
+	s.objects[key] = append([]byte(nil), body...)
+	return true, nil
+}
+
+func (s *providerMarkerStore) Get(_ context.Context, key string) ([]byte, error) {
+	value, exists := s.objects[key]
+	if !exists {
+		return nil, fmt.Errorf("get object: %w", providerNotFound{})
+	}
+	return append([]byte(nil), value...), nil
+}
+
+func TestProviderNotFoundMarkerAllowsFirstClaim(t *testing.T) {
+	store := &providerMarkerStore{objects: map[string][]byte{}}
+	ledger, err := New(store, "effects", func() time.Time { return time.Unix(1, 0).UTC() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := Claim{EffectKey: digest("a"), RequestDigest: digest("b"), Operation: "publish-pr", RunUID: "run-uid"}
+	decision, err := ledger.Claim(context.Background(), claim)
+	if err != nil || !decision.Execute || decision.Unknown {
+		t.Fatalf("provider not-found claim = %#v, %v", decision, err)
+	}
+}
+
 func (s *memoryStore) Create(_ context.Context, key string, body []byte, _ string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

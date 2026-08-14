@@ -435,7 +435,8 @@ func isNotFound(err error) bool {
 	if errors.Is(err, ErrNotFound) {
 		return true
 	}
-	if marker, ok := err.(notFound); ok {
+	var marker notFound
+	if errors.As(err, &marker) {
 		return marker.NotFound()
 	}
 	return false

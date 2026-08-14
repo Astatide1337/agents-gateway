@@ -47,10 +47,7 @@ func (a verifyPhaseAdapter) Verify(ctx context.Context, run *v1alpha1.AgentRun, 
 	if err != nil {
 		return agwcontroller.VerifyOutcome{}, err
 	}
-	now := time.Now().UTC()
-	if a.clock != nil {
-		now = a.clock().UTC()
-	}
+	now := verificationStartTime(run, a.clock)
 	credentials, err := a.factory.MaterializeVerifyCredentials(ctx, run, snapshot)
 	if err != nil {
 		return agwcontroller.VerifyOutcome{}, err
@@ -84,6 +81,20 @@ func (a verifyPhaseAdapter) Verify(ctx context.Context, run *v1alpha1.AgentRun, 
 		VerifySandboxRef: ref, Gate: decision.Gate, Failure: decision.Failure,
 		Artifacts: append([]v1alpha1.ArtifactRef(nil), decision.Artifacts...),
 	}, nil
+}
+
+// verificationStartTime returns the durable start of the verify phase. The
+// deadline is part of the child specification, so deriving it from the
+// current reconciliation time would make every retry look like a mutation.
+func verificationStartTime(run *v1alpha1.AgentRun, clock func() time.Time) time.Time {
+	if run != nil && run.Status.VerificationStartedAt != nil && !run.Status.VerificationStartedAt.IsZero() {
+		return run.Status.VerificationStartedAt.Time.UTC()
+	}
+	now := time.Now().UTC()
+	if clock != nil {
+		now = clock().UTC()
+	}
+	return now
 }
 
 func (a verifyPhaseAdapter) loadPolicyChecks(ctx context.Context, run *v1alpha1.AgentRun, snapshot resolved.Snapshot) ([]policycontract.GateCheckDescriptor, error) {

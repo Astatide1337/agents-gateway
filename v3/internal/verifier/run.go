@@ -2,6 +2,7 @@ package verifier
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -194,8 +195,30 @@ func emit(stdout io.Writer, evidence MachineEvidence) error {
 // policy in one place for tests.
 func Main() int {
 	if err := Run(context.Background(), os.LookupEnv, os.Stdout); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "agw-verifier: verification failed")
+		_, _ = fmt.Fprintf(os.Stderr, "agw-verifier: verification failed (%s)\n", FailureStage(err))
 		return 1
 	}
 	return 0
+}
+
+// FailureStage preserves the verifier's secret-safe diagnostic contract while
+// making a failed independent Gate actionable. It intentionally exposes only
+// a finite stage label, never command output, repository text, or paths.
+func FailureStage(err error) string {
+	switch {
+	case errors.Is(err, ErrInvalidConfig):
+		return "config"
+	case errors.Is(err, ErrInvalidIdentity):
+		return "identity"
+	case errors.Is(err, ErrPatchLimit):
+		return "patch"
+	case errors.Is(err, ErrAnalysis):
+		return "analysis"
+	case errors.Is(err, ErrTestStrength):
+		return "test_strength"
+	case errors.Is(err, ErrCoverage):
+		return "coverage"
+	default:
+		return "policy_or_output"
+	}
 }

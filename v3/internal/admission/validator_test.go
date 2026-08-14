@@ -131,6 +131,22 @@ func TestValidatorAllowsCancellationWhenPreflightIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestValidatorAllowsControllerCleanupWhenPreflightIsStale(t *testing.T) {
+	scheme := testScheme(t)
+	reader := fake.NewClientBuilder().WithScheme(scheme).Build()
+	validator := NewValidator(scheme, reader, time.Minute, preflight.Fingerprint{Node: "node", Runtime: "runtime"})
+	previous := validRun()
+	previous.Finalizers = []string{"agw.astatide.com/cleanup"}
+	current := previous.DeepCopy()
+	deletionTime := metav1.NewTime(time.Date(2026, 8, 11, 16, 0, 0, 0, time.UTC))
+	current.DeletionTimestamp = &deletionTime
+	current.Finalizers = nil
+	response := validator.Handle(context.Background(), updateRequestForRuns(t, previous, current))
+	if !response.Allowed {
+		t.Fatalf("controller cleanup was denied after preflight expiry: %v", response.Result)
+	}
+}
+
 func TestValidatorDoesNotBypassImmutableSpecOnCancellation(t *testing.T) {
 	scheme := testScheme(t)
 	validator := NewValidator(scheme, fake.NewClientBuilder().WithScheme(scheme).Build(), time.Minute, preflight.Fingerprint{Node: "node", Runtime: "runtime"})

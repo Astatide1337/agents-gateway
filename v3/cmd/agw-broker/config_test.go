@@ -29,10 +29,24 @@ func validConfigEnv(t *testing.T) map[string]string {
 		"AGW_OBJECT_STORE_BUCKET":            "agw-artifacts",
 		"AGW_OBJECT_STORE_REGION":            "us-east-1",
 		"AGW_OBJECT_STORE_PREFIX":            "agents-gateway/v3",
+		"AGW_OBJECT_STORE_FORCE_PATH_STYLE":  "false",
 		"AGW_OBJECT_STORE_ACCESS_KEY_FILE":   filepath.Join(dir, "access"),
 		"AGW_OBJECT_STORE_SECRET_KEY_FILE":   filepath.Join(dir, "secret"),
 		"AGW_OBJECT_STORE_MAX_BYTES":         "65536",
 		"AGW_REQUIRE_APPROVAL_FOR_MUTATIONS": "true",
+	}
+}
+
+func TestLoadConfigUsesGeneratedObjectStorePathStyleContract(t *testing.T) {
+	env := validConfigEnv(t)
+	env["AGW_OBJECT_STORE_FORCE_PATH_STYLE"] = "true"
+
+	config, err := loadConfig(envLookup(env))
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	if !config.ObjectStore.ForcePathStyle {
+		t.Fatal("ForcePathStyle = false, want true")
 	}
 }
 

@@ -466,7 +466,10 @@ func loadObjectStoreConfig(lookup lookupEnv) (objectStoreConfig, error) {
 	if err != nil {
 		return objectStoreConfig{}, err
 	}
-	pathStyle, err := optionalBool(lookup, "AGW_OBJECT_STORE_PATH_STYLE", false)
+	// Keep this name aligned with the workload contract. The operator emits
+	// FORCE_PATH_STYLE for every broker pod so an S3-compatible endpoint is
+	// never accidentally converted to virtual-host addressing.
+	pathStyle, err := optionalBool(lookup, "AGW_OBJECT_STORE_FORCE_PATH_STYLE", false)
 	if err != nil {
 		return objectStoreConfig{}, err
 	}

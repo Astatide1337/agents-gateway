@@ -204,7 +204,7 @@ func ValidateAgentRunStaticErrors(run, previous *v1alpha1.AgentRun) ValidationEr
 	validateReference(&violations, "spec.gateRef", run.Spec.GateRef)
 	validateTaskSpec(&violations, run.Spec.Task)
 	if previous != nil {
-		if containsFinalizer(previous.Finalizers, "agw.astatide.com/cleanup") && !containsFinalizer(run.Finalizers, "agw.astatide.com/cleanup") {
+		if run.DeletionTimestamp == nil && containsFinalizer(previous.Finalizers, "agw.astatide.com/cleanup") && !containsFinalizer(run.Finalizers, "agw.astatide.com/cleanup") {
 			add(&violations, CodeFinalizerProtected, "metadata.finalizers", "the controller cleanup finalizer cannot be removed by a normal AgentRun update")
 		}
 		previousSpec := previous.Spec

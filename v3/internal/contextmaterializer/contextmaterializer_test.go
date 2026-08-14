@@ -133,6 +133,34 @@ func TestVerifyRejectsTamperingAndUnexpectedFiles(t *testing.T) {
 	}
 }
 
+func TestVerifyAllowsEmptyAgentsSubPathMount(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "output")
+	if err := os.MkdirAll(output, 0755); err != nil {
+		t.Fatal(err)
+	}
+	baseSHA := strings.Repeat("e", 40)
+	specDigest := "sha256:" + strings.Repeat("b", 64)
+	pack, err := contextpack.Compile(contextpack.Input{
+		BaseSHA:            baseSHA,
+		ResolvedSpecDigest: specDigest,
+		Task:               "Fix the bounded example.",
+		Budgets:            contextpack.Budgets{MaxInputBytes: 1 << 20, MaxOutputBytes: 1 << 20, MaxFileBytes: 1 << 20, MaxFiles: 32, MaxTokens: 1 << 16, MaxEntries: 128},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := Ref{SchemaVersion: RefSchemaVersion, RunUID: "run-uid", BaseSHA: baseSHA, ResolvedSpecDigest: specDigest, ManifestPath: ".agw/context/manifest.json", Digest: pack.Digest}
+	if err := materialize(output, pack, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(output, ".agents"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyForRun(output, ref.RunUID, pack.Digest, ref.ResolvedSpecDigest, ref.BaseSHA); err != nil {
+		t.Fatalf("empty Kubernetes .agents subPath mount rejected: %v", err)
+	}
+}
+
 func TestRunFailsClosedOnMissingPolicyAndNonEmptyOutput(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "base")

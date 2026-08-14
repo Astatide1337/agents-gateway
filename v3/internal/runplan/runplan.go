@@ -423,14 +423,14 @@ func (f *Factory) PlanWork(ctx context.Context, run *v1alpha1.AgentRun, snapshot
 	}
 	materializer, err := runsecret.New(materializerConfig)
 	if err != nil {
-		return sandbox.SandboxPlan{}, ErrRunSecret
+		return sandbox.SandboxPlan{}, fmt.Errorf("%w: %w", ErrRunSecret, err)
 	}
 	projection, err := materializer.Materialize(ctx, run, snapshot, digest)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return sandbox.SandboxPlan{}, ctxErr
 		}
-		return sandbox.SandboxPlan{}, ErrRunSecret
+		return sandbox.SandboxPlan{}, fmt.Errorf("%w: %w", ErrRunSecret, err)
 	}
 
 	manifest, err := workload.Build(snapshot, workload.Options{
@@ -461,7 +461,10 @@ func (f *Factory) PlanWork(ctx context.Context, run *v1alpha1.AgentRun, snapshot
 		MaxShutdownDuration:              f.maxShutdown,
 	})
 	if err != nil {
-		return sandbox.SandboxPlan{}, ErrWorkload
+		// Preserve the stable workload error class while retaining the bounded
+		// builder diagnostic. Without this context every invalid snapshot or
+		// projection failure is reported as the same opaque reconciliation error.
+		return sandbox.SandboxPlan{}, fmt.Errorf("%w: %w", ErrWorkload, err)
 	}
 
 	return sandbox.SandboxPlan{

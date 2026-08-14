@@ -587,7 +587,7 @@ func testRun() *v1alpha1.AgentRun {
 
 func testPlan(run *v1alpha1.AgentRun, role Role, specDigest string, now time.Time) SandboxPlan {
 	initContainers := []corev1.Container{
-		testContainer("clone", 1000, true, nil),
+		testContainer("clone", 1000, true, []corev1.Capability{"CHOWN"}),
 		testContainer("skills", 1000, true, nil),
 		testContainer("context", 0, false, nil),
 		testContainer("lockdown", 0, false, []corev1.Capability{"NET_ADMIN"}),

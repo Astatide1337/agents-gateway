@@ -745,6 +745,15 @@ func verifyExactTree(root string, expected map[string]struct{}) error {
 				return err
 			}
 			relative = filepath.ToSlash(relative) + "/"
+			// The work pod mounts .agents as a read-only Kubernetes subPath so
+			// the harness can consume generated skills and policy scripts. When
+			// a run has neither, kubelet still creates this empty mount point
+			// after the context init completes and before the broker verifies the
+			// pack. It is structural only; any file below it must still appear
+			// in the sealed manifest.
+			if relative == ".agents/" {
+				return nil
+			}
 			allowed := false
 			for expectedPath := range expected {
 				if strings.HasPrefix(expectedPath, relative) {

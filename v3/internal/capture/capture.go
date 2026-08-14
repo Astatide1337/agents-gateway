@@ -377,6 +377,11 @@ func Build(snapshot resolved.Snapshot, baseSHA string, options Options) (Plan, e
 		TerminationGracePeriodSeconds: int64Ptr(10),
 		EnableServiceLinks:            boolPtr(false),
 		DNSPolicy:                     corev1.DNSNone,
+		// Kubernetes requires an explicit DNSConfig when DNSPolicy is None.
+		// Point DNS at loopback: capture is intentionally networkless and must
+		// not inherit node DNS settings. Kubernetes requires at least one
+		// nameserver when DNSPolicy is None.
+		DNSConfig: &corev1.PodDNSConfig{Nameservers: []string{"127.0.0.1"}},
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot:   boolPtr(true),
 			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},

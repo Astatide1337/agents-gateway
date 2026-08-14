@@ -152,6 +152,7 @@ type testTransport struct {
 	failModel      bool
 	modelContent   string
 	modelBody      string
+	modelResponder func(int, []byte) (string, string)
 	mcpResult      string
 	mcpEncoding    string
 	invalidMCP     bool
@@ -169,11 +170,11 @@ func (t *testTransport) RoundTrip(request *http.Request) (*http.Response, error)
 	if request.URL.Path == "/mcp" {
 		t.mcpCalls++
 	}
-	if request.URL.Path == "/v1/responses" {
+	if request.URL.Path == "/v1/responses" || request.URL.Path == "/api/v1/responses" {
 		t.modelCalls++
 	}
 	failMCP, failModel, invalidMCP, checkSession := t.failMCP, t.failModel, t.invalidMCP, t.checkSessionID
-	modelContent, modelBody, mcpResult, mcpEncoding := t.modelContent, t.modelBody, t.mcpResult, t.mcpEncoding
+	modelContent, modelBody, modelResponder, modelCall, mcpResult, mcpEncoding := t.modelContent, t.modelBody, t.modelResponder, t.modelCalls, t.mcpResult, t.mcpEncoding
 	t.mu.Unlock()
 
 	if request.URL.Path == "/mcp" {
@@ -212,9 +213,13 @@ func (t *testTransport) RoundTrip(request *http.Request) (*http.Response, error)
 			return nil, errors.New("unexpected MCP method")
 		}
 	}
-	if request.URL.Path == "/v1/responses" {
+	if request.URL.Path == "/v1/responses" || request.URL.Path == "/api/v1/responses" {
 		if failModel {
 			return nil, errors.New("model failed with bearer=super-secret")
+		}
+		if modelResponder != nil {
+			contentType, responseBody := modelResponder(modelCall, body)
+			return jsonResponse(http.StatusOK, responseBody, contentType, ""), nil
 		}
 		if modelContent == "" {
 			modelContent = "application/json"
@@ -594,6 +599,57 @@ func TestModelProxyAllowlistBudgetAndContentType(t *testing.T) {
 	streamResult, err := streamBroker.InvokeModel(context.Background(), body)
 	if err != nil || streamResult.ContentType != "text/event-stream" || streamResult.InputTokens != 4 || streamResult.OutputTokens != 6 {
 		t.Fatalf("stream model result=%#v error=%v", streamResult, err)
+	}
+}
+
+func TestZeroCostModelRouteAllowsFreeProvider(t *testing.T) {
+	config := newTestConfig(testBrokerOptions{withModelCredential: true})
+	config.MaxCostUSD = "0"
+	config.ModelRoute.Budget.MaxCostUSD = "0"
+	config.Pricing = nil
+
+	freeBroker, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := freeBroker.InvokeModel(context.Background(), []byte(`{"model":"test-model","input":"hello","max_output_tokens":16}`))
+	if err != nil {
+		t.Fatalf("free model request error=%v", err)
+	}
+	if result.Provider != "openai" || result.Model != "test-model" || result.CostMicros != 0 {
+		t.Fatalf("free model result=%#v", result)
+	}
+	if usage := freeBroker.Usage(); usage.ModelRequests != 1 || usage.ModelTokens != 5 || usage.ModelCostMicros != 0 {
+		t.Fatalf("free model usage=%#v", usage)
+	}
+}
+
+func TestModelOutputLimitIsClampedToBrokerReservation(t *testing.T) {
+	transport := &testTransport{}
+	config := newTestConfig(testBrokerOptions{transport: transport, withModelCredential: true})
+	config.MaxCostUSD = "0"
+	config.ModelRoute.Budget.MaxCostUSD = "0"
+	config.ModelRoute.Budget.MaxTokens = 200000
+	config.MaxModelTokens = 200000
+	config.Pricing = nil
+
+	modelBroker, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"model":"test-model","input":"hello","max_output_tokens":1000000000}`)
+	if _, err := modelBroker.InvokeModel(context.Background(), body); err != nil {
+		t.Fatalf("clamped model request error=%v", err)
+	}
+	transport.mu.Lock()
+	upstreamBody := append([]byte(nil), transport.bodies[0]...)
+	transport.mu.Unlock()
+	var upstream map[string]any
+	if err := json.Unmarshal(upstreamBody, &upstream); err != nil {
+		t.Fatal(err)
+	}
+	if got := int64(upstream["max_output_tokens"].(float64)); got != 128<<10 {
+		t.Fatalf("upstream max_output_tokens=%d, want %d", got, 128<<10)
 	}
 }
 

@@ -101,7 +101,7 @@ func TestPlanWorkUsesReadOnlyCloneTokenAndBuildsHardenedTopology(t *testing.T) {
 		t.Fatalf("GitHub token exchange count=%d, want 1", got)
 	}
 	body := server.LastRequestBody()
-	if !reflect.DeepEqual(body.Repositories, []string{"Astatide1337/agents-gateway"}) || body.Permissions["contents"] != "read" || body.Permissions["pull_requests"] != "" {
+	if !reflect.DeepEqual(body.Repositories, []string{"agents-gateway"}) || body.Permissions["contents"] != "read" || body.Permissions["pull_requests"] != "" {
 		t.Fatalf("GitHub request scope=%#v", body)
 	}
 	if strings.Contains(string(mustJSON(t, plan.Sandbox)), "publish-write-secret") || strings.Contains(string(mustJSON(t, plan.Sandbox)), "PRIVATE-KEY-SENTINEL") {

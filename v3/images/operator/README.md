@@ -5,9 +5,10 @@ It runs as UID/GID 65532 with a read-only root filesystem; the chart mounts a
 bounded memory-backed `/tmp` for webhook serving certificates and Go runtime
 scratch space. The image contains CA certificates and timezone data but no
 shell-time configuration, credentials, runtime image, or Kubernetes manifest.
-It also carries the immutable upstream cosign v3.1.3 binary used by the
-optional verification-attestation lifecycle. The image digest pins that binary
-alongside the operator; signing key material is never included in the image.
+It also carries a reproducibly sourced cosign v3.1.3 binary used by the optional
+verification-attestation lifecycle. The source commit, tarball digest, and two
+security-fix dependency overrides are pinned in the Containerfile; signing key
+material is never included in the image.
 
 Build it from the repository root through the wrapper:
 

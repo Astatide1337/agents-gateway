@@ -181,13 +181,13 @@ func changedTreePaths(repo, base map[string]treeEntry, repoContent, baseContent 
 	set := make(map[string]struct{}, len(repo)+len(base))
 	for path, entry := range repo {
 		other, ok := base[path]
-		if !ok || entry.Size != other.Size || entry.Mode.Perm() != other.Mode.Perm() || repoContent[path].Digest != baseContent[path].Digest {
+		if !ok || entry.Size != other.Size || gitExecutableBits(entry.Mode) != gitExecutableBits(other.Mode) || repoContent[path].Digest != baseContent[path].Digest {
 			set[path] = struct{}{}
 		}
 	}
 	for path, entry := range base {
 		other, ok := repo[path]
-		if !ok || entry.Size != other.Size || entry.Mode.Perm() != other.Mode.Perm() || repoContent[path].Digest != baseContent[path].Digest {
+		if !ok || entry.Size != other.Size || gitExecutableBits(entry.Mode) != gitExecutableBits(other.Mode) || repoContent[path].Digest != baseContent[path].Digest {
 			set[path] = struct{}{}
 		}
 	}
@@ -197,6 +197,14 @@ func changedTreePaths(repo, base map[string]treeEntry, repoContent, baseContent 
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+// Git records the executable bit for regular files, not the writable bits.
+// The fetch hand-off intentionally makes the applied tree writable and the
+// pristine tree read-only, so comparing full filesystem permissions would
+// misclassify every unchanged file as part of the patch.
+func gitExecutableBits(mode fs.FileMode) fs.FileMode {
+	return mode.Perm() & 0111
 }
 
 func inspectRegular(path string, scanned *int64) (inspectedFile, error) {

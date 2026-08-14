@@ -7,6 +7,13 @@ GitHub Actions minutes or publish images accidentally. CI proves source and
 image contracts; this workflow publishes versioned images and the evidence
 needed to deploy them by digest after an explicit release decision.
 
+It is not the path for the first local AgentRun proof. Use
+`v3/scripts/build-local-proof-images.sh` for the direct-Codex profile; that
+profile builds only the twelve amd64 images needed by the direct backend and
+does not spend hosted-runner minutes on multi-architecture builds, scanning, or
+release attestations. Do not dispatch this workflow merely to test whether the
+runtime starts.
+
 ## What a release does
 
 The workflow accepts only `workflow_dispatch` with an explicit, required

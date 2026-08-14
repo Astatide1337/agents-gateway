@@ -175,11 +175,16 @@ type Options struct {
 	Logs        LogReader
 	Artifacts   capture.ArtifactSink
 	MaxLogBytes int64
+	// Reader is used for all validation reads. Controllers should pass the
+	// uncached API reader so a just-created Job/NetworkPolicy cannot be hidden
+	// behind informer lag. Tests and standalone callers may omit it.
+	Reader client.Reader
 }
 
 // Driver is a Kubernetes-backed capture-phase driver.
 type Driver struct {
 	client      client.Client
+	reader      client.Reader
 	logs        LogReader
 	artifacts   capture.ArtifactSink
 	maxLogBytes int64
@@ -200,7 +205,11 @@ func New(c client.Client, options Options) (*Driver, error) {
 	if max <= 0 || hard <= 0 || max > hard {
 		return nil, fmt.Errorf("%w: MaxLogBytes must be in (0,%d]", ErrInvalidDriver, hard)
 	}
-	return &Driver{client: c, logs: options.Logs, artifacts: options.Artifacts, maxLogBytes: max}, nil
+	reader := options.Reader
+	if reader == nil {
+		reader = c
+	}
+	return &Driver{client: c, reader: reader, logs: options.Logs, artifacts: options.Artifacts, maxLogBytes: max}, nil
 }
 
 // EnsureResult contains the fresh objects returned by Ensure. The Job object
@@ -261,7 +270,7 @@ func (d *Driver) Observe(ctx context.Context, plan capture.Plan) (Observation, e
 		return Observation{}, err
 	}
 	var job batchv1.Job
-	if err := d.client.Get(ctx, client.ObjectKey{Namespace: contract.namespace, Name: contract.jobName}, &job); err != nil {
+	if err := d.reader.Get(ctx, client.ObjectKey{Namespace: contract.namespace, Name: contract.jobName}, &job); err != nil {
 		if apierrors.IsNotFound(err) {
 			return Observation{State: ClassMissing}, classified(ClassMissing, "Job", "capture Job %s/%s does not exist", contract.namespace, contract.jobName)
 		}
@@ -271,7 +280,7 @@ func (d *Driver) Observe(ctx context.Context, plan capture.Plan) (Observation, e
 		return Observation{}, err
 	}
 	var policy networkingv1.NetworkPolicy
-	if err := d.client.Get(ctx, client.ObjectKey{Namespace: contract.namespace, Name: contract.policyName}, &policy); err != nil {
+	if err := d.reader.Get(ctx, client.ObjectKey{Namespace: contract.namespace, Name: contract.policyName}, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return Observation{State: ClassMissing, Job: job.DeepCopy()}, classified(ClassMissing, "NetworkPolicy", "capture deny-all NetworkPolicy %s/%s does not exist", contract.namespace, contract.policyName)
 		}
@@ -289,7 +298,7 @@ func (d *Driver) Observe(ctx context.Context, plan capture.Plan) (Observation, e
 		return Observation{}, err
 	}
 	var pods corev1.PodList
-	if err := d.client.List(ctx, &pods, client.InNamespace(contract.namespace), client.MatchingLabels(selector)); err != nil {
+	if err := d.reader.List(ctx, &pods, client.InNamespace(contract.namespace), client.MatchingLabels(selector)); err != nil {
 		return Observation{}, fmt.Errorf("list capture Pods for Job %s/%s: %w", contract.namespace, contract.jobName, err)
 	}
 	owned := make([]*corev1.Pod, 0, len(pods.Items))
@@ -376,7 +385,7 @@ func (d *Driver) Cleanup(ctx context.Context, plan capture.Plan) error {
 	}
 	var job batchv1.Job
 	jobFound := true
-	if err := d.client.Get(ctx, client.ObjectKey{Namespace: contract.namespace, Name: contract.jobName}, &job); err != nil {
+	if err := d.reader.Get(ctx, client.ObjectKey{Namespace: contract.namespace, Name: contract.jobName}, &job); err != nil {
 		if apierrors.IsNotFound(err) {
 			jobFound = false
 		} else {
@@ -387,7 +396,7 @@ func (d *Driver) Cleanup(ctx context.Context, plan capture.Plan) error {
 	}
 	var policy networkingv1.NetworkPolicy
 	policyFound := true
-	if err := d.client.Get(ctx, client.ObjectKey{Namespace: contract.namespace, Name: contract.policyName}, &policy); err != nil {
+	if err := d.reader.Get(ctx, client.ObjectKey{Namespace: contract.namespace, Name: contract.policyName}, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			policyFound = false
 		} else {
@@ -512,7 +521,7 @@ func validatePlan(plan capture.Plan) (planContract, error) {
 func (d *Driver) ensureJob(ctx context.Context, expected *batchv1.Job, contract planContract) (*batchv1.Job, error) {
 	key := client.ObjectKey{Namespace: expected.Namespace, Name: expected.Name}
 	var current batchv1.Job
-	if err := d.client.Get(ctx, key, &current); err == nil {
+	if err := d.reader.Get(ctx, key, &current); err == nil {
 		if err := validateExistingJob(&current, expected, contract); err != nil {
 			return nil, err
 		}
@@ -520,12 +529,12 @@ func (d *Driver) ensureJob(ctx context.Context, expected *batchv1.Job, contract 
 	} else if !apierrors.IsNotFound(err) {
 		return nil, fmt.Errorf("get capture Job %s/%s: %w", key.Namespace, key.Name, err)
 	}
-	if err := d.client.Create(ctx, expected.DeepCopy()); err == nil {
-		// Always GET after create so the returned UID and server defaults are
-		// the same values that Observe will later validate.
-		if err := d.client.Get(ctx, key, &current); err != nil {
-			return nil, fmt.Errorf("get capture Job after create %s/%s: %w", key.Namespace, key.Name, err)
-		}
+	created := expected.DeepCopy()
+	if err := d.client.Create(ctx, created); err == nil {
+		// Create mutates created with the API server's UID/resource version.
+		// Do not immediately read through an informer: its eventual consistency
+		// can make a successful create look like a missing object.
+		current = *created
 		if err := validateExistingJob(&current, expected, contract); err != nil {
 			return nil, err
 		}
@@ -534,7 +543,7 @@ func (d *Driver) ensureJob(ctx context.Context, expected *batchv1.Job, contract 
 		return nil, fmt.Errorf("create capture Job %s/%s: %w", key.Namespace, key.Name, err)
 	}
 	current = batchv1.Job{}
-	if err := d.client.Get(ctx, key, &current); err != nil {
+	if err := d.reader.Get(ctx, key, &current); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, classified(ClassConflict, "Job", "Job was reported AlreadyExists but fresh validation GET found no object")
 		}
@@ -549,7 +558,7 @@ func (d *Driver) ensureJob(ctx context.Context, expected *batchv1.Job, contract 
 func (d *Driver) ensureNetworkPolicy(ctx context.Context, expected *networkingv1.NetworkPolicy, contract planContract) (*networkingv1.NetworkPolicy, error) {
 	key := client.ObjectKey{Namespace: expected.Namespace, Name: expected.Name}
 	var current networkingv1.NetworkPolicy
-	if err := d.client.Get(ctx, key, &current); err == nil {
+	if err := d.reader.Get(ctx, key, &current); err == nil {
 		if err := validateExistingNetworkPolicy(&current, expected, contract); err != nil {
 			return nil, err
 		}
@@ -557,10 +566,11 @@ func (d *Driver) ensureNetworkPolicy(ctx context.Context, expected *networkingv1
 	} else if !apierrors.IsNotFound(err) {
 		return nil, fmt.Errorf("get capture NetworkPolicy %s/%s: %w", key.Namespace, key.Name, err)
 	}
-	if err := d.client.Create(ctx, expected.DeepCopy()); err == nil {
-		if err := d.client.Get(ctx, key, &current); err != nil {
-			return nil, fmt.Errorf("get capture NetworkPolicy after create %s/%s: %w", key.Namespace, key.Name, err)
-		}
+	created := expected.DeepCopy()
+	if err := d.client.Create(ctx, created); err == nil {
+		// See ensureJob: validate the API server's create response rather than
+		// racing the informer cache with an immediate GET.
+		current = *created
 		if err := validateExistingNetworkPolicy(&current, expected, contract); err != nil {
 			return nil, err
 		}
@@ -569,7 +579,7 @@ func (d *Driver) ensureNetworkPolicy(ctx context.Context, expected *networkingv1
 		return nil, fmt.Errorf("create capture NetworkPolicy %s/%s: %w", key.Namespace, key.Name, err)
 	}
 	current = networkingv1.NetworkPolicy{}
-	if err := d.client.Get(ctx, key, &current); err != nil {
+	if err := d.reader.Get(ctx, key, &current); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, classified(ClassConflict, "NetworkPolicy", "NetworkPolicy was reported AlreadyExists but fresh validation GET found no object")
 		}

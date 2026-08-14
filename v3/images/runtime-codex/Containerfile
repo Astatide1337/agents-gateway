@@ -41,9 +41,12 @@ LABEL org.opencontainers.image.title="Agents Gateway Codex Runtime" \
       com.astatide.agw.codex.version="${CODEX_CLI_VERSION}" \
       com.astatide.agw.go.module="github.com/Astatide1337/agents-gateway/v3"
 
+# npm is required only in the installer stage; keeping it in the runtime
+# would add an unnecessary package manager and its vulnerability surface.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends bubblewrap ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
     && install -d -m 0755 /agw \
     && install -d -o 1000 -g 1000 -m 0700 /workspace
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -77,9 +78,25 @@ func (b *Broker) invokeModelWire(ctx context.Context, body []byte, incoming http
 	if !ok || !providerSupportsWire(provider, wire) {
 		return zero, ErrDenied
 	}
+	upstreamBody := body
+	var flattened flattenedTools
 	reservation, err := b.reserveModel(ctx, provider, body, maxOutput)
 	if err != nil {
 		return zero, err
+	}
+	// Harnesses commonly send a very large output allowance (or omit it),
+	// while the broker owns the actual per-run token ceiling. Bound the
+	// provider request to the reservation so a client-side default cannot make
+	// every otherwise-valid request fail the budget check or bypass the cap.
+	upstreamBody, err = constrainModelOutput(body, wire, reservation.outputEstimate)
+	if err != nil {
+		return zero, ErrInvalidRequest
+	}
+	if wire == modelWireResponses && provider.kind == "openrouter-responses" {
+		upstreamBody, flattened, err = flattenOpenRouterResponsesRequest(upstreamBody)
+		if err != nil {
+			return zero, err
+		}
 	}
 	finalize := true
 	defer func() {
@@ -92,7 +109,7 @@ func (b *Broker) invokeModelWire(ctx context.Context, body []byte, incoming http
 		return zero, err
 	}
 	defer zeroBytes(credential)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.endpoint, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.endpoint, bytes.NewReader(upstreamBody))
 	if err != nil {
 		return zero, ErrUpstreamUnavailable
 	}
@@ -141,6 +158,12 @@ func (b *Broker) invokeModelWire(ctx context.Context, body []byte, incoming http
 	}
 	if contentType == "application/json" && strictjson.ValidateObject(result) != nil {
 		return zero, ErrUpstreamInvalid
+	}
+	if wire == modelWireResponses && provider.kind == "openrouter-responses" {
+		result, err = restoreOpenRouterResponses(result, contentType, flattened)
+		if err != nil {
+			return zero, err
+		}
 	}
 	inputTokens, outputTokens, inputFound, outputFound := extractUsageForProvider(result, contentType, provider.kind)
 	if !inputFound {
@@ -202,14 +225,11 @@ func (b *Broker) reserveModel(ctx context.Context, provider compiledProvider, bo
 		return modelReservation{}, ErrBudgetExceeded
 	}
 	outputEstimate := remaining - inputEstimate
-	if requestedMaxOutput > 0 {
-		if requestedMaxOutput > outputEstimate {
-			return modelReservation{}, ErrBudgetExceeded
-		}
-		outputEstimate = requestedMaxOutput
-	}
 	if outputEstimate > 128<<10 {
 		outputEstimate = 128 << 10
+	}
+	if requestedMaxOutput > 0 && requestedMaxOutput < outputEstimate {
+		outputEstimate = requestedMaxOutput
 	}
 	if outputEstimate < 1 {
 		return modelReservation{}, ErrBudgetExceeded
@@ -225,6 +245,36 @@ func (b *Broker) reserveModel(ctx context.Context, provider compiledProvider, bo
 	b.budget.reservedTokens += inputEstimate + outputEstimate
 	b.budget.reservedCost += costEstimate
 	return modelReservation{provider: provider, inputEstimate: inputEstimate, outputEstimate: outputEstimate, costEstimate: costEstimate}, nil
+}
+
+// constrainModelOutput rewrites only the wire-specific output limit. The
+// broker must enforce its reservation even when a harness sends an excessive
+// max_output_tokens/max_tokens value or omits the field entirely.
+func constrainModelOutput(body []byte, wire modelWire, limit int64) ([]byte, error) {
+	if len(body) == 0 || limit < 1 || strictjson.ValidateObject(body) != nil {
+		return nil, ErrInvalidRequest
+	}
+	field := "max_output_tokens"
+	if wire == modelWireAnthropicMessages {
+		field = "max_tokens"
+	} else if wire != modelWireResponses {
+		return nil, ErrInvalidRequest
+	}
+	var fields map[string]json.RawMessage
+	if err := decodeStrictObject(body, &fields); err != nil {
+		return nil, ErrInvalidRequest
+	}
+	var requested int64
+	if raw, ok := fields[field]; ok {
+		if err := json.Unmarshal(raw, &requested); err != nil || requested < 1 {
+			return nil, ErrInvalidRequest
+		}
+		if requested <= limit {
+			return body, nil
+		}
+	}
+	fields[field] = json.RawMessage(strconv.FormatInt(limit, 10))
+	return json.Marshal(fields)
 }
 
 func (b *Broker) finishModel(reservation modelReservation, inputTokens, outputTokens, cost int64) bool {
@@ -256,10 +306,14 @@ func (b *Broker) estimateCost(ctx context.Context, provider compiledProvider, in
 }
 
 func (b *Broker) estimateCostLocked(ctx context.Context, provider compiledProvider, inputTokens, outputTokens int64) (int64, error) {
-	if inputTokens < 0 || outputTokens < 0 || b.budget.maxCostMicros == 0 {
-		if b.budget.maxCostMicros == 0 && (inputTokens != 0 || outputTokens != 0) {
-			return 0, ErrBudgetExceeded
-		}
+	if inputTokens < 0 || outputTokens < 0 {
+		return 0, nil
+	}
+	// A zero-dollar route is an explicit free-provider contract. Pricing is
+	// optional for that contract, so token accounting must not turn every
+	// non-empty request into a budget failure before it reaches the provider.
+	// Paid routes require a positive cap and a pricing table at construction.
+	if b.budget.maxCostMicros == 0 {
 		return 0, nil
 	}
 	if b.pricing == nil {

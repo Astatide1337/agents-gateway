@@ -223,8 +223,15 @@ func (h *MCPHandler) callTool(ctx context.Context, raw []byte) (json.RawMessage,
 	var params struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
+		// MCP clients may attach progress/session metadata to a tool call. It
+		// is transport metadata, not an authorization input, so accept and
+		// validate it but never forward it to the upstream tool.
+		Meta json.RawMessage `json:"_meta"`
 	}
 	if decodeStrictObject(raw, &params) != nil || !safeName(params.Name, MaxToolNameBytes) {
+		return nil, ErrInvalidRequest
+	}
+	if len(params.Meta) > 0 && strictJSONObject(params.Meta) != nil {
 		return nil, ErrInvalidRequest
 	}
 	tool, lookup := h.broker.lookupToolByName(params.Name)

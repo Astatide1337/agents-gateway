@@ -13,7 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -41,10 +43,12 @@ const (
 	maxInstructionsBytes = 64 << 10
 	maxAgentRefBytes     = 253
 	eventPostTimeout     = 15 * time.Second
+	brokerReadyTimeout   = 30 * time.Second
 )
 
 type runtimeConfig struct {
 	adapter         codexadapter.Config
+	brokerBaseURL   string
 	baseSHA         string
 	basePath        string
 	specDigest      string
@@ -112,10 +116,52 @@ func configFromEnv(getenv func(string) string) (runtimeConfig, error) {
 	}
 
 	return runtimeConfig{
-		adapter: adapter, baseSHA: baseSHA, basePath: basePath, specDigest: specDigest,
+		adapter: adapter, brokerBaseURL: brokerBase, baseSHA: baseSHA, basePath: basePath, specDigest: specDigest,
 		brokerEventsURL: strings.TrimRight(brokerBase, "/") + broker.RuntimeEventsPath,
 		runUID:          runUID, agentRef: agentRef, task: task, instructions: instructions,
 	}, nil
+}
+
+// waitForBroker closes the startup race between the agent container and its
+// loopback sidecar. Containers in a pod start concurrently; the agent must
+// not emit its first durable runtime frame until the broker is listening.
+// codexadapter has already validated AGW_BROKER as a loopback HTTP base URL,
+// but this function repeats the narrow address check before opening a socket.
+func waitForBroker(ctx context.Context, raw string) error {
+	if ctx == nil || raw == "" {
+		return errors.New("broker readiness configuration is unavailable")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("broker readiness URL is invalid")
+	}
+	host := parsed.Hostname()
+	if host != "127.0.0.1" && host != "::1" {
+		return errors.New("broker readiness URL is not loopback")
+	}
+	address := parsed.Host
+	if parsed.Port() == "" {
+		address = net.JoinHostPort(host, "80")
+	}
+	deadline := time.NewTimer(brokerReadyTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	dialer := &net.Dialer{Timeout: 500 * time.Millisecond}
+	for {
+		connection, dialErr := dialer.DialContext(ctx, "tcp", address)
+		if dialErr == nil {
+			_ = connection.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("broker readiness wait canceled")
+		case <-deadline.C:
+			return errors.New("broker did not become ready")
+		case <-ticker.C:
+		}
+	}
 }
 
 func validIdentifier(value string, max int) bool {
@@ -221,9 +267,14 @@ func gitHead(ctx context.Context, directory string) (string, error) {
 // image's /tmp would make the private CODEX_HOME creation fail. The workspace
 // PVC is the explicitly writable surface supplied by the workload builder.
 func runAdapter(ctx context.Context, input io.Reader, output, diagnostics io.Writer, config runtimeConfig) error {
-	tempRoot, err := os.MkdirTemp(filepath.Dir(config.adapter.Workspace), ".agw-runtime-tmp-")
+	// The worktree is the writable subPath supplied by the work PVC. Its
+	// parent (/workspace) is backed by the image root, which is read-only in a
+	// work pod; creating the temporary root beside the worktree therefore fails
+	// before Codex can start. Keep the private runtime state inside the
+	// already-validated writable worktree and remove it after the invocation.
+	tempRoot, err := os.MkdirTemp(config.adapter.Workspace, ".agw-runtime-tmp-")
 	if err != nil {
-		return errors.New("create runtime temporary directory")
+		return fmt.Errorf("create runtime temporary directory: %w", err)
 	}
 	defer os.RemoveAll(tempRoot)
 	if err := os.Chmod(tempRoot, 0700); err != nil {
@@ -323,6 +374,10 @@ func (p *eventPoster) Write(body []byte) (int, error) {
 func execute(ctx context.Context, getenv func(string) string, diagnostics io.Writer) int {
 	config, err := configFromEnv(getenv)
 	if err != nil {
+		writeDiagnostic(diagnostics, err)
+		return 2
+	}
+	if err := waitForBroker(ctx, config.brokerBaseURL); err != nil {
 		writeDiagnostic(diagnostics, err)
 		return 2
 	}

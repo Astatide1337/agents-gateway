@@ -137,7 +137,7 @@ jobs:
           ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/workflows/v3-release.yml"), aliases: true); puts "workflow YAML: OK"'
           bash v3/scripts/validate-release-contract.sh
 
-          mapfile -t dockerfiles < <(rg '^            dockerfile: v3/' .github/workflows/v3-release.yml | sed 's/.*dockerfile: //')
+          mapfile -t dockerfiles < <(grep -E '^            dockerfile: v3/' .github/workflows/v3-release.yml | sed 's/.*dockerfile: //')
           test "${#dockerfiles[@]}" -eq 15
           for dockerfile in "${dockerfiles[@]}"; do
             test -f "$dockerfile"
@@ -150,7 +150,7 @@ jobs:
           # reintroduction of a mutable latest tag without banning the word in
           # documentation or Dockerfile dependency comments.
           MUTABLE_TAG_WORD=latest
-          if rg -n "tags.*:${MUTABLE_TAG_WORD}|IMAGE_REF.*:${MUTABLE_TAG_WORD}|image.*:${MUTABLE_TAG_WORD}" .github/workflows/v3-release.yml; then
+          if grep -En "tags.*:${MUTABLE_TAG_WORD}|IMAGE_REF.*:${MUTABLE_TAG_WORD}|image.*:${MUTABLE_TAG_WORD}" .github/workflows/v3-release.yml; then
             echo 'mutable latest image tag found in release workflow' >&2
             exit 1
           fi
@@ -449,7 +449,7 @@ jobs:
           esac
 
           raw_final="$(docker buildx imagetools inspect --raw "$IMAGE_REF")"
-          actual_platforms="$(jq -r '[.manifests[]? | select(.platform != null) | "\(.platform.os)/\(.platform.architecture)"] | unique | sort | join(",")' <<<"$raw_final")"
+          actual_platforms="$(jq -r '[.manifests[]? | select(.platform != null and .platform.os != "unknown" and .platform.architecture != "unknown") | "\(.platform.os)/\(.platform.architecture)"] | unique | sort | join(",")' <<<"$raw_final")"
           case "$PLATFORMS" in
             linux/amd64) expected_platforms=linux/amd64 ;;
             linux/amd64,linux/arm64) expected_platforms=linux/amd64,linux/arm64 ;;
@@ -535,14 +535,33 @@ jobs:
         run: |
           set -euo pipefail
           image="$IMAGE_REF@$IMAGE_DIGEST"
-          cosign sign --yes "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-sign.txt"
-          cosign attest --yes --type spdxjson --predicate "$SPDX_FILE" "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-spdx-attest.txt"
-          cosign attest --yes --type cyclonedx --predicate "$CYCLONEDX_FILE" "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-cyclonedx-attest.txt"
+
+          # Fulcio/Rekor are external services. A transient connection reset
+          # must not invalidate an otherwise complete, scanned image; bounded
+          # retries are safe because every operation is digest-addressed.
+          retry_cosign() {
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" -lt 3 ]]; then
+                echo "cosign attempt $attempt failed; retrying" >&2
+                sleep "$((attempt * 15))"
+              fi
+            done
+            echo 'cosign operation failed after 3 attempts' >&2
+            return 1
+          }
+
+          retry_cosign cosign sign --yes "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-sign.txt"
+          retry_cosign cosign attest --yes --type spdxjson --predicate "$SPDX_FILE" "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-spdx-attest.txt"
+          retry_cosign cosign attest --yes --type cyclonedx --predicate "$CYCLONEDX_FILE" "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-cyclonedx-attest.txt"
 
           # Verify the just-created keyless signature against this repository's
           # workflow identity and the public Fulcio issuer before recording the
           # component as releasable.
-          cosign verify \
+          retry_cosign cosign verify \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
             --certificate-identity-regexp="$IDENTITY_REGEXP" \
             "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-verify.txt"
@@ -550,12 +569,12 @@ jobs:
           # Verify both attestations before the image becomes eligible for
           # promotion. They are bound to the same immutable digest that was
           # scanned and signed above.
-          cosign verify-attestation \
+          retry_cosign cosign verify-attestation \
             --type spdxjson \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
             --certificate-identity-regexp="$IDENTITY_REGEXP" \
             "$image" >"${RUNNER_TEMP}/cosign-${COMPONENT}-spdx-verify.txt"
-          cosign verify-attestation \
+          retry_cosign cosign verify-attestation \
             --type cyclonedx \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
             --certificate-identity-regexp="$IDENTITY_REGEXP" \

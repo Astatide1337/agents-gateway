@@ -112,6 +112,18 @@ func TestValidateAgentRunStaticProtectsCleanupFinalizer(t *testing.T) {
 	}
 }
 
+func TestValidateAgentRunStaticAllowsControllerFinalizerRemovalDuringDeletion(t *testing.T) {
+	previous := validRun()
+	previous.Finalizers = []string{"agw.astatide.com/cleanup"}
+	current := previous.DeepCopy()
+	current.Finalizers = nil
+	deletionTime := metav1.NewTime(time.Date(2026, 8, 12, 21, 0, 0, 0, time.UTC))
+	current.DeletionTimestamp = &deletionTime
+	if violations := ValidateAgentRunStaticErrors(current, previous); len(violations) != 0 {
+		t.Fatalf("controller finalizer removal during deletion was rejected: %#v", violations)
+	}
+}
+
 func TestValidateCancelTransitionIsOneWayAndTerminalAware(t *testing.T) {
 	previous := validAgentRun()
 	previous.Spec.CancelRequested = true

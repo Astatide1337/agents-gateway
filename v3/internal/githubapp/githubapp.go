@@ -506,8 +506,12 @@ func (m *Minter) Mint(ctx context.Context, repo Repository, profile PermissionPr
 		return InstallationToken{}, err
 	}
 
+	// GitHub's `repositories` request field accepts repository names, not
+	// owner/name qualified full names. The installation is already the
+	// authority boundary for the owner; sending the qualified name yields a
+	// 422 from GitHub instead of a narrowly scoped token.
 	body, err := json.Marshal(tokenRequest{
-		Repositories: []string{repo.FullName()},
+		Repositories: []string{repo.Name},
 		Permissions:  permissions,
 	})
 	if err != nil {

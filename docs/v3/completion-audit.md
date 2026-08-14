@@ -1,15 +1,16 @@
 # Agents Gateway v3 — Release / Completion Audit
 
-**Audit date:** 2026-08-12
+**Audit date:** 2026-08-13
 
 **Scope:** `/home/ubuntu/Projects/agents-gateway` current worktree, accepted ADR-001 through ADR-029, v3 source, tests, charts, images, build-vs-adopt probes, disposable local Kind API/Phase-0 probes, and a disposable two-node k3s Phase-0 run.
 **Release decision:** **Not release complete.** v3 is a substantial, locally green implementation candidate, but its production completion contract has not been proven on the target two-node cluster.
 
 **CI and execution boundary:** v3 CI is manual-only (`workflow_dispatch`). The
 hosted image-build matrix and hosted Kind API smoke are separate opt-in inputs;
-neither runs automatically. This audit update used only local repository
-evidence. No push, hosted Actions run, deployment, or production-cluster
-mutation has occurred for this implementation. Disposable local Kind and
+neither runs automatically. This audit update used local repository evidence
+plus one explicitly recorded, disposable provider-backed runtime smoke call.
+No push, hosted Actions run, deployment, or production-cluster mutation has
+occurred for this implementation. Disposable local Kind and
 nested two-node k3s clusters were created and deleted for API/Phase-0
 verification; neither touched the production or home-lab contexts.
 
@@ -120,6 +121,39 @@ PATH=/home/ubuntu/.local/bin:$PATH bash v3/charts/agw-operator/tests/validate.sh
 These are local tests only. They do not establish Argo Workflow execution,
 upstream Agent Sandbox behavior, user-namespace/`NET_ADMIN` isolation, or a
 live restart/cleanup cycle on the target k3s nodes.
+
+## Codex runtime and publication boundary probes — 2026-08-13
+
+The opt-in `TestRuntimeCodexLive` probe now runs the installed Codex CLI
+(0.146.0) through the actual `agw-runtime-codex` entrypoint against a local
+broker fixture. The broker intentionally starts late, so the probe exercises
+the runtime readiness wait as well as pinned checkout verification, MCP
+`initialize`/`tools/list`, Responses streaming, the required run-output
+artifact upload, and durable `run.started`/`run.completed` event POSTs. It
+passed without a provider credential or hosted network call.
+
+The opt-in `TestCodexOpenRouterMCPToolCallLive` probe also passed with the
+installed Codex CLI, the real broker handlers, local OpenRouter-compatible
+Responses translation, and an MCP tool call. Its model and MCP endpoints are
+deterministic local fixtures; this is not provider authorization or model
+quality evidence.
+
+A separate disposable provider-backed runtime probe then completed on the same
+host using the existing Coolify-projected `OPENROUTER_API_KEY` and
+`cohere/north-mini-code:free`. Codex made two live Responses requests through
+the v3 broker and completed successfully; the key was resolved only by the
+broker credential seam and was not placed in the Codex child environment. This
+proves provider authentication, real Responses streaming, and the runtime
+completion boundary, but it is not yet a Kubernetes Sandbox, Gate, object-store,
+or GitHub publication run. The temporary provider test harness was deleted
+after the probe.
+
+A separate live GitHub App publication probe was run against the disposable
+`Astatide1337/HelloWorldReact` repository. It created and then cleaned up the
+temporary PR/branch, and a fresh publisher/ledger instance replayed the same
+result without a duplicate GitHub mutation. This proves the publisher boundary
+and restart fencing, not a complete Kubernetes `AgentRun` through a real model,
+Gate, object store, and target-node Sandbox.
 
 The following checks were rerun locally after that change, without hosted CI,
 image pushes, or production mutation:
@@ -404,7 +438,8 @@ evidence directory as the P0-B through P0-D release artifacts.
 | UID airlock / network isolation | **Implemented + disposable live proven; target CNI proof pending** | `hostUsers: false`, ordered init containers, NetworkPolicies, and destination-specific IPv4/IPv6 UID/port rules were exercised live. The agent could reach only the broker's approved loopback listener; private/public/API/metadata/DNS/UDP bypasses and firewall inspection were blocked. Production-node/CNI behavior remains pending. |
 | Object storage, IAM, and signed evidence | **Implemented locally; KMS/live storage proof pending** | The real AWS SDK/store path now has a loopback TLS S3-shaped conformance harness covering conditional create, exact read, immutable conflict, simulated restart, and persisted-before-response-drop ambiguity. Artifact digests, STS-scoped auth, report signing, a strict in-toto v1 projection, and a fail-closed cosign lifecycle also exist. A real cosign v3.1.3 local-key create/verify/persist round trip passed against the exact binary copied into the operator image. A real KMS, production object store, key rotation, retained-bundle procedure, and ambiguity drill have not passed. Public Fulcio/keyless trust is deliberately not assumed. See `docs/v3/objectstore-conformance.md`. |
 | Registry-published image digests | **Partially implemented** | All 15 release-matrix image contracts, including `critic` and `agent-run-lifecycle`, have local validation and manual hosted build/release paths. No production images/manifests have been pushed or configured with immutable registry digests. |
-| GitHub App publication | **Implemented but requiring live proof** | Controller-owned branch/commit/PR logic, immutable `patch`/`findings`/`both` projection, per-finding review/advisory effects, marker reconciliation, and effect-ledger idempotency exist; no live scoped GitHub App PR/review has been reconciled. |
+| GitHub App publication | **Implemented + disposable live proven; full AgentRun pending** | Controller-owned branch/commit/PR logic, immutable `patch`/`findings`/`both` projection, per-finding review/advisory effects, marker reconciliation, and effect-ledger idempotency exist. A scoped App created and cleaned up a disposable `HelloWorldReact` PR, and restart replay produced no duplicate mutation. Full AgentRun integration remains unproven. |
+| Codex runtime | **Provider-backed local runtime live proven; Kubernetes run pending** | Installed Codex completed through the actual runtime entrypoint with delayed broker readiness, MCP initialization, Responses streaming, artifact upload, durable runtime events, and two real OpenRouter Responses requests using `cohere/north-mini-code:free`. No Kubernetes Sandbox, Gate, or full AgentRun run has completed. |
 | Claude runtime | **Implemented but requiring live proof** | The adapter's output-pipe race is fixed and repeated/race tests pass; no live Claude-provider run exists. |
 | Shadow confusion matrix | **Implemented but not populated with release evidence** | `kubectl-agw review` stores immutable labels and `kubectl-agw matrix` computes the per-repo/per-Gate confusion matrix; no real 50-run evidence window exists yet. |
 | Enforcing promotion / auto-merge | **Not run / intentionally deferred** | Promotion is deliberately manual and evidence-gated; auto-merge remains a separate future decision. |
@@ -661,9 +696,9 @@ The agentgateway path therefore remains opt-in and fail-closed.
 
 ### GitHub App publication
 
-`v3/internal/githubapp/`, `v3/internal/githubpublish/`, and `v3/internal/publish/` implement controller-owned installation tokens, deterministic branch/commit/PR publication, labels, claim-before-mutation, and terminal `UnknownEffect` handling. Unit tests cover the GitHub adapter, App token construction, and effect-ledger behavior.
+`v3/internal/githubapp/`, `v3/internal/githubpublish/`, and `v3/internal/publish/` implement controller-owned installation tokens, deterministic branch/commit/PR publication, labels, claim-before-mutation, and terminal `UnknownEffect` handling. Unit tests cover the GitHub adapter, App token construction, and effect-ledger behavior. The disposable `HelloWorldReact` probe additionally exercised a real repository-scoped installation token, branch/commit/PR publication, fresh-ledger replay, and exact cleanup. The App private key remains outside `agw-runs`.
 
-The release gate is still missing: a disposable repository must be cloned with the short-lived read credential, published through a real GitHub App restricted to the intended repository, and reconciled through a real PR. The App private key must remain in `agw-system`; it must never enter `agw-runs`.
+The remaining release gate is integration: the publisher must be reached from a complete real `AgentRun` after clone, work, capture, independent verify, and object-store evidence. Findings publication still requires its own disposable pull-request probe.
 
 Findings publication has a separate effect per blocking review and one advisory
 section effect. Reconciliation is marker- and commit-bound, and a full
@@ -767,7 +802,7 @@ The legacy `v2/` and `agents_gateway/` trees, including the v2 web/deployment su
 2. Install a compatible Agent Sandbox controller and prove Sandbox/PVC/service/suspend/shutdown cleanup live.
 3. Run the user-namespace, UID airlock, CNI, metadata/API, and credential-canary probes on the agent node. Fail closed on any mismatch.
 4. Configure production object storage, exact-prefix IAM/STS, signing, GitHub App credentials, and digest-pushed release-matrix images; execute the ambiguity and restart drills. Enable the critic and select Argo only after their separate live capability gates pass.
-5. Run a disposable-repository end-to-end job through a real Gate, including a real Claude runtime test if Claude is supported, then verify the independent clean-checkout pod and PR publication.
+5. Run a disposable-repository Kubernetes end-to-end job through a real Gate, including a real Claude runtime test if Claude is supported, then verify the independent clean-checkout pod and PR publication. The local Codex/OpenRouter provider boundary is already proven; this gate must exercise it inside the target workload.
 6. Re-run the full unit, race, vulnerability, image-contract, Helm, and Kubernetes API-server suites after any release-candidate change.
 7. Run shadow mode per repository/Gate, record the confusion matrix, and keep enforcement/auto-merge disabled until the stated evidence threshold is met.
 8. Only after those gates pass, perform the v1/v2 cutover with rollback and retention evidence.

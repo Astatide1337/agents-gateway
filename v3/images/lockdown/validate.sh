@@ -12,7 +12,7 @@ require_text() {
 	fi
 }
 
-require_text 'FROM docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1'
+require_text 'FROM docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6'
 require_text 'RUN apk add --no-cache iptables'
 require_text 'ENTRYPOINT ["/bin/sh"]'
 

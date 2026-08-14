@@ -80,7 +80,7 @@ spec:
           args:
             - {{ printf "--metrics-bind-address=%s" .Values.operator.metricsBindAddress | quote }}
             - {{ printf "--health-probe-bind-address=%s" .Values.operator.healthProbeBindAddress | quote }}
-            - {{ printf "--webhook-port=%d" .Values.operator.webhookPort | quote }}
+            - {{ printf "--webhook-port=%d" (int64 .Values.operator.webhookPort) | quote }}
             - {{ printf "--leader-elect=%t" .Values.leaderElection.enabled | quote }}
             - {{ printf "--leader-election-namespace=%s" .Values.namespaces.system | quote }}
             - {{ printf "--sandbox-backend=%s" .Values.sandboxBackend | quote }}
@@ -99,7 +99,7 @@ spec:
             - {{ printf "--object-store-prefix=%s" .Values.objectStore.prefix | quote }}
             - {{ printf "--object-store-region=%s" .Values.objectStore.region | quote }}
             - {{ printf "--object-store-path-style=%t" .Values.objectStore.pathStyle | quote }}
-            - {{ printf "--object-store-max-bytes=%d" .Values.operator.objectStoreMaxBytes | quote }}
+            - {{ printf "--object-store-max-bytes=%d" (int64 .Values.operator.objectStoreMaxBytes) | quote }}
             - {{ printf "--clone-image=%s@%s" .Values.runtimeImages.clone.repository .Values.runtimeImages.clone.digest | quote }}
             - {{ printf "--skills-image=%s@%s" .Values.runtimeImages.skills.repository .Values.runtimeImages.skills.digest | quote }}
             - {{ printf "--context-image=%s@%s" .Values.runtimeImages.context.repository .Values.runtimeImages.context.digest | quote }}
@@ -153,16 +153,16 @@ spec:
             - {{ printf "--artifact-credential-ttl=%s" .Values.artifactSTS.credentialTTL | quote }}
             - {{ printf "--retention-enabled=%t" .Values.retention.enabled | quote }}
             - {{ printf "--retention-interval=%s" .Values.retention.interval | quote }}
-            - {{ printf "--retention-artifact-days=%d" .Values.retention.artifactRetentionDays | quote }}
-            - {{ printf "--retention-workspace-days=%d" .Values.retention.workspaceRetentionDays | quote }}
-            - {{ printf "--retention-ledger-days=%d" .Values.retention.ledgerRetentionDays | quote }}
+            - {{ printf "--retention-artifact-days=%d" (int64 .Values.retention.artifactRetentionDays) | quote }}
+            - {{ printf "--retention-workspace-days=%d" (int64 .Values.retention.workspaceRetentionDays) | quote }}
+            - {{ printf "--retention-ledger-days=%d" (int64 .Values.retention.ledgerRetentionDays) | quote }}
             - {{ printf "--retention-ledger-prefix=%s" .Values.retention.ledgerPrefix | quote }}
-            - {{ printf "--retention-max-actions=%d" .Values.retention.maxActions | quote }}
-            - {{ printf "--retention-max-runs=%d" .Values.retention.maxRuns | quote }}
-            - {{ printf "--retention-max-resources=%d" .Values.retention.maxResources | quote }}
-            - {{ printf "--retention-max-objects=%d" .Values.retention.maxObjects | quote }}
-            - {{ printf "--retention-max-ledger-body-bytes=%d" .Values.retention.maxLedgerBodyBytes | quote }}
-            - {{ printf "--retention-max-events=%d" .Values.retention.maxEvents | quote }}
+            - {{ printf "--retention-max-actions=%d" (int64 .Values.retention.maxActions) | quote }}
+            - {{ printf "--retention-max-runs=%d" (int64 .Values.retention.maxRuns) | quote }}
+            - {{ printf "--retention-max-resources=%d" (int64 .Values.retention.maxResources) | quote }}
+            - {{ printf "--retention-max-objects=%d" (int64 .Values.retention.maxObjects) | quote }}
+            - {{ printf "--retention-max-ledger-body-bytes=%d" (int64 .Values.retention.maxLedgerBodyBytes) | quote }}
+            - {{ printf "--retention-max-events=%d" (int64 .Values.retention.maxEvents) | quote }}
             - {{ printf "--retention-dry-run=%t" .Values.retention.dryRun | quote }}
             - {{ printf "--retention-enforce=%t" .Values.retention.enforce | quote }}
             - {{ printf "--retention-lifecycle-attested=%t" .Values.retention.lifecycleAttested | quote }}

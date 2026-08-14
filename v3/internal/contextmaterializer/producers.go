@@ -701,7 +701,7 @@ func ignoredFile(name string) bool {
 	base := strings.ToLower(filepath.Base(name))
 	ext := strings.ToLower(filepath.Ext(base))
 	switch ext {
-	case ".a", ".class", ".dll", ".dylib", ".exe", ".gif", ".ico", ".jar", ".jpeg", ".jpg", ".o", ".png", ".so", ".wasm", ".webp", ".woff", ".woff2", ".zip":
+	case ".a", ".class", ".dll", ".dylib", ".eot", ".exe", ".gif", ".ico", ".jar", ".jpeg", ".jpg", ".o", ".otf", ".png", ".so", ".ttf", ".wasm", ".webp", ".woff", ".woff2", ".zip":
 		return true
 	}
 	return strings.HasSuffix(base, ".min.js") || strings.HasSuffix(base, ".min.css") || strings.HasSuffix(base, ".map")

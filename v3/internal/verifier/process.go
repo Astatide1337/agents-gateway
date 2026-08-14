@@ -247,7 +247,25 @@ func cleanEnvironment(extra map[string]string) []string {
 		environment = append(environment, prefix+value)
 	next:
 	}
+	// The fetch stage deliberately leaves the verification checkout owned by
+	// root. Git refuses to inspect that checkout as UID 1000 unless the exact
+	// fixed verifier path is explicitly trusted. Keep this path fixed rather
+	// than accepting a caller-provided safe.directory value.
+	environment = setEnvironmentValue(environment, "GIT_CONFIG_COUNT", "1")
+	environment = setEnvironmentValue(environment, "GIT_CONFIG_KEY_0", "safe.directory")
+	environment = setEnvironmentValue(environment, "GIT_CONFIG_VALUE_0", "/verify/workspace/repo")
 	return environment
+}
+
+func setEnvironmentValue(environment []string, name, value string) []string {
+	prefix := name + "="
+	for index := range environment {
+		if strings.HasPrefix(environment[index], prefix) {
+			environment[index] = prefix + value
+			return environment
+		}
+	}
+	return append(environment, prefix+value)
 }
 
 func killProcessGroup(process *exec.Cmd) {

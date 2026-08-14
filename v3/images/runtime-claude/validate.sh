@@ -23,6 +23,14 @@ require_text 'USER 1000:1000'
 require_text 'AGW_HARNESS=claude-code'
 require_text 'AGW_CLAUDE_WORKSPACE=/workspace/repo'
 require_text 'org.opencontainers.image.licenses="MIT"'
+require_text 'rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx'
+
+copy_line=$(grep -nF 'COPY --from=claude-install /usr/local/lib/node_modules /usr/local/lib/node_modules' "$containerfile" | cut -d: -f1)
+cleanup_line=$(grep -nF 'rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx' "$containerfile" | cut -d: -f1)
+if [[ -z "$copy_line" || -z "$cleanup_line" || "$cleanup_line" -le "$copy_line" ]]; then
+	echo 'Claude runtime must remove npm after copying the installer module tree' >&2
+	exit 1
+fi
 
 if grep -Eq '(^|[[:space:]])(OPENAI_API_KEY|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CODEX_AUTH|AGW_.*TOKEN)=' "$containerfile"; then
 	echo 'Containerfile embeds a provider credential or token environment variable' >&2

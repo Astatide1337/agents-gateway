@@ -42,7 +42,7 @@ local_image() {
 guard_image="$(local_image AGW_PHASE0_GUARD_IMAGE agw-phase0-guard agw-phase0-guard:phase0)"
 recording_image="$(local_image AGW_PHASE0_RECORDING_IMAGE agw-phase0-recording agw-phase0-recording:phase0)"
 airlock_image="$(local_image AGW_PHASE0_AIRLOCK_IMAGE agw-phase0-airlock agw-phase0-airlock:phase0)"
-base_image='docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1'
+base_image='docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6'
 if [[ -n "${AGW_PHASE0_BASE_IMAGE:-}" ]]; then
 	base_image="$(local_image AGW_PHASE0_BASE_IMAGE agw-phase0-alpine agw-phase0-alpine:phase0)"
 fi
@@ -71,7 +71,7 @@ sed \
 	-e "s#agw-phase0-guard:phase0#$guard_image#g" \
 	-e "s#agw-phase0-recording:phase0#$recording_image#g" \
 	-e "s#agw-phase0-airlock:phase0#$airlock_image#g" \
-	-e "s#docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1#$base_image#g" \
+	-e "s#docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6#$base_image#g" \
 	"$root_dir/pod.yaml" > "$output_dir/pod.yaml"
 
 [[ "$(count_literal "$sentinel" "$output_dir/pod.yaml")" == 0 ]] || {

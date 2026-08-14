@@ -14,7 +14,7 @@ import (
 
 func main() {
 	if err := run(context.Background(), os.Getenv); err != nil {
-		fmt.Fprintln(os.Stderr, "agw-context: materialization failed")
+		fmt.Fprintf(os.Stderr, "agw-context: materialization failed: %v\n", err)
 		os.Exit(1)
 	}
 }

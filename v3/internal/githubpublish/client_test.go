@@ -69,13 +69,15 @@ type fakeGitHub struct {
 	prTitle      string
 	labels       []string
 
-	createRefStatus int
-	getRefStatus    int
-	createRefBody   any
-	malformedRef    bool
-	malformedGetRef bool
-	delayCreateRef  bool
-	apiErrorBody    string
+	createRefStatus             int
+	getRefStatus                int
+	createRefBody               any
+	malformedRef                bool
+	malformedGetRef             bool
+	delayCreateRef              bool
+	branchNotFoundAfterCreate   int
+	branchStaleReadsAfterUpdate int
+	apiErrorBody                string
 
 	commitRequest map[string]any
 	treeRequest   map[string]any
@@ -142,7 +144,9 @@ func (f *fakeGitHub) serveToken(w http.ResponseWriter, r *http.Request) {
 		"expires_at":           testNow().Add(time.Hour).Format(time.RFC3339),
 		"permissions":          map[string]string{"contents": "write", "pull_requests": "write"},
 		"repository_selection": "selected",
-		"repositories":         []map[string]string{{"full_name": request.Repositories[0]}},
+		// The request accepts repository names; GitHub returns canonical
+		// owner/name identities in the response.
+		"repositories": []map[string]string{{"full_name": testOwner + "/" + request.Repositories[0]}},
 	})
 }
 
@@ -174,6 +178,14 @@ func (f *fakeGitHub) handleRepository(w http.ResponseWriter, r *http.Request, re
 		if ref == "heads/"+testBranch {
 			f.mu.Lock()
 			exists, sha := f.branchExists, f.branchSHA
+			if exists && sha != testBaseSHA && f.branchStaleReadsAfterUpdate > 0 {
+				f.branchStaleReadsAfterUpdate--
+				sha = testBaseSHA
+			}
+			if exists && f.branchNotFoundAfterCreate > 0 {
+				f.branchNotFoundAfterCreate--
+				exists = false
+			}
 			f.mu.Unlock()
 			if !exists {
 				http.NotFound(w, r)
@@ -358,12 +370,10 @@ func refJSON(ref, sha string) map[string]any {
 func commitJSON(sha, tree, parent, message, author, email string) map[string]any {
 	return map[string]any{
 		"sha":     sha,
+		"message": message,
+		"author":  map[string]string{"name": author, "email": email},
 		"tree":    map[string]string{"sha": tree},
 		"parents": []map[string]string{{"sha": parent}},
-		"commit": map[string]any{
-			"message": message,
-			"author":  map[string]string{"name": author, "email": email},
-		},
 	}
 }
 
@@ -500,7 +510,7 @@ func TestClientSuccessReplayAndExactScopes(t *testing.T) {
 		t.Fatal("no installation-token scope requests recorded")
 	}
 	for _, scope := range scopes {
-		if scope.Repo != "acme/demo" || scope.Permissions["contents"] != "write" || scope.Permissions["pull_requests"] != "write" {
+		if scope.Repo != "demo" || scope.Permissions["contents"] != "write" || scope.Permissions["pull_requests"] != "write" {
 			t.Fatalf("token scope was broader or incomplete: %#v", scope)
 		}
 	}
@@ -549,6 +559,46 @@ func TestEnsureBranchConflictAndMalformedSuccessAreNotRetried(t *testing.T) {
 	})
 }
 
+func TestEnsureBranchRetriesEventualReadAfterSuccessfulCreate(t *testing.T) {
+	fake := newFakeGitHub()
+	fake.branchNotFoundAfterCreate = 1
+	server := httptest.NewTLSServer(fake)
+	defer server.Close()
+	client := newTestClient(t, server, time.Second)
+
+	branch, err := client.EnsureBranch(context.Background(), testRepo(), publish.BranchRequest{Name: testBranch, BaseSHA: testBaseSHA})
+	if err != nil || branch.Name != testBranch || branch.SHA != testBaseSHA {
+		t.Fatalf("eventual branch proof = %#v, %v", branch, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	createCount := 0
+	for _, path := range fake.paths {
+		if path == "/repos/acme/demo/git/refs" {
+			createCount++
+		}
+	}
+	if createCount != 1 {
+		t.Fatalf("branch create count = %d, want exactly one mutation", createCount)
+	}
+}
+
+func TestEnsureCommitRetriesStaleReadAfterBranchUpdate(t *testing.T) {
+	fake := newFakeGitHub()
+	fake.branchStaleReadsAfterUpdate = 1
+	server := httptest.NewTLSServer(fake)
+	defer server.Close()
+	client := newTestClient(t, server, time.Second)
+
+	if _, err := client.EnsureBranch(context.Background(), testRepo(), publish.BranchRequest{Name: testBranch, BaseSHA: testBaseSHA}); err != nil {
+		t.Fatalf("EnsureBranch = %v", err)
+	}
+	commit, err := client.EnsureCommit(context.Background(), testRepo(), testCommitRequest(t))
+	if err != nil || commit.SHA != testCommitSHA {
+		t.Fatalf("stale branch proof commit = %#v, %v", commit, err)
+	}
+}
+
 func TestEnsurePullRequestConflictAndMalformedResponse(t *testing.T) {
 	t.Run("conflict", func(t *testing.T) {
 		fake := newFakeGitHub()
@@ -590,7 +640,7 @@ func TestEnsurePullRequestConflictAndMalformedResponse(t *testing.T) {
 	})
 }
 
-func TestTimeoutAndServerErrorRemainAmbiguous(t *testing.T) {
+func TestServerErrorRemainsAmbiguousAndTimeoutIsReconciled(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		fake func(*fakeGitHub)
@@ -611,7 +661,13 @@ func TestTimeoutAndServerErrorRemainAmbiguous(t *testing.T) {
 				timeout = 20 * time.Millisecond
 			}
 			client := newTestClient(t, server, timeout)
-			_, err := client.EnsureBranch(context.Background(), testRepo(), publish.BranchRequest{Name: testBranch, BaseSHA: testBaseSHA})
+			branch, err := client.EnsureBranch(context.Background(), testRepo(), publish.BranchRequest{Name: testBranch, BaseSHA: testBaseSHA})
+			if test.name == "timeout" {
+				if err != nil || branch.Name != testBranch || branch.SHA != testBaseSHA {
+					t.Fatalf("timeout with provable branch = %#v, %v", branch, err)
+				}
+				return
+			}
 			if !errors.Is(err, ErrUnclassified) || errors.Is(err, publish.ErrGitHubConflict) {
 				t.Fatalf("%s error = %v", test.name, err)
 			}
@@ -687,8 +743,8 @@ func TestTokenIsScopedToRequestedRepository(t *testing.T) {
 	_, _ = client.GetRef(context.Background(), githubapp.Repository{Owner: testOwner, Name: "other"}, "refs/heads/main")
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.scopes) != 1 || fake.scopes[0].Repo != "acme/other" {
-		t.Fatalf("token scope = %#v, want exactly acme/other", fake.scopes)
+	if len(fake.scopes) != 1 || fake.scopes[0].Repo != "other" {
+		t.Fatalf("token scope = %#v, want exactly repository name other", fake.scopes)
 	}
 }
 

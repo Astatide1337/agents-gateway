@@ -4,7 +4,7 @@
 # Release automation may update them after recording a new base-image
 # attestation; mutable tags are never accepted as production inputs.
 ARG GO_IMAGE=docker.io/library/golang:1.26.5@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af
-ARG RUNTIME_IMAGE=docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+ARG RUNTIME_IMAGE=docker.io/library/alpine:3.22.5@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src/v3

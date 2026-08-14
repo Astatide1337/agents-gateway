@@ -70,6 +70,42 @@ func TestConfigDerivesOnlyLoopbackBrokerRoutes(t *testing.T) {
 	}
 }
 
+func TestConfigAcceptsExplicitSandboxMode(t *testing.T) {
+	workspace := t.TempDir()
+	values := map[string]string{
+		"AGW_BROKER":          "http://127.0.0.1:8081",
+		"AGW_CODEX_WORKSPACE": workspace,
+		"AGW_CODEX_MODEL":     "gpt-test",
+		"AGW_CODEX_SANDBOX":   "danger-full-access",
+	}
+	cfg, err := ConfigFromEnv(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SandboxMode != "danger-full-access" {
+		t.Fatalf("sandbox mode=%q", cfg.SandboxMode)
+	}
+	args, err := BuildArgs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(args, "danger-full-access") {
+		t.Fatalf("explicit sandbox mode missing: %#v", args)
+	}
+}
+
+func TestConfigRejectsUnknownSandboxMode(t *testing.T) {
+	values := map[string]string{
+		"AGW_BROKER":          "http://127.0.0.1:8081",
+		"AGW_CODEX_WORKSPACE": t.TempDir(),
+		"AGW_CODEX_MODEL":     "gpt-test",
+		"AGW_CODEX_SANDBOX":   "unsafe-but-unknown",
+	}
+	if _, err := ConfigFromEnv(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("unknown sandbox mode was accepted")
+	}
+}
+
 func TestConfigRejectsPublicBroker(t *testing.T) {
 	values := map[string]string{
 		"AGW_BROKER":          "http://broker.example.test:8081",
@@ -318,6 +354,23 @@ exit 1
 	}
 	if strings.Contains(err.Error(), "secret-child-diagnostic") || bytes.Contains(output.Bytes(), []byte("secret-child-diagnostic")) {
 		t.Fatal("child diagnostics leaked into the runtime protocol")
+	}
+}
+
+func TestRunDoesNotMisclassifyPostStartupMCPDiagnostic(t *testing.T) {
+	fake := fakeCodex(t, `
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"started work"}}'
+printf '%s\n' 'MCP server failed to start after the model turn' >&2
+exit 1
+`)
+	cfg := Config{CodexBinary: fake, ResponsesURL: "http://127.0.0.1:8787/v1", Workspace: t.TempDir(), Model: "gpt-test", MaxRuntime: time.Minute, TerminationGrace: time.Second}
+	var output bytes.Buffer
+	err := Run(context.Background(), strings.NewReader(runStartLine(t, "run-post-startup-mcp-error", "work")), &output, io.Discard, cfg)
+	if err == nil || !strings.Contains(err.Error(), "terminated before completing its turn") {
+		t.Fatalf("post-startup diagnostic was misclassified: %v", err)
+	}
+	if strings.Contains(err.Error(), "MCP initialization failed") {
+		t.Fatalf("post-startup diagnostic was reported as initialization failure: %v", err)
 	}
 }
 

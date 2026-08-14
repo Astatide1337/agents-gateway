@@ -684,6 +684,9 @@ func validateModelRouteSpec(spec v1alpha1.ModelRouteSpec) error {
 		if !validModelProviderName(provider.Name) || !validModelProviderModel(provider.Model) || !validModelProviderKind(provider.Kind) || provider.Priority < 1 || provider.Priority > 1000 {
 			return fmt.Errorf("%w: ModelProvider has an invalid name, kind, model, or priority", ErrConfiguration)
 		}
+		if provider.Pricing != nil && (provider.Pricing.InputMicrosPerToken < 0 || provider.Pricing.OutputMicrosPerToken < 0 || provider.Pricing.InputMicrosPerToken > 1000000000000 || provider.Pricing.OutputMicrosPerToken > 1000000000000) {
+			return fmt.Errorf("%w: ModelProvider pricing is outside its bound", ErrConfiguration)
+		}
 		if !familyPattern.MatchString(provider.Family) {
 			return fmt.Errorf("%w: ModelProvider family must be explicit and valid", ErrConfiguration)
 		}

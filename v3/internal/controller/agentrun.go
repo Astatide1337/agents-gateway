@@ -238,7 +238,12 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	}
 
 	run := &v1alpha1.AgentRun{}
-	if err := r.Get(ctx, request.NamespacedName, run); err != nil {
+	// Reconcile requests are delivered by the scoped cache, but the cache can
+	// briefly lag after a CRD update or a same-name delete/recreate. Read the
+	// authoritative run object directly so a valid request is never treated as
+	// a missing run and silently dropped. The APIReader is still constrained by
+	// the operator's runs-namespace RBAC.
+	if err := r.APIReader.Get(ctx, request.NamespacedName, run); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !run.DeletionTimestamp.IsZero() {
@@ -247,7 +252,7 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	if !contains(run.Finalizers, AgentRunFinalizer) {
 		base := run.DeepCopy()
 		run.Finalizers = append(run.Finalizers, AgentRunFinalizer)
-		if err := r.Client.SubResource("finalizers").Patch(ctx, run, client.MergeFrom(base)); err != nil {
+		if err := r.Client.Patch(ctx, run, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -648,12 +653,28 @@ func (r *AgentRunReconciler) driveAdmitted(ctx context.Context, run *v1alpha1.Ag
 		if err := statusprojection.SetPhaseAt(&run.Status, v1alpha1.PhaseVerifying, now); err != nil {
 			return ctrl.Result{}, err
 		}
+		verificationStarted := metav1.NewTime(now.UTC())
+		run.Status.VerificationStartedAt = &verificationStarted
 		run.Status.ObservedGeneration = run.Generation
 		return ctrl.Result{Requeue: true}, r.updateStatus(ctx, run)
 
 	case v1alpha1.PhaseVerifying:
 		if r.Verify == nil {
 			return ctrl.Result{}, errors.New("Verifying run has no independent verification driver")
+		}
+		if run.Status.VerificationStartedAt == nil || run.Status.VerificationStartedAt.IsZero() {
+			// Older runs may have entered this phase before the durable deadline
+			// field existed. Establish it before creating or retrying the child;
+			// subsequent reconciles must use the same timestamp. Continue this
+			// reconciliation after the checkpoint so a completed fake or an
+			// already-finished child is still observed without an unnecessary
+			// extra lifecycle turn.
+			verificationStarted := metav1.NewTime(now.UTC())
+			run.Status.VerificationStartedAt = &verificationStarted
+			run.Status.ObservedGeneration = run.Generation
+			if err := r.updateStatus(ctx, run); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		snapshot, err := r.loadSnapshot(ctx, run)
 		if err != nil {
@@ -1029,6 +1050,21 @@ func (r *AgentRunReconciler) loadSnapshot(ctx context.Context, run *v1alpha1.Age
 	return snapshot, nil
 }
 
+func (r *AgentRunReconciler) loadSnapshotForCleanup(ctx context.Context, run *v1alpha1.AgentRun) (resolved.Snapshot, error) {
+	body, err := r.Artifacts.LoadResolvedSpec(ctx, string(run.UID), run.Status.SpecDigest)
+	if err != nil {
+		return resolved.Snapshot{}, fmt.Errorf("load immutable resolved spec for cleanup: %w", err)
+	}
+	snapshot, err := resolved.Decode(body, run.Status.SpecDigest)
+	if err != nil {
+		return resolved.Snapshot{}, fmt.Errorf("verify immutable resolved spec for cleanup: %w", err)
+	}
+	if snapshot.Run.Namespace != run.Namespace || snapshot.Run.Name != run.Name || snapshot.Run.UID != string(run.UID) || snapshot.BaseSHA != run.Status.BaseSHA {
+		return resolved.Snapshot{}, errors.New("immutable resolved spec does not belong to AgentRun")
+	}
+	return snapshot, nil
+}
+
 func (r *AgentRunReconciler) failAdmission(ctx context.Context, run *v1alpha1.AgentRun, now time.Time) error {
 	if run.Status.Phase == "" {
 		if err := statusprojection.SetPhaseAt(&run.Status, v1alpha1.PhasePending, now); err != nil {
@@ -1059,7 +1095,7 @@ func (r *AgentRunReconciler) finalize(ctx context.Context, run *v1alpha1.AgentRu
 	}
 	base := run.DeepCopy()
 	run.Finalizers = remove(run.Finalizers, AgentRunFinalizer)
-	return r.Client.SubResource("finalizers").Patch(ctx, run, client.MergeFrom(base))
+	return r.Client.Patch(ctx, run, client.MergeFrom(base))
 }
 
 func (r *AgentRunReconciler) cleanupChildren(ctx context.Context, run *v1alpha1.AgentRun) error {
@@ -1084,7 +1120,11 @@ func (r *AgentRunReconciler) cleanupChildren(ctx context.Context, run *v1alpha1.
 		}
 	}
 	if r.Capture != nil && run.Status.SpecDigest != "" {
-		snapshot, err := r.loadSnapshot(ctx, run)
+		// Deletion can advance metadata.generation after the immutable
+		// execution contract was persisted. Cleanup still needs to identify
+		// the capture child by the run UID and digest; active execution keeps
+		// the stricter generation check in loadSnapshot.
+		snapshot, err := r.loadSnapshotForCleanup(ctx, run)
 		if err != nil {
 			cleanupErrs = append(cleanupErrs, err)
 		} else if err := r.Capture.Cleanup(ctx, run, snapshot); err != nil {
@@ -1100,7 +1140,13 @@ func (r *AgentRunReconciler) deleteOwnedRunSecret(ctx context.Context, run *v1al
 	}
 	secret := &corev1.Secret{}
 	key := client.ObjectKey{Namespace: run.Namespace, Name: name}
-	if err := r.Get(ctx, key, secret); err != nil {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		// Cleanup is a named, security-sensitive read. Do not lazily create a
+		// Secret informer in the run namespace merely to validate ownership.
+		reader = r.APIReader
+	}
+	if err := reader.Get(ctx, key, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
