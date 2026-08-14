@@ -23,6 +23,7 @@ require_text 'USER 1000:1000'
 require_text 'AGW_BROKER=http://127.0.0.1:8081'
 require_text 'AGW_HARNESS=codex'
 require_text 'AGW_CODEX_WORKSPACE=/workspace/repo'
+require_text 'apt-get install -y --no-install-recommends bubblewrap ca-certificates git'
 require_text 'rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx'
 
 if grep -Eq '(^|[[:space:]])(OPENAI_API_KEY|ANTHROPIC_API_KEY|CODEX_AUTH|AGW_.*TOKEN)=' "$containerfile"; then

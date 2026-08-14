@@ -367,6 +367,9 @@ func TestBuildProducesADR006ADR007WorkTopology(t *testing.T) {
 	if got := envValue(agent, "AGW_CODEX_MAX_RUNTIME"); got != snapshot.Spec.Limits.Timeout {
 		t.Fatalf("AGW_CODEX_MAX_RUNTIME=%q, want %q", got, snapshot.Spec.Limits.Timeout)
 	}
+	if got := envValue(agent, "AGW_CODEX_SANDBOX"); got != "danger-full-access" {
+		t.Fatalf("AGW_CODEX_SANDBOX=%q, want outer-pod delegation", got)
+	}
 	if got := envValue(agent, "AGW_CODEX_WORKSPACE"); got != WorkspaceMountPath+"/repo" {
 		t.Fatalf("AGW_CODEX_WORKSPACE=%q", got)
 	}

@@ -52,6 +52,7 @@ Pod environment:
 AGW_BROKER=http://127.0.0.1:8081
 AGW_CODEX_WORKSPACE=/workspace/repo
 AGW_CODEX_MODEL=<resolved model id>
+AGW_CODEX_SANDBOX=workspace-write
 ```
 
 The `internal/workload` builder supplies the broker address, selected model,
@@ -65,6 +66,11 @@ adapter intentionally cannot read the broker container's
 but each must pass the same loopback/path validation. `AGW_CODEX_ENABLE_TOOLS`
 and `AGW_CODEX_REQUIRE_ARTIFACT` are optional boolean overrides; when derived
 from `AGW_BROKER`, tools and output artifacts are required by default.
+`AGW_CODEX_SANDBOX` accepts `read-only`, `workspace-write`, or
+`danger-full-access`. The Kubernetes work workload sets the last value because
+the pod's hardened filesystem, UID egress airlock, dropped capabilities, and
+disabled service-account token are the outer sandbox; nested user namespaces are
+not available in that pod. Standalone runtimes should keep `workspace-write`.
 
 The broker must expose:
 

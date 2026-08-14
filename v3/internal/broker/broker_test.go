@@ -602,6 +602,57 @@ func TestModelProxyAllowlistBudgetAndContentType(t *testing.T) {
 	}
 }
 
+func TestZeroCostModelRouteAllowsFreeProvider(t *testing.T) {
+	config := newTestConfig(testBrokerOptions{withModelCredential: true})
+	config.MaxCostUSD = "0"
+	config.ModelRoute.Budget.MaxCostUSD = "0"
+	config.Pricing = nil
+
+	freeBroker, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := freeBroker.InvokeModel(context.Background(), []byte(`{"model":"test-model","input":"hello","max_output_tokens":16}`))
+	if err != nil {
+		t.Fatalf("free model request error=%v", err)
+	}
+	if result.Provider != "openai" || result.Model != "test-model" || result.CostMicros != 0 {
+		t.Fatalf("free model result=%#v", result)
+	}
+	if usage := freeBroker.Usage(); usage.ModelRequests != 1 || usage.ModelTokens != 5 || usage.ModelCostMicros != 0 {
+		t.Fatalf("free model usage=%#v", usage)
+	}
+}
+
+func TestModelOutputLimitIsClampedToBrokerReservation(t *testing.T) {
+	transport := &testTransport{}
+	config := newTestConfig(testBrokerOptions{transport: transport, withModelCredential: true})
+	config.MaxCostUSD = "0"
+	config.ModelRoute.Budget.MaxCostUSD = "0"
+	config.ModelRoute.Budget.MaxTokens = 200000
+	config.MaxModelTokens = 200000
+	config.Pricing = nil
+
+	modelBroker, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"model":"test-model","input":"hello","max_output_tokens":1000000000}`)
+	if _, err := modelBroker.InvokeModel(context.Background(), body); err != nil {
+		t.Fatalf("clamped model request error=%v", err)
+	}
+	transport.mu.Lock()
+	upstreamBody := append([]byte(nil), transport.bodies[0]...)
+	transport.mu.Unlock()
+	var upstream map[string]any
+	if err := json.Unmarshal(upstreamBody, &upstream); err != nil {
+		t.Fatal(err)
+	}
+	if got := int64(upstream["max_output_tokens"].(float64)); got != 128<<10 {
+		t.Fatalf("upstream max_output_tokens=%d, want %d", got, 128<<10)
+	}
+}
+
 func TestModelProxyEnforcesRunTokenAndCostCaps(t *testing.T) {
 	body := []byte(`{"model":"test-model","input":"hello","max_output_tokens":16}`)
 	transport := &testTransport{}

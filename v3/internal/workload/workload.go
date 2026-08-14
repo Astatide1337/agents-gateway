@@ -794,6 +794,11 @@ func harnessRuntimeEnv(harness v1alpha1.Harness, provider v1alpha1.ModelProvider
 		return []corev1.EnvVar{
 			{Name: "AGW_CODEX_WORKSPACE", Value: WorkspaceMountPath + "/repo"},
 			{Name: "AGW_CODEX_MODEL", Value: model},
+			// The Kubernetes work Sandbox is the authoritative outer boundary.
+			// Codex's nested Linux sandbox cannot create user namespaces under the
+			// pod security profile, so the runtime delegates command isolation to
+			// the pod's UID/network/filesystem controls.
+			{Name: "AGW_CODEX_SANDBOX", Value: "danger-full-access"},
 			{Name: "AGW_CODEX_MAX_RUNTIME", Value: timeout},
 			{Name: "AGW_CODEX_REQUIRE_ARTIFACT", Value: "true"},
 		}

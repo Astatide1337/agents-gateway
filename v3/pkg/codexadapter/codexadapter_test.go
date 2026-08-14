@@ -70,6 +70,42 @@ func TestConfigDerivesOnlyLoopbackBrokerRoutes(t *testing.T) {
 	}
 }
 
+func TestConfigAcceptsExplicitSandboxMode(t *testing.T) {
+	workspace := t.TempDir()
+	values := map[string]string{
+		"AGW_BROKER":          "http://127.0.0.1:8081",
+		"AGW_CODEX_WORKSPACE": workspace,
+		"AGW_CODEX_MODEL":     "gpt-test",
+		"AGW_CODEX_SANDBOX":   "danger-full-access",
+	}
+	cfg, err := ConfigFromEnv(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SandboxMode != "danger-full-access" {
+		t.Fatalf("sandbox mode=%q", cfg.SandboxMode)
+	}
+	args, err := BuildArgs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(args, "danger-full-access") {
+		t.Fatalf("explicit sandbox mode missing: %#v", args)
+	}
+}
+
+func TestConfigRejectsUnknownSandboxMode(t *testing.T) {
+	values := map[string]string{
+		"AGW_BROKER":          "http://127.0.0.1:8081",
+		"AGW_CODEX_WORKSPACE": t.TempDir(),
+		"AGW_CODEX_MODEL":     "gpt-test",
+		"AGW_CODEX_SANDBOX":   "unsafe-but-unknown",
+	}
+	if _, err := ConfigFromEnv(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("unknown sandbox mode was accepted")
+	}
+}
+
 func TestConfigRejectsPublicBroker(t *testing.T) {
 	values := map[string]string{
 		"AGW_BROKER":          "http://broker.example.test:8081",

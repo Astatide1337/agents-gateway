@@ -37,6 +37,7 @@ import (
 const (
 	defaultMaxRuntime       = 30 * time.Minute
 	defaultTerminationGrace = 5 * time.Second
+	defaultSandboxMode      = "workspace-write"
 	maxOutputLineBytes      = 1 << 20
 	maxModelBytes           = 256
 	maxURLBytes             = 2048
@@ -48,6 +49,7 @@ type Config struct {
 	ResponsesURL      string
 	Workspace         string
 	Model             string
+	SandboxMode       string
 	MaxRuntime        time.Duration
 	TerminationGrace  time.Duration
 	HeartbeatInterval time.Duration
@@ -70,12 +72,16 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		ResponsesURL:      getenv("AGW_CODEX_RESPONSES_URL"),
 		Workspace:         getenv("AGW_CODEX_WORKSPACE"),
 		Model:             getenv("AGW_CODEX_MODEL"),
+		SandboxMode:       getenv("AGW_CODEX_SANDBOX"),
 		MCPURL:            getenv("AGW_CODEX_MCP_URL"),
 		ArtifactURL:       getenv("AGW_CODEX_ARTIFACT_URL"),
 		ArtifactCreateURL: getenv("AGW_CODEX_ARTIFACT_CREATE_URL"),
 		MaxRuntime:        defaultMaxRuntime,
 		TerminationGrace:  defaultTerminationGrace,
 		HeartbeatInterval: 0,
+	}
+	if cfg.SandboxMode == "" {
+		cfg.SandboxMode = defaultSandboxMode
 	}
 	if cfg.CodexBinary == "" {
 		cfg.CodexBinary = "codex"
@@ -135,6 +141,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	if err := validateModel(cfg.Model); err != nil {
 		return Config{}, fmt.Errorf("AGW_CODEX_MODEL: %w", err)
+	}
+	if err := validateSandboxMode(cfg.SandboxMode); err != nil {
+		return Config{}, fmt.Errorf("AGW_CODEX_SANDBOX: %w", err)
 	}
 	cfg.EnableTools = cfg.MCPURL != ""
 	cfg.RequireArtifact = cfg.ArtifactURL != ""
@@ -249,6 +258,15 @@ func validateModel(raw string) error {
 	return nil
 }
 
+func validateSandboxMode(raw string) error {
+	switch raw {
+	case "read-only", "workspace-write", "danger-full-access":
+		return nil
+	default:
+		return errors.New("must be read-only, workspace-write, or danger-full-access")
+	}
+}
+
 // BuildArgs returns the explicit, noninteractive Codex invocation. The
 // provider table is intentionally passed through --config rather than a
 // user-controlled config file.
@@ -262,12 +280,19 @@ func BuildArgs(cfg Config) ([]string, error) {
 	if err := validateModel(cfg.Model); err != nil {
 		return nil, err
 	}
+	sandboxMode := cfg.SandboxMode
+	if sandboxMode == "" {
+		sandboxMode = defaultSandboxMode
+	}
+	if err := validateSandboxMode(sandboxMode); err != nil {
+		return nil, err
+	}
 	provider := fmt.Sprintf(`{name=%s,base_url=%s,wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}`,
 		strconv.Quote("Agents Gateway loopback"), strconv.Quote(cfg.ResponsesURL))
 	args := []string{
 		"--ask-for-approval", "never",
 		"exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-		"--sandbox", "workspace-write", "--skip-git-repo-check", "--color", "never",
+		"--sandbox", sandboxMode, "--skip-git-repo-check", "--color", "never",
 		"--cd", cfg.Workspace,
 		"--config", `model_provider="agw_loopback"`,
 		"--config", "model_providers.agw_loopback=" + provider,
